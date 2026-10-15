@@ -10,7 +10,7 @@ golangci-lint = "2.14.0" # must match the `version:` in .custom-gcl.yml
 # release binary (built with go1.26) can't parse Go 1.27's stdlib (generic
 # methods in math/rand/v2). Building with the pinned `go` above keeps the two
 # in lockstep across toolchain bumps.
-"go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "0.22.0"
+"go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "v0.23.0"
 kustomize = "5.8.3"
 setup-envtest = "0.25.2" # tracks sigs.k8s.io/controller-runtime in go.mod
 helm = "4.3.0"
