@@ -3,7 +3,7 @@
 # Renovate's native `mise` manager keeps [tools] current.
 [tools]
 go = "1.27.2"
-golangci-lint = "2.14.0" # must match the `version:` in .custom-gcl.yml
+golangci-lint = "2.15.0" # must match the `version:` in .custom-gcl.yml
 # Built from source (go backend) rather than mise's `kube-controller-tools`
 # release binary: `controller-gen applyconfiguration` type-checks the stdlib
 # from source with the go/types it was *compiled* with, and the v0.22.0
