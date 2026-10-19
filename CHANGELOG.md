@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0](https://github.com/maverickd650/rss2discord-operator/compare/v0.12.2...v0.13.0) (2026-10-17)
+
+
+### Features
+
+* **deps:** update module go:sigs.k8s.io/controller-tools/cmd/controller-gen (0.22.0 → v0.23.0) ([#267](https://github.com/maverickd650/rss2discord-operator/issues/267)) ([100abbb](https://github.com/maverickd650/rss2discord-operator/commit/100abbbe2fbb3ba6e3064355274cf628c8ad4013))
+* **deps:** update module sigs.k8s.io/logtools (v0.10.1 → v0.11.0) ([#269](https://github.com/maverickd650/rss2discord-operator/issues/269)) ([8375eaf](https://github.com/maverickd650/rss2discord-operator/commit/8375eaf181ed81a0c680ed229a6b95c78b1978fd))
+
+
+### Bug Fixes
+
+* **go:** Update image golang (007a316 → 8201530) ([#265](https://github.com/maverickd650/rss2discord-operator/issues/265)) ([9f40563](https://github.com/maverickd650/rss2discord-operator/commit/9f405632bfb4f912f8c8218eb0c7efae5cdb024b))
+* **go:** Update image golang (e432b43 → 007a316) ([#263](https://github.com/maverickd650/rss2discord-operator/issues/263)) ([35966b1](https://github.com/maverickd650/rss2discord-operator/commit/35966b1502aeb0d68e37a359b8b8033464db7327))
+
 ## [0.12.2](https://github.com/maverickd650/rss2discord-operator/compare/v0.12.1...v0.12.2) (2026-10-10)
 
 
