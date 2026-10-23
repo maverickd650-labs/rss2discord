@@ -18,7 +18,7 @@ kind = "0.33.0"
 kubectl = "1.37.1"
 cosign = "3.1.3"
 kubebuilder = "4.16.0"
-promtool = "3.15.0" # ships inside the prometheus/prometheus release; resolved via mise's registry (aqua backend)
+promtool = "3.15.1" # ships inside the prometheus/prometheus release; resolved via mise's registry (aqua backend)
 "github:go-gremlins/gremlins" = "0.6.0" # mutation testing, T12/issue 106; no mise registry short name, so pinned via the github backend directly (ubi is deprecated)
 
 [env]
