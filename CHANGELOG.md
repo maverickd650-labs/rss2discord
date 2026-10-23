@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.1](https://github.com/maverickd650/rss2discord-operator/compare/v0.13.0...v0.13.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **container:** update image gcr.io/distroless/static (5167571 → d620678) ([#277](https://github.com/maverickd650/rss2discord-operator/issues/277)) ([fc766ff](https://github.com/maverickd650/rss2discord-operator/commit/fc766ff1c2999b02ddd846cee95ead2f3a217c03))
+* **container:** update image gcr.io/distroless/static (e2e927e → 5167571) ([#272](https://github.com/maverickd650/rss2discord-operator/issues/272)) ([fdd352b](https://github.com/maverickd650/rss2discord-operator/commit/fdd352b375c5a55aaf8ed93c15bdd72051df6789))
+* **deps:** update dependency promtool (3.15.0 → 3.15.1) ([#279](https://github.com/maverickd650/rss2discord-operator/issues/279)) ([9776cbc](https://github.com/maverickd650/rss2discord-operator/commit/9776cbc2bf4b9e0bcfad6d004f9dfd8074c4bd99))
+* **go:** Update Go toolchain ([#273](https://github.com/maverickd650/rss2discord-operator/issues/273)) ([a4c880a](https://github.com/maverickd650/rss2discord-operator/commit/a4c880aac104879779d5a18219592ed682e86210))
+* **go:** Update image golang (9578611 → f241642) ([#276](https://github.com/maverickd650/rss2discord-operator/issues/276)) ([53b7152](https://github.com/maverickd650/rss2discord-operator/commit/53b7152906b798f62f4925b18d9d12f58eac3cb4))
+* **go:** Update image golang (f241642 → f20d83a) ([#278](https://github.com/maverickd650/rss2discord-operator/issues/278)) ([74c6c67](https://github.com/maverickd650/rss2discord-operator/commit/74c6c678a351e842501fa5f7a1e1eff1acb6ec0d))
+
 ## [0.13.0](https://github.com/maverickd650/rss2discord-operator/compare/v0.12.2...v0.13.0) (2026-10-17)
 
 
