@@ -305,6 +305,9 @@ func (r *FeedGroupReconciler) processFeed(
 		return fs.RetryCount < maxRetries, 0
 	}
 
+	wasInitialized := fs.Initialized
+	fs.Initialized = true
+
 	// Persisting the new validators is deferred until the end of this
 	// function (and skipped entirely if anything below needs a retry): if a
 	// send fails, storing the new ETag now would make the next reconcile's
@@ -420,9 +423,11 @@ func (r *FeedGroupReconciler) processFeed(
 		if feedGroup.Spec.CatchUpLimit != nil {
 			catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
 		}
-		if catchUpLimit == 0 && lastSeenID == "" && len(entries) > 0 {
-			// catchUpLimit: 0 on a true first sync (no watermark at all)
+		if catchUpLimit == 0 && !wasInitialized && lastSeenID == "" {
+			// catchUpLimit: 0 on a true first sync (not yet initialized)
 			// means "don't post the backlog": start from the newest entry.
+			// An empty first fetch also initializes the feed, so entries
+			// published afterwards must still be delivered.
 			// A watermark that merely scrolled out of the feed's window is
 			// not a first sync, so it still falls through to limitCatchUp's
 			// default cap rather than silently dropping new entries.

@@ -64,13 +64,12 @@ spec:
                 default: 5
                 description: |-
                   catchUpLimit caps how many backlog entries are sent to Discord the
-                  first time a feed is reconciled (i.e. before it has a recorded
-                  LastSeenEntry). Without this, adding a feed with a long history
-                  floods the webhook with every existing entry at once. Entries beyond
-                  the limit are treated as already seen and are not sent. Set to 0 to
-                  send no backlog at all: the first sync records the feed's newest entry
-                  and only entries published afterwards are delivered. Omitting the
-                  field uses the default of 5.
+                  first time a feed is successfully fetched. Without this, adding a feed
+                  with a long history floods the webhook with every existing entry at
+                  once. Entries beyond the limit are treated as already seen and are not
+                  sent. Set to 0 to send no backlog at all: the first sync records the
+                  feed's newest entry and only entries published afterwards are delivered.
+                  Omitting the field uses the default of 5.
                 format: int32
                 maximum: 100
                 minimum: 0
@@ -514,6 +513,11 @@ spec:
                       maxLength: 256
                       minLength: 1
                       type: string
+                    initialized:
+                      description: |-
+                        initialized records whether this feed has been successfully fetched,
+                        even if it had no entries. Later entries are not an initial backlog.
+                      type: boolean
                     lastChecked:
                       description: |-
                         lastChecked is the last time this feed was successfully checked

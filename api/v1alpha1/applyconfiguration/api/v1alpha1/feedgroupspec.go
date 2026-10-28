@@ -66,13 +66,12 @@ type FeedGroupSpecApplyConfiguration struct {
 	// sharing a URL would silently clobber each other's status.
 	Feeds []FeedSpecApplyConfiguration `json:"feeds,omitempty"`
 	// catchUpLimit caps how many backlog entries are sent to Discord the
-	// first time a feed is reconciled (i.e. before it has a recorded
-	// LastSeenEntry). Without this, adding a feed with a long history
-	// floods the webhook with every existing entry at once. Entries beyond
-	// the limit are treated as already seen and are not sent. Set to 0 to
-	// send no backlog at all: the first sync records the feed's newest entry
-	// and only entries published afterwards are delivered. Omitting the
-	// field uses the default of 5.
+	// first time a feed is successfully fetched. Without this, adding a feed
+	// with a long history floods the webhook with every existing entry at
+	// once. Entries beyond the limit are treated as already seen and are not
+	// sent. Set to 0 to send no backlog at all: the first sync records the
+	// feed's newest entry and only entries published afterwards are delivered.
+	// Omitting the field uses the default of 5.
 	CatchUpLimit *int32 `json:"catchUpLimit,omitempty"`
 }
 

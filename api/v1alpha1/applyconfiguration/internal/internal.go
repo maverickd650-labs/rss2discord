@@ -186,6 +186,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: etag
       type:
         scalar: string
+    - name: initialized
+      type:
+        scalar: boolean
     - name: lastChecked
       type:
         scalar: string

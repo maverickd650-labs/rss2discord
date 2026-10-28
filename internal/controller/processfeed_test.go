@@ -775,7 +775,7 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 	}
 }
 
-// With catchUpLimit 0, only a true first sync (no watermark) skips the
+// With catchUpLimit 0, only a true first sync skips the
 // backlog. A watermark that scrolled out of the feed's window falls back to
 // the default cap instead, so genuinely new entries aren't silently dropped.
 func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
@@ -812,4 +812,40 @@ func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 			t.Fatalf("sent=%d, want 1", sent)
 		}
 	})
+}
+
+func TestProcessFeed_Initialization(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		result      rss.FetchResult
+		fetchErr    error
+		initialized bool
+		wantSent    int
+	}{
+		{name: "empty fetch", initialized: true, wantSent: 1},
+		{name: "not modified", result: rss.FetchResult{NotModified: true}, initialized: true, wantSent: 1},
+		{name: "fetch failure", fetchErr: errors.New("fetch failed"), wantSent: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, name := "initialization-unit", tc.name
+			defer deleteFeedGroupMetrics(ns, name)
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+
+			fg, feed := newMetricsFeedGroup(ns, name, "")
+			fg.Spec.CatchUpLimit = new(int32(0))
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			r := &FeedGroupReconciler{}
+			r.processFeed(t.Context(), fg, feed, tc.result, tc.fetchErr, client, testReconcileTime)
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			if fs.Initialized != tc.initialized || fs.LastSeenEntry != "" {
+				t.Fatalf("initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+			}
+
+			r.processFeed(t.Context(), fg, feed, oneEntryFetch(), nil, client, testReconcileTime)
+			if got := discordServer.MessageCount(); got != tc.wantSent {
+				t.Fatalf("sent=%d, want %d", got, tc.wantSent)
+			}
+		})
+	}
 }

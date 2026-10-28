@@ -795,6 +795,39 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(discordServer.Bodies()[0]).To(ContainSubstring("Fresh Article"))
 		})
 
+		It("should persist an empty first sync and deliver entries published later", func() {
+			const feedGroupName = "test-feedgroup-empty-first-sync"
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-empty-first-sync", createRSSFeed(), withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
+				fg.Spec.CatchUpLimit = new(int32(0))
+			})
+
+			_, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			fg := &rss2discordv1alpha1.FeedGroup{}
+			key := types.NamespacedName{Name: feedGroupName, Namespace: namespace}
+			Expect(k8sClient.Get(ctx, key, fg)).To(Succeed())
+			fs := feedStatusFor(fg, rssServer.URL())
+			Expect(fs.Initialized).To(BeTrue(), "initialization must survive a status write and read")
+			Expect(fs.LastSeenEntry).To(BeEmpty())
+			Expect(discordServer.MessageCount()).To(BeZero())
+
+			rssServer.SetFeedContent(createRSSFeed(testEntry{
+				title:       "First Article",
+				description: "Published after initialization",
+				link:        "https://example.com/first",
+				pubDate:     time.Now().Format(time.RFC1123Z),
+				guid:        "first-after-empty",
+			}))
+			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(discordServer.MessageCount()).To(Equal(1))
+			Expect(discordServer.Bodies()[0]).To(ContainSubstring("First Article"))
+
+			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(discordServer.MessageCount()).To(Equal(1), "the entry must not be delivered twice")
+		})
+
 		It("should deliver newest entries and advance the watermark for feeds without publish dates", func() {
 			const feedGroupName = "test-feedgroup-nodate"
 
