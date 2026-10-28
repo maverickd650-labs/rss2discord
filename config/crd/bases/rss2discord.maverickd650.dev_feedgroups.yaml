@@ -135,6 +135,15 @@ spec:
                     maxLength: 2048
                     minLength: 1
                     type: string
+                  imageStyle:
+                    description: |-
+                      imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+                      image beside the description, the default) or "image" (a large image
+                      below the description).
+                    enum:
+                    - thumbnail
+                    - image
+                    type: string
                 type: object
               feeds:
                 description: |-
@@ -185,6 +194,15 @@ spec:
                           description: footerText is shown in the embed's footer.
                           maxLength: 2048
                           minLength: 1
+                          type: string
+                        imageStyle:
+                          description: |-
+                            imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+                            image beside the description, the default) or "image" (a large image
+                            below the description).
+                          enum:
+                          - thumbnail
+                          - image
                           type: string
                       type: object
                     filter:

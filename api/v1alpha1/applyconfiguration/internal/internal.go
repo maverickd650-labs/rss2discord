@@ -57,6 +57,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: footerText
       type:
         scalar: string
+    - name: imageStyle
+      type:
+        scalar: string
 - name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroup
   map:
     fields:

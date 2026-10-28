@@ -2239,6 +2239,9 @@ var _ = Describe("FeedGroup Controller", func() {
 			Entry("sub-10s retryInterval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.RetryInterval = "1s" }, "retryInterval must be at least 10s"),
 			Entry("microsecond-sign unit", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = "100\u00b5s" }, "interval"),
 			Entry("non-http avatarURL", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.AvatarURL = "ftp://example.com/a.png" }, "avatarURL"),
+			Entry("unknown embed imageStyle", func(fg *rss2discordv1alpha1.FeedGroup) {
+				fg.Spec.Embed = &rss2discordv1alpha1.EmbedSpec{Enabled: true, ImageStyle: "banner"}
+			}, "imageStyle"),
 			Entry("non-numeric forumThreadID", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Feeds[0].ForumThreadID = "abc" }, "forumThreadID"),
 		)
 

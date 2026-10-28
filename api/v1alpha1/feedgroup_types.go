@@ -42,6 +42,11 @@ type Filter struct {
 	Keywords []string `json:"keywords,omitempty"`
 }
 
+// EmbedImageStyleImage is the EmbedSpec.ImageStyle value that shows an
+// entry's image large, below the description. Any other value (including
+// unset) shows it as a small thumbnail.
+const EmbedImageStyleImage = "image"
+
 // EmbedSpec configures Discord's native embed rendering (the colored
 // "bubble" with title, description, thumbnail, author and footer) instead
 // of a plain text message.
@@ -68,6 +73,13 @@ type EmbedSpec struct {
 	// +kubebuilder:validation:MaxLength=4096
 	// +kubebuilder:validation:MinLength=1
 	DescriptionFormat string `json:"descriptionFormat,omitempty"`
+
+	// imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+	// image beside the description, the default) or "image" (a large image
+	// below the description).
+	// +kubebuilder:validation:Enum=thumbnail;image
+	// +optional
+	ImageStyle string `json:"imageStyle,omitempty"`
 
 	// authorName is shown on the embed's author line.
 	// +optional

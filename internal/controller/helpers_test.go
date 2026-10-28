@@ -762,6 +762,37 @@ func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
 	}
 }
 
+// TestBuildDiscordMessage_EmbedImageStyle asserts the entry image goes to the
+// small thumbnail by default and to the large image slot for imageStyle
+// "image", and that non-http(s) image URLs are dropped either way.
+func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
+	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cases := []struct {
+		name, style, image   string
+		wantThumb, wantLarge string
+	}{
+		{name: "default is thumbnail", image: "https://x/a.png", wantThumb: "https://x/a.png"},
+		{name: "explicit thumbnail", style: "thumbnail", image: "https://x/a.png", wantThumb: "https://x/a.png"},
+		{name: "image style", style: "image", image: "https://x/a.png", wantLarge: "https://x/a.png"},
+		{name: "unsafe scheme dropped", style: "image", image: "javascript:alert(1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &v1alpha1.EmbedSpec{Enabled: true, ImageStyle: tc.style}
+			msg, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, spec, nil, descriptionTmpl, nil, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T", Image: tc.image})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if msg.Embed.ThumbnailURL != tc.wantThumb || msg.Embed.ImageURL != tc.wantLarge {
+				t.Fatalf("thumbnail=%q image=%q, want %q / %q", msg.Embed.ThumbnailURL, msg.Embed.ImageURL, tc.wantThumb, tc.wantLarge)
+			}
+		})
+	}
+}
+
 func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	tmpl, err := compileTemplate("test", "{{.Title}}", "")
 	if err != nil {

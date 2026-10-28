@@ -50,7 +50,29 @@ func NewClientWithLimiter(webhookURL string, httpClient *http.Client, limiter *R
 	if httpClient == nil {
 		httpClient = NewHTTPClient()
 	}
-	return &Client{webhookURL: strings.TrimSpace(webhookURL), httpClient: httpClient, rateLimiter: limiter}
+	return &Client{webhookURL: normalizeWebhookURL(strings.TrimSpace(webhookURL)), httpClient: httpClient, rateLimiter: limiter}
+}
+
+// normalizeWebhookURL rewrites the host of a webhook URL copied from Discord's
+// PTB or Canary client (ptb.discord.com, canary.discord.com) to discord.com,
+// the same webhook endpoint. It deliberately runs before, and independently
+// of, the AllowedWebhookHosts check: the allowlist is not broadened, so the
+// request can still only ever go to an already-allowed host. Only an exact,
+// port-less match is rewritten; lookalikes (evil.ptb.discord.com,
+// ptb.discord.com.evil.com) and non-https URLs pass through unchanged and are
+// then rejected by SendMessage. Normalizing here also makes a PTB and a
+// regular URL for the same webhook share one rate-limit key.
+func normalizeWebhookURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Port() != "" {
+		return raw
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "ptb.discord.com", "canary.discord.com":
+		u.Host = "discord.com"
+		return u.String()
+	}
+	return raw
 }
 
 // NewHTTPClient returns the default HTTP client used for webhook delivery.
@@ -98,8 +120,11 @@ type Embed struct {
 	Color        int
 	Timestamp    string
 	ThumbnailURL string
-	AuthorName   string
-	FooterText   string
+	// ImageURL is the large image shown below the embed's description, as
+	// opposed to the small ThumbnailURL beside it.
+	ImageURL   string
+	AuthorName string
+	FooterText string
 }
 
 // Message is a single Discord webhook delivery. Content is sent as a plain
@@ -141,6 +166,7 @@ type discordEmbed struct {
 	Color       int                 `json:"color,omitempty"`
 	Timestamp   string              `json:"timestamp,omitempty"`
 	Thumbnail   *discordEmbedMedia  `json:"thumbnail,omitempty"`
+	Image       *discordEmbedMedia  `json:"image,omitempty"`
 	Author      *discordEmbedAuthor `json:"author,omitempty"`
 	Footer      *discordEmbedFooter `json:"footer,omitempty"`
 }
@@ -368,6 +394,9 @@ func embedToPayload(e Embed) discordEmbed {
 	}
 	if e.ThumbnailURL != "" {
 		payload.Thumbnail = &discordEmbedMedia{URL: e.ThumbnailURL}
+	}
+	if e.ImageURL != "" {
+		payload.Image = &discordEmbedMedia{URL: e.ImageURL}
 	}
 	if e.AuthorName != "" {
 		payload.Author = &discordEmbedAuthor{Name: e.AuthorName}

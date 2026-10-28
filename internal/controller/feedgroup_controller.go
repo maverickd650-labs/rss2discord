@@ -1642,14 +1642,18 @@ func buildDiscordMessage(
 		title, titleOverflow := truncateMessage(stripHTML(entry.Title), maxEmbedTitleLength)
 		overflow += descOverflow + titleOverflow
 		msg.Embed = &discord.Embed{
-			Title:        title,
-			Description:  description,
-			URL:          httpURLOrEmpty(entry.Link),
-			Color:        parseHexColor(embedSpec.Color),
-			Timestamp:    formatPublished(entry.Published),
-			ThumbnailURL: httpURLOrEmpty(entry.Image),
-			AuthorName:   embedSpec.AuthorName,
-			FooterText:   embedSpec.FooterText,
+			Title:       title,
+			Description: description,
+			URL:         httpURLOrEmpty(entry.Link),
+			Color:       parseHexColor(embedSpec.Color),
+			Timestamp:   formatPublished(entry.Published),
+			AuthorName:  embedSpec.AuthorName,
+			FooterText:  embedSpec.FooterText,
+		}
+		if image := httpURLOrEmpty(entry.Image); embedSpec.ImageStyle == v1alpha1.EmbedImageStyleImage {
+			msg.Embed.ImageURL = image
+		} else {
+			msg.Embed.ThumbnailURL = image
 		}
 		// SendMessage clamps title+description+footer+author to Discord's
 		// combined 6000-char embed budget, trimming Description further
