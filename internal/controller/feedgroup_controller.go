@@ -1431,6 +1431,17 @@ const (
 	maxForumThreadNameLength  = 100
 )
 
+// formatPublished renders t as RFC 3339 UTC, or "" for the zero time. Feeds
+// that omit dates leave Entry.Published zero; formatting that verbatim would
+// show "0001-01-01T00:00:00Z" in templates and a "1/1/0001" embed footer
+// (the embed Timestamp is omitempty, so "" drops it from the payload).
+func formatPublished(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 // renderTemplate executes tmpl against entry and clamps the result to max
 // runes. The second return value is how many runes were trimmed off (0 if
 // the rendered text already fit), as reported by truncateMessage.
@@ -1446,7 +1457,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 		Title:       stripHTML(entry.Title),
 		Description: stripHTML(entry.Description),
 		Link:        entry.Link,
-		Published:   entry.Published.UTC().Format(time.RFC3339),
+		Published:   formatPublished(entry.Published),
 		Author:      entry.Author,
 		Categories:  strings.Join(entry.Categories, ", "),
 	}
@@ -1491,7 +1502,7 @@ func buildDiscordMessage(
 			Description:  description,
 			URL:          httpURLOrEmpty(entry.Link),
 			Color:        parseHexColor(embedSpec.Color),
-			Timestamp:    entry.Published.UTC().Format(time.RFC3339),
+			Timestamp:    formatPublished(entry.Published),
 			ThumbnailURL: httpURLOrEmpty(entry.Image),
 			AuthorName:   embedSpec.AuthorName,
 			FooterText:   embedSpec.FooterText,
@@ -1508,6 +1519,13 @@ func buildDiscordMessage(
 		if err != nil {
 			return discord.Message{}, err
 		}
+		// Discord rejects a blank message, and a send failure holds the feed
+		// on this entry indefinitely. Failing here routes it through the
+		// render-error path instead, which skips the entry once retries are
+		// exhausted (e.g. "{{.Published}}" for an entry with no date).
+		if strings.TrimSpace(content) == "" {
+			return discord.Message{}, errors.New("message template rendered empty content for this entry")
+		}
 		overflow += contentOverflow
 		msg.Content = content
 	}
@@ -1518,6 +1536,11 @@ func buildDiscordMessage(
 		threadName, threadOverflow, err := renderTemplate(threadNameTmpl, entry, maxForumThreadNameLength)
 		if err != nil {
 			return discord.Message{}, err
+		}
+		// Without a thread_name a forum webhook rejects the post; fail as a
+		// render error for the same reason as blank content above.
+		if strings.TrimSpace(threadName) == "" {
+			return discord.Message{}, errors.New("forum thread name template rendered empty for this entry")
 		}
 		overflow += threadOverflow
 		msg.ThreadName = threadName

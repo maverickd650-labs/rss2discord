@@ -558,6 +558,73 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 	})
 }
 
+// TestRenderTemplate_Published asserts a date-less entry (zero Published)
+// renders an empty {{.Published}} rather than "0001-01-01T00:00:00Z", while a
+// real date is still formatted as RFC 3339 UTC.
+func TestRenderTemplate_Published(t *testing.T) {
+	tmpl, err := compileTemplate("test", "[{{.Published}}]", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Run("zero published renders empty", func(t *testing.T) {
+		got, _, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "[]"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("non-zero published unchanged", func(t *testing.T) {
+		entry := rss.Entry{Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
+		got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "[2024-05-06T07:08:09Z]"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestBuildDiscordMessage_EmbedTimestamp asserts an entry without a publish
+// date leaves the embed timestamp empty (discord.Embed omits it from the
+// payload) instead of sending year 0001, and that real dates are unchanged.
+func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
+	feedGroup := &v1alpha1.FeedGroup{}
+	feed := &v1alpha1.FeedSpec{}
+	embedSpec := &v1alpha1.EmbedSpec{Enabled: true}
+	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		published time.Time
+		want      string
+	}{
+		{name: "zero published", want: ""},
+		{name: "non-zero published", published: time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600)), want: "2024-05-06T07:08:09Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{Title: "T", Published: tc.published})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if msg.Embed == nil {
+				t.Fatal("expected an embed to be set")
+			}
+			if msg.Embed.Timestamp != tc.want {
+				t.Fatalf("msg.Embed.Timestamp = %q, want %q", msg.Embed.Timestamp, tc.want)
+			}
+		})
+	}
+}
+
 func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	tmpl, err := compileTemplate("test", "{{.Title}}", "")
 	if err != nil {
@@ -635,6 +702,48 @@ func TestBuildDiscordMessage_ForumThreadNameRenderError(t *testing.T) {
 	if _, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{}); err == nil {
 		t.Fatal("expected an error from a forum thread name template that fails at execution")
 	}
+}
+
+// TestBuildDiscordMessage_EmptyRenderIsError asserts a template that renders
+// to blank content or a blank forum thread name (here: only {{.Published}},
+// for an entry with no date) is reported as a render error, so the
+// render-error path can skip the entry, rather than producing a message
+// Discord would reject on every retry.
+func TestBuildDiscordMessage_EmptyRenderIsError(t *testing.T) {
+	feedGroup := &v1alpha1.FeedGroup{}
+	publishedOnly, err := compileTemplate("content", " {{.Published}} ", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	title, err := compileTemplate("content", "{{.Title}}", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry := rss.Entry{Title: "T"}
+
+	t.Run("blank content", func(t *testing.T) {
+		if _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, entry); err == nil {
+			t.Fatal("expected an error for content that renders blank")
+		}
+	})
+
+	t.Run("blank forum thread name", func(t *testing.T) {
+		feed := &v1alpha1.FeedSpec{ForumThreadName: "{{.Published}}"}
+		if _, err := buildDiscordMessage(feedGroup, nil, title, nil, publishedOnly, feed, entry); err == nil {
+			t.Fatal("expected an error for a forum thread name that renders blank")
+		}
+	})
+
+	t.Run("dated entry still renders", func(t *testing.T) {
+		dated := rss.Entry{Title: "T", Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
+		msg, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, dated)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "2024-05-06T07:08:09Z"; msg.Content != want {
+			t.Fatalf("msg.Content = %q, want %q", msg.Content, want)
+		}
+	})
 }
 
 // TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName asserts
