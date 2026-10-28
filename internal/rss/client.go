@@ -83,6 +83,19 @@ func (e *UnrecognizedFormatError) Error() string {
 	return fmt.Sprintf("unrecognized feed format: root element <%s>", e.Root)
 }
 
+// BlockedAddressError is returned (wrapped by net/http as a *url.Error /
+// *net.OpError) when the SSRF guard refuses to connect to a non-public
+// address. It is a typed error so callers can tell this permanent feed
+// misconfiguration -- a URL that resolves to a private/loopback/metadata
+// address -- from a transient network failure without parsing Error()'s text.
+type BlockedAddressError struct {
+	Addr netip.Addr
+}
+
+func (e *BlockedAddressError) Error() string {
+	return fmt.Sprintf("refusing to connect to non-public address %s", e.Addr)
+}
+
 // CacheValidators carries the conditional-GET validators returned by a
 // previous fetch of a feed, so a later fetch can ask the server "has this
 // changed since I last asked" instead of always re-downloading and
@@ -180,7 +193,7 @@ func guardDialControl(_, address string, _ syscall.RawConn) error {
 	}
 	addr := ap.Addr().Unmap()
 	if !isPublicIP(addr) {
-		return fmt.Errorf("refusing to connect to non-public address %s", addr)
+		return &BlockedAddressError{Addr: addr}
 	}
 	return nil
 }

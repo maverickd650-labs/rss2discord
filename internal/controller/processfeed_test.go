@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,7 @@ import (
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 )
@@ -378,6 +380,39 @@ func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 	wantMax := after.Add(10 * time.Minute).Add(time.Second)
 	if until.Before(wantMin) || until.After(wantMax) {
 		t.Errorf("BackoffUntil %v outside expected window [%v, %v]", until, wantMin, wantMax)
+	}
+}
+
+// TestProcessFeed_BlockedAddressSetsPermanentBackoff asserts a feed whose URL
+// the SSRF guard refuses (a permanent misconfiguration) is classified
+// BlockedAddress and put into exponential backoff instead of retrying at the
+// flat RetryInterval forever.
+func TestProcessFeed_BlockedAddressSetsPermanentBackoff(t *testing.T) {
+	ctx := t.Context()
+	ns, name := "processfeed-blocked-addr", "fg-blocked-addr"
+	defer deleteFeedGroupMetrics(ns, name)
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.RetryInterval = "5m"
+	blockedErr := doError(&rss.BlockedAddressError{Addr: netip.MustParseAddr("169.254.169.254")}, true)
+
+	wantRetry, rateLimitRetryAfter := (&FeedGroupReconciler{}).processFeed(
+		ctx, fg, feed, rss.FetchResult{}, blockedErr, nil, testReconcileTime)
+
+	if wantRetry {
+		t.Fatal("expected no group-level retry for a permanent fetch failure")
+	}
+	if rateLimitRetryAfter != 0 {
+		t.Fatalf("expected no rate-limit backoff, got %v", rateLimitRetryAfter)
+	}
+
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.BackoffUntil == "" {
+		t.Fatal("expected BackoffUntil to be set for a blocked address")
+	}
+	cond := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeReachable)
+	if cond == nil || cond.Reason != reasonBlockedAddress {
+		t.Fatalf("Reachable condition = %+v, want reason %q", cond, reasonBlockedAddress)
 	}
 }
 

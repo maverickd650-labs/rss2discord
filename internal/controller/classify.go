@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/xml"
 	"errors"
 	"net"
@@ -64,6 +66,8 @@ const (
 	reasonParseError         = "ParseError"
 	reasonUnrecognizedFormat = "UnrecognizedFormat"
 	reasonWebhookInvalid     = "WebhookInvalid"
+	reasonBlockedAddress     = "BlockedAddress"
+	reasonTLSError           = "TLSError"
 	reasonOther              = "Other"
 
 	// reasonConfigError and reasonRenderError are FeedConditionTypeDelivered
@@ -86,6 +90,8 @@ const (
 	metricParseError         = "parse_error"
 	metricUnrecognizedFormat = "unrecognized_format"
 	metricWebhookInvalid     = "webhook_invalid"
+	metricBlockedAddress     = "blocked_address"
+	metricTLSError           = "tls_error"
 	metricOther              = "other"
 )
 
@@ -100,6 +106,8 @@ var (
 	classParseError         = failureClass{metricParseError, reasonParseError, true}
 	classUnrecognizedFormat = failureClass{metricUnrecognizedFormat, reasonUnrecognizedFormat, true}
 	classWebhookInvalid     = failureClass{metricWebhookInvalid, reasonWebhookInvalid, true}
+	classBlockedAddress     = failureClass{metricBlockedAddress, reasonBlockedAddress, true}
+	classTLSError           = failureClass{metricTLSError, reasonTLSError, true}
 	classOther              = failureClass{metricOther, reasonOther, false}
 )
 
@@ -110,6 +118,17 @@ var (
 func classifyFetchError(err error) failureClass {
 	if statusErr, ok := errors.AsType[*rss.HTTPStatusError](err); ok {
 		return classifyHTTPStatus(statusErr.StatusCode)
+	}
+
+	// Before classifyNetworkError: the SSRF guard's refusal and certificate
+	// failures reach the caller wrapped in *url.Error / *net.OpError, which
+	// are net.Errors, so they must be recognised by their typed cause first.
+	if _, ok := errors.AsType[*rss.BlockedAddressError](err); ok {
+		return classBlockedAddress
+	}
+
+	if isTLSCertificateError(err) {
+		return classTLSError
 	}
 
 	if class, ok := classifyNetworkError(err); ok {
@@ -146,6 +165,16 @@ func classifySendError(err error) failureClass {
 		return classifyHTTPStatus(statusErr.StatusCode)
 	}
 
+	// Discord's certificate is publicly trusted, so a verification failure
+	// here means something between the operator and Discord (an egress
+	// TLS-intercepting proxy, a missing corporate CA) is substituting its
+	// own. That doesn't clear on a retry, only when the cluster's egress or
+	// trust store is fixed, so treat it as permanent (exponential backoff
+	// capped at 6h) rather than hammering Discord at full cadence.
+	if isTLSCertificateError(err) {
+		return classTLSError
+	}
+
 	if class, ok := classifyNetworkError(err); ok {
 		return class
 	}
@@ -170,6 +199,29 @@ func classifyHTTPStatus(statusCode int) failureClass {
 	default:
 		return classOther
 	}
+}
+
+// isTLSCertificateError reports whether err is a server-certificate
+// verification failure (untrusted issuer, wrong hostname, expired/invalid
+// chain). crypto/tls wraps the x509 error in *tls.CertificateVerificationError
+// on a client handshake, but the x509 types are checked too so a bare one
+// surfaced through another path is still recognised. Other TLS failures
+// (handshake timeouts, resets) are deliberately not matched: those are
+// transient network faults.
+func isTLSCertificateError(err error) bool {
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[x509.HostnameError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[x509.CertificateInvalidError](err); ok {
+		return true
+	}
+	return false
 }
 
 // classifyNetworkError detects the lower-level transport failures (DNS,

@@ -17,10 +17,14 @@ limitations under the License.
 package controller
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
+	"net/url"
 	"testing"
 	"time"
 
@@ -31,6 +35,17 @@ import (
 // http404Status is the HTTP status string for a 404 Not Found response,
 // shared across classify_test.go and processfeed_test.go to satisfy goconst.
 const http404Status = "404 Not Found"
+
+// doError wraps err the way http.Client.Do does for a failed request: a
+// *url.Error around the transport error. dialErr additionally wraps it in the
+// *net.OpError a dial failure (such as the SSRF guard's Control refusal)
+// surfaces as.
+func doError(err error, dialErr bool) error {
+	if dialErr {
+		err = &net.OpError{Op: "dial", Net: "tcp", Err: err}
+	}
+	return &url.Error{Op: "Get", URL: "https://feed.example/rss", Err: err}
+}
 
 // timeoutError is a minimal net.Error whose Timeout() reports true, standing
 // in for the *url.Error a real client.Do timeout would surface (which itself
@@ -57,6 +72,11 @@ func TestClassifyFetchError(t *testing.T) {
 		{reasonDNSFailure, fmt.Errorf("fetch: %w", &net.DNSError{Err: "no such host", Name: "example.invalid"}), classDNSFailure},
 		{reasonParseError, fmt.Errorf("parse: %w", &xml.SyntaxError{Msg: "unexpected EOF"}), classParseError},
 		{reasonUnrecognizedFormat, fmt.Errorf("parse: %w", &rss.UnrecognizedFormatError{Root: "rdf"}), classUnrecognizedFormat},
+		{reasonBlockedAddress, doError(&rss.BlockedAddressError{Addr: netip.MustParseAddr("10.0.0.1")}, true), classBlockedAddress},
+		{"TLSCertificateVerification", doError(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, false), classTLSError},
+		{"TLSUnknownAuthority", doError(x509.UnknownAuthorityError{}, false), classTLSError},
+		{"TLSHostname", doError(x509.HostnameError{Host: "feed.example"}, false), classTLSError},
+		{"TLSCertificateInvalid", doError(x509.CertificateInvalidError{Reason: x509.Expired}, false), classTLSError},
 		{reasonOther, errors.New("boom"), classOther},
 	}
 
@@ -80,6 +100,8 @@ func TestClassifySendError(t *testing.T) {
 		{reasonHTTP410, &discord.HTTPStatusError{StatusCode: 410, Status: "410 Gone"}, classGone},
 		{reasonServerError, &discord.HTTPStatusError{StatusCode: 500, Status: "500 Internal Server Error"}, classServerError},
 		{reasonTimeout, fmt.Errorf("send: %w", timeoutError{}), classTimeout},
+		{"TLSCertificateVerification", doError(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, false), classTLSError},
+		{"TLSHostname", doError(x509.HostnameError{Host: "discord.com"}, false), classTLSError},
 		{reasonOther, errors.New("boom"), classOther},
 	}
 
