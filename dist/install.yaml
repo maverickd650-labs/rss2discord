@@ -291,7 +291,9 @@ spec:
                   [Read more]({{.Link}})
                 description: |-
                   format is the default template for Discord messages.
-                  Supports placeholders: {{.Title}}, {{.Description}}, {{.Link}}, {{.Published}}, {{.Author}}, {{.Categories}}.
+                  Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
+                  {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
+                  functions truncate, default, lower, upper, trim, replace and discordTime.
                 maxLength: 4096
                 minLength: 1
                 type: string

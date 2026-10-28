@@ -26,7 +26,7 @@ A Kubernetes operator that watches RSS feeds and posts new entries to Discord vi
 
 ## Installing
 
-Requires a Kubernetes 1.26+ cluster and a Discord webhook URL.
+Requires a Kubernetes 1.29+ cluster and a Discord webhook URL. The CRD relies on CEL validation rules (`x-kubernetes-validations`: `lowerAscii()`, `exists_one`, `duration()`), which are GA and always enabled from 1.29; they were beta (on by default) from 1.25, but 1.29 is the oldest version this project targets. CI runs the end-to-end tests against Kubernetes 1.37.
 
 ### Helm
 
@@ -119,13 +119,14 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `discordWebhookSecretRef` | `SecretKeySelector` | required | Secret containing the Discord webhook URL |
-| `interval` | `string` | `30m` | How often to check feeds |
-| `retries` | `int` | `3` | Retries for failed operations |
-| `retryInterval` | `string` | `5m` | Delay between retries |
+| `interval` | `string` | `30m` | How often to check feeds. At least `1m`; Go duration syntax (`ns`, `us`, `ms`, `s`, `m`, `h`) |
+| `retries` | `int` | `3` | Retries for failed operations (0–100) |
+| `retryInterval` | `string` | `5m` | Delay between retries. At least `10s` |
 | `format` | `string` | see below | Discord message template (used when `embed` is not enabled) |
 | `embed` | `*Embed` | optional | Default embed config for all feeds in the group |
 | `username` | `string` | optional | Overrides the webhook's display name. Rejected at `kubectl apply` time (CEL validation) if it contains "clyde" or "discord", or is over 80 characters — Discord's own webhook API rejects these |
-| `avatarURL` | `string` | optional | Overrides the webhook's avatar |
+| `avatarURL` | `string` | optional | Overrides the webhook's avatar. Must start with `http://` or `https://` |
+| `catchUpLimit` | `int` | `5` | How many existing entries to post when a feed is first added (0–100). Set `0` to post none: the first sync records the newest entry and only later entries are delivered. Omitting the field keeps the default of `5` |
 | `feeds` | `[]Feed` | required | RSS feeds to monitor |
 
 ### Feed
@@ -137,7 +138,7 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | `format` | `string` | optional | Overrides the group's format for this feed |
 | `embed` | `*Embed` | optional | Overrides the group's embed config for this feed |
 | `forumThreadName` | `string` | optional | Template for a new forum post's title; set on FeedGroups whose webhook targets a forum channel |
-| `forumThreadID` | `string` | optional | Posts into an existing forum thread instead of creating a new one (takes precedence over `forumThreadName`) |
+| `forumThreadID` | `string` | optional | Posts into an existing forum thread instead of creating a new one (takes precedence over `forumThreadName`). Digits only (a Discord ID) |
 | `paused` | `bool` | `false` | Stop processing this feed without removing it |
 
 ### Filter
@@ -158,8 +159,9 @@ When `enabled`, a feed's messages are sent as a native Discord embed (the colore
 | `descriptionFormat` | `string` | `{{.Description}}` | Template for the embed description |
 | `authorName` | `string` | optional | Shown on the embed's author line |
 | `footerText` | `string` | optional | Shown in the embed's footer |
+| `imageStyle` | `string` | `thumbnail` | `thumbnail` shows the entry image small beside the description; `image` shows it large below |
 
-If the feed entry has a lead image (an RSS `<enclosure>` or Media RSS `<media:thumbnail>`/`<media:content>`, or an Atom `<link rel="enclosure">`), it's attached automatically as the embed's thumbnail.
+If the feed entry has a lead image (an RSS `<enclosure>` or Media RSS `<media:thumbnail>`/`<media:content>`, or an Atom `<link rel="enclosure">`), it's attached automatically as the embed's thumbnail (or as the large image with `imageStyle: image`).
 
 ### Message template
 
@@ -193,6 +195,24 @@ Available fields:
 ```
 
 For example, `[{{.FeedTitle}}] **{{.Title}}**` prefixes each message with the feed it came from.
+
+### Template functions
+
+Templates can also call a few helpers, written pipeline-style:
+
+| Function | Description |
+|---|---|
+| `truncate N` | Cut to at most N characters, ending in `…` when it cuts: `{{.Description \| truncate 200}}` |
+| `default "x"` | Use `x` when the value is blank: `{{.Author \| default "unknown"}}` |
+| `lower`, `upper`, `trim` | Case conversion and whitespace trimming |
+| `replace "old" "new"` | Replace every occurrence: `{{.Title \| replace "[PR] " ""}}` |
+| `discordTime "R"` | Discord dynamic timestamp from `.PublishedUnix`; styles are `t T d D f F R`. Renders empty for an undated entry: `{{.PublishedUnix \| discordTime "R"}}` |
+
+An unknown function is a config error; an invalid `discordTime` style fails that entry's render.
+
+### Webhook URLs
+
+Webhook URLs copied from Discord's PTB or Canary clients (`ptb.discord.com`, `canary.discord.com`) are accepted and sent to `discord.com`; only Discord's own hosts are ever contacted.
 
 ### Forum channels
 

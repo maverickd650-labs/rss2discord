@@ -35,7 +35,9 @@ type FeedGroupSpecApplyConfiguration struct {
 	// hammering every feed host on each pass.
 	Interval *string `json:"interval,omitempty"`
 	// format is the default template for Discord messages.
-	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Link}}, {{.Published}}, {{.Author}}, {{.Categories}}.
+	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
+	// {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
+	// functions truncate, default, lower, upper, trim, replace and discordTime.
 	Format *string `json:"format,omitempty"`
 	// embed configures Discord embed rendering, used as the default for all
 	// feeds in this group unless a feed sets its own Embed.

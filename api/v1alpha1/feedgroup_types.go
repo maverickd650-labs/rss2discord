@@ -162,7 +162,9 @@ type FeedGroupSpec struct {
 	Interval string `json:"interval,omitempty"`
 
 	// format is the default template for Discord messages.
-	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Link}}, {{.Published}}, {{.Author}}, {{.Categories}}.
+	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
+	// {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
+	// functions truncate, default, lower, upper, trim, replace and discordTime.
 	// +default="**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
 	// +optional
 	// +kubebuilder:validation:MaxLength=4096
