@@ -743,6 +743,56 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(discordServer.MessageCount()).To(Equal(3))
 		})
 
+		It("should skip the backlog and deliver only newer entries when catchUpLimit is explicitly 0", func() {
+			const feedGroupName = "test-feedgroup-skip-backlog"
+
+			entries := make([]testEntry, 0, 10)
+			for i := 1; i <= 10; i++ {
+				entries = append(entries, testEntry{
+					title:       fmt.Sprintf("Backlog Article %d", i),
+					description: "An old article",
+					link:        fmt.Sprintf("https://example.com/skip%d", i),
+					pubDate:     time.Now().Add(-time.Duration(20-i) * time.Hour).Format(time.RFC1123Z),
+					guid:        fmt.Sprintf("skip-backlog-%d", i),
+				})
+			}
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-skip-backlog", createRSSFeed(entries...), withRetries("5m", 3))
+
+			By("Setting catchUpLimit to an explicit 0 (omitempty drops it from a typed create, so patch it in)")
+			fg := &rss2discordv1alpha1.FeedGroup{}
+			key := types.NamespacedName{Name: feedGroupName, Namespace: namespace}
+			Expect(k8sClient.Get(ctx, key, fg)).To(Succeed())
+			Expect(fg.Spec.CatchUpLimit).To(Equal(int32(5)), "an omitted catchUpLimit must keep defaulting to 5")
+			Expect(k8sClient.Patch(ctx, fg, client.RawPatch(types.MergePatchType, []byte(`{"spec":{"catchUpLimit":0}}`)))).To(Succeed())
+
+			By("Reconciling the first sync")
+			_, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(discordServer.MessageCount()).To(Equal(0), "no backlog should be sent")
+
+			Expect(k8sClient.Get(ctx, key, fg)).To(Succeed())
+			fs := feedStatusFor(fg, rssServer.URL())
+			Expect(fs.LastSeenEntry).To(Equal("skip-backlog-10"), "watermark should be the newest entry")
+			delivered := apimeta.FindStatusCondition(fs.Conditions, rss2discordv1alpha1.FeedConditionTypeDelivered)
+			Expect(delivered).NotTo(BeNil())
+			Expect(delivered.Reason).To(Equal("BacklogSkipped"))
+
+			By("Publishing one new entry")
+			rssServer.SetFeedContent(createRSSFeed(append(entries, testEntry{
+				title:       "Fresh Article",
+				description: "Brand new",
+				link:        "https://example.com/fresh",
+				pubDate:     time.Now().Format(time.RFC1123Z),
+				guid:        "skip-backlog-fresh",
+			})...))
+			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying exactly the new entry was sent")
+			Expect(discordServer.MessageCount()).To(Equal(1))
+			Expect(discordServer.Bodies()[0]).To(ContainSubstring("Fresh Article"))
+		})
+
 		It("should deliver newest entries and advance the watermark for feeds without publish dates", func() {
 			const feedGroupName = "test-feedgroup-nodate"
 

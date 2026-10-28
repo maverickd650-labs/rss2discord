@@ -774,3 +774,37 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 		t.Error("a changed error message should fire a fresh Event")
 	}
 }
+
+// With catchUpLimit 0, only a true first sync (no watermark) skips the
+// backlog. A watermark that scrolled out of the feed's window falls back to
+// the default cap instead, so genuinely new entries aren't silently dropped.
+func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
+	ctx := t.Context()
+
+	run := func(t *testing.T, lastSeen string) (sent int, fs *v1alpha1.FeedStatus) {
+		t.Helper()
+		ns, name := "skip-backlog-unit", "fg-skip-"+lastSeen
+		defer deleteFeedGroupMetrics(ns, name)
+		discordServer := NewMockDiscordServer()
+		defer discordServer.Close()
+
+		fg, feed := newMetricsFeedGroup(ns, name, "")
+		fg.Spec.CatchUpLimit = 0
+		fg.Status.Feeds[0].LastSeenEntry = lastSeen
+		client := discordServer.DiscordClientBuilder()(discordServer.URL())
+		(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
+		return discordServer.MessageCount(), &fg.Status.Feeds[0]
+	}
+
+	t.Run("first sync sends nothing and sets the watermark", func(t *testing.T) {
+		sent, fs := run(t, "")
+		if sent != 0 || fs.LastSeenEntry != "https://example.com/article" {
+			t.Fatalf("sent=%d watermark=%q", sent, fs.LastSeenEntry)
+		}
+	})
+	t.Run("scrolled-out watermark still delivers", func(t *testing.T) {
+		if sent, _ := run(t, "gone"); sent != 1 {
+			t.Fatalf("sent=%d, want 1", sent)
+		}
+	})
+}

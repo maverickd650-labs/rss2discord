@@ -229,7 +229,10 @@ type FeedGroupSpec struct {
 	// first time a feed is reconciled (i.e. before it has a recorded
 	// LastSeenEntry). Without this, adding a feed with a long history
 	// floods the webhook with every existing entry at once. Entries beyond
-	// the limit are treated as already seen and are not sent.
+	// the limit are treated as already seen and are not sent. Set to 0 to
+	// send no backlog at all: the first sync records the feed's newest entry
+	// and only entries published afterwards are delivered. Omitting the
+	// field uses the default of 5.
 	// +default=5
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100

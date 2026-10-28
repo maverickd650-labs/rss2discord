@@ -91,10 +91,10 @@ const maxPermanentBackoff = 6 * time.Hour
 // whole history.
 const maxLastSentPerFeed = 50
 
-// defaultCatchUpLimit is used when FeedGroupSpec.CatchUpLimit is unset
-// (zero), which happens both for an explicit 0 and for CRDs applied before
-// the field existed (the kubebuilder default only takes effect through the
-// API server's defaulting webhook/CRD schema).
+// defaultCatchUpLimit is the cap used when a watermark has scrolled out of a
+// feed's window, and by limitCatchUp for any non-positive limit. On a true
+// first sync an explicit catchUpLimit of 0 means "skip the backlog" instead
+// (see skipBacklog); an omitted field is defaulted to 5 by the API server.
 const defaultCatchUpLimit = 5
 
 // maxDiscordMessageLength is Discord's hard cap on webhook message content;
@@ -507,7 +507,17 @@ func (r *FeedGroupReconciler) processFeed(
 		hasSeenID = false
 	}
 	if !hasSeenID {
-		entries = limitCatchUp(entries, int(feedGroup.Spec.CatchUpLimit))
+		if feedGroup.Spec.CatchUpLimit == 0 && lastSeenID == "" && len(entries) > 0 {
+			// catchUpLimit: 0 on a true first sync (no watermark at all)
+			// means "don't post the backlog": start from the newest entry.
+			// A watermark that merely scrolled out of the feed's window is
+			// not a first sync, so it still falls through to limitCatchUp's
+			// default cap rather than silently dropping new entries.
+			skipBacklog(feedGroup, fs, entries)
+			entries = nil
+		} else {
+			entries = limitCatchUp(entries, int(feedGroup.Spec.CatchUpLimit))
+		}
 	}
 
 	var pending bool
@@ -1762,10 +1772,23 @@ func entriesContainID(entries []rss.Entry, id string) bool {
 	return false
 }
 
+// skipBacklog records the newest of entries (sorted oldest-to-newest) as the
+// feed's watermark without sending anything, so only entries published after
+// this point are delivered. The identity is the same one sendNewEntries would
+// have stored after sending that entry, so the next forward-scan resumes
+// right behind it.
+func skipBacklog(feedGroup *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, entries []rss.Entry) {
+	fs.LastSeenEntry = clampWatermark(entryIdentity(entries[len(entries)-1]))
+	setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
+		reasonBacklogSkipped, fmt.Sprintf("catchUpLimit is 0: skipped %d existing entries", len(entries)), feedGroup.Generation)
+}
+
 // limitCatchUp trims entries to at most limit, keeping the most recent ones
 // (entries is assumed sorted ascending by Published). A non-positive limit
 // falls back to defaultCatchUpLimit rather than disabling the cap, so a feed
-// can never dump its entire backlog on first reconcile.
+// can never dump its entire backlog on first reconcile. (An explicit
+// catchUpLimit of 0 is handled earlier, by skipBacklog, on a true first
+// sync only.)
 func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
 	if limit <= 0 {
 		limit = defaultCatchUpLimit
