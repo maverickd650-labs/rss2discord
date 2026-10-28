@@ -1519,6 +1519,13 @@ func buildDiscordMessage(
 		if err != nil {
 			return discord.Message{}, err
 		}
+		// Discord rejects a blank message, and a send failure holds the feed
+		// on this entry indefinitely. Failing here routes it through the
+		// render-error path instead, which skips the entry once retries are
+		// exhausted (e.g. "{{.Published}}" for an entry with no date).
+		if strings.TrimSpace(content) == "" {
+			return discord.Message{}, errors.New("message template rendered empty content for this entry")
+		}
 		overflow += contentOverflow
 		msg.Content = content
 	}
@@ -1529,6 +1536,11 @@ func buildDiscordMessage(
 		threadName, threadOverflow, err := renderTemplate(threadNameTmpl, entry, maxForumThreadNameLength)
 		if err != nil {
 			return discord.Message{}, err
+		}
+		// Without a thread_name a forum webhook rejects the post; fail as a
+		// render error for the same reason as blank content above.
+		if strings.TrimSpace(threadName) == "" {
+			return discord.Message{}, errors.New("forum thread name template rendered empty for this entry")
 		}
 		overflow += threadOverflow
 		msg.ThreadName = threadName

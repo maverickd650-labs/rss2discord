@@ -704,6 +704,48 @@ func TestBuildDiscordMessage_ForumThreadNameRenderError(t *testing.T) {
 	}
 }
 
+// TestBuildDiscordMessage_EmptyRenderIsError asserts a template that renders
+// to blank content or a blank forum thread name (here: only {{.Published}},
+// for an entry with no date) is reported as a render error, so the
+// render-error path can skip the entry, rather than producing a message
+// Discord would reject on every retry.
+func TestBuildDiscordMessage_EmptyRenderIsError(t *testing.T) {
+	feedGroup := &v1alpha1.FeedGroup{}
+	publishedOnly, err := compileTemplate("content", " {{.Published}} ", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	title, err := compileTemplate("content", "{{.Title}}", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry := rss.Entry{Title: "T"}
+
+	t.Run("blank content", func(t *testing.T) {
+		if _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, entry); err == nil {
+			t.Fatal("expected an error for content that renders blank")
+		}
+	})
+
+	t.Run("blank forum thread name", func(t *testing.T) {
+		feed := &v1alpha1.FeedSpec{ForumThreadName: "{{.Published}}"}
+		if _, err := buildDiscordMessage(feedGroup, nil, title, nil, publishedOnly, feed, entry); err == nil {
+			t.Fatal("expected an error for a forum thread name that renders blank")
+		}
+	})
+
+	t.Run("dated entry still renders", func(t *testing.T) {
+		dated := rss.Entry{Title: "T", Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
+		msg, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, dated)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "2024-05-06T07:08:09Z"; msg.Content != want {
+			t.Fatalf("msg.Content = %q, want %q", msg.Content, want)
+		}
+	})
+}
+
 // TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName asserts
 // an explicit ForumThreadID (posting into an existing thread) wins over a
 // configured ForumThreadName template (which creates a new thread), even
