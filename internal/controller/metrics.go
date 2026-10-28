@@ -21,6 +21,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 )
 
 // Metric label names, shared across the vectors below and
@@ -128,6 +130,34 @@ var feedLastSuccessTimestamp = prometheus.NewGaugeVec(
 	[]string{labelNamespace, labelName},
 )
 
+// feedHealthy is 1 when a feed's persisted LastError is empty and 0 otherwise.
+// Unlike feedOperationsTotal it is a state, not an event stream: a feed in
+// permanent backoff is only retried every 10m, 20m ... up to 6h, so its error
+// counter is flat for hours and any rate()-based alert resolves while the
+// feed is still dead. Reading the state from Status.Feeds instead keeps
+// reporting 0 for as long as the feed is broken (and across operator
+// restarts). Paused feeds have no series; see recordFeedStateMetrics.
+var feedHealthy = prometheus.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "rss2discord_feed_healthy",
+		Help: "1 if the feed's last check left no error in status, 0 otherwise (including feeds in backoff). Absent for paused feeds.",
+	},
+	[]string{labelNamespace, labelName, labelFeedURL},
+)
+
+// feedLastCheckedTimestamp is the per-feed counterpart of
+// feedLastSuccessTimestamp, parsed from FeedStatus.LastChecked (which only
+// advances on a successful check). Per-feed so one healthy feed can't mask a
+// stuck sibling; from persisted status so it is populated right after a
+// restart. No series exists for a feed that has never been checked.
+var feedLastCheckedTimestamp = prometheus.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "rss2discord_feed_last_checked_timestamp_seconds",
+		Help: "Unix timestamp of the last successful check of this feed. Absent until the feed has been checked, and for paused feeds.",
+	},
+	[]string{labelNamespace, labelName, labelFeedURL},
+)
+
 // messageOverflowChars records how many characters were trimmed from a
 // rendered Discord message/embed-description/thread-name before it was
 // clamped to fit Discord's length limits (truncateMessage in
@@ -179,17 +209,64 @@ func deleteFeedGroupMetrics(namespace, name string) {
 	feedOperationsTotal.DeletePartialMatch(labels)
 	feedRequestDuration.DeletePartialMatch(labels)
 	feedLastSuccessTimestamp.DeletePartialMatch(labels)
+	feedHealthy.DeletePartialMatch(labels)
+	feedLastCheckedTimestamp.DeletePartialMatch(labels)
 	messageOverflowChars.DeletePartialMatch(labels)
 	feedGroupReconcileDuration.DeletePartialMatch(labels)
 }
 
 // deleteFeedMetrics drops every series for a single feed within a FeedGroup,
-// for a feed removed from the group's spec. Only feedOperationsTotal carries
-// labelFeedURL; the other vectors are per-FeedGroup.
+// for a feed removed from the group's spec. Only the per-feed vectors carry
+// labelFeedURL; the others are per-FeedGroup.
 func deleteFeedMetrics(namespace, name, rssURL string) {
-	feedOperationsTotal.DeletePartialMatch(prometheus.Labels{
+	labels := prometheus.Labels{
 		labelNamespace: namespace, labelName: name, labelFeedURL: rssURL,
-	})
+	}
+	feedOperationsTotal.DeletePartialMatch(labels)
+	feedHealthy.DeletePartialMatch(labels)
+	feedLastCheckedTimestamp.DeletePartialMatch(labels)
+}
+
+// recordFeedStateMetrics sets feedHealthy and feedLastCheckedTimestamp for
+// every feed from the FeedGroup's persisted Status.Feeds. It runs on every
+// reconcile (from requeueWithStatus), including ones that skip a feed as
+// not-due or in backoff, which is the point: the values describe what status
+// says now rather than what this reconcile happened to do.
+//
+// Series are removed rather than set to a placeholder where there is nothing
+// truthful to report: a paused feed isn't expected to be checked, so both
+// series are dropped (a feed paused while broken would otherwise alert
+// forever), and an empty or unparsable LastChecked yields no timestamp series
+// so a feed that simply hasn't been checked yet can't look 50 years stale.
+func recordFeedStateMetrics(feedGroup *v1alpha1.FeedGroup) {
+	paused := make(map[string]bool, len(feedGroup.Spec.Feeds))
+	for _, feed := range feedGroup.Spec.Feeds {
+		paused[feed.RSSUrl] = paused[feed.RSSUrl] || feed.Paused
+	}
+
+	for _, fs := range feedGroup.Status.Feeds {
+		if fs.RSSUrl == "" {
+			continue
+		}
+		ns, name := feedGroup.Namespace, feedGroup.Name
+		if paused[fs.RSSUrl] {
+			feedHealthy.DeleteLabelValues(ns, name, fs.RSSUrl)
+			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, fs.RSSUrl)
+			continue
+		}
+
+		healthy := 0.0
+		if fs.LastError == "" {
+			healthy = 1
+		}
+		feedHealthy.WithLabelValues(ns, name, fs.RSSUrl).Set(healthy)
+
+		if last, err := time.Parse(time.RFC3339, fs.LastChecked); err == nil {
+			feedLastCheckedTimestamp.WithLabelValues(ns, name, fs.RSSUrl).Set(float64(last.Unix()))
+		} else {
+			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, fs.RSSUrl)
+		}
+	}
 }
 
 func init() {
@@ -197,6 +274,8 @@ func init() {
 		feedOperationsTotal,
 		feedRequestDuration,
 		feedLastSuccessTimestamp,
+		feedHealthy,
+		feedLastCheckedTimestamp,
 		messageOverflowChars,
 		feedGroupReconcileDuration,
 	)

@@ -13,7 +13,7 @@
       {
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
         "enable": true,
-        "expr": "ALERTS{alertname=~\"RSS2DiscordFeedFetchErrors|RSS2DiscordFeedSendErrors|RSS2DiscordFeedRateLimited|RSS2DiscordFeedEntriesSkipped\", alertstate=\"firing\", namespace=~\"$namespace\", name=~\"$feedgroup\"}",
+        "expr": "ALERTS{alertname=~\"RSS2DiscordFeedFetchErrors|RSS2DiscordFeedSendErrors|RSS2DiscordFeedRateLimited|RSS2DiscordFeedEntriesSkipped|RSS2DiscordFeedUnhealthy|RSS2DiscordFeedStale\", alertstate=\"firing\", namespace=~\"$namespace\", name=~\"$feedgroup\"}",
         "iconColor": "red",
         "name": "FeedGroup alerts firing",
         "step": "10s",
@@ -23,7 +23,7 @@
       }
     ]
   },
-  "description": "Executive summary, service health, action-required triage, freshness, latency, and operator (controller-runtime) health for rss2discord-operator, sourced from rss2discord_feed_operations_total, rss2discord_feed_request_duration_seconds, rss2discord_feed_last_success_timestamp_seconds, and controller-runtime/workqueue metrics.",
+  "description": "Executive summary, service health, action-required triage, freshness, latency, and operator (controller-runtime) health for rss2discord-operator, sourced from rss2discord_feed_operations_total, rss2discord_feed_request_duration_seconds, rss2discord_feed_last_success_timestamp_seconds, the per-feed rss2discord_feed_healthy and rss2discord_feed_last_checked_timestamp_seconds gauges, and controller-runtime/workqueue metrics.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -424,6 +424,48 @@
           "transformations": [
             { "id": "timeSeriesTable", "options": {} }
           ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "custom": { "align": "auto", "cellOptions": { "type": "color-background", "mode": "basic" }, "inspect": false },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null } ] },
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "healthy" },
+                "properties": [
+                  { "id": "mappings", "value": [ { "type": "value", "options": { "0": { "text": "unhealthy", "color": "red", "index": 0 } } } ] }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 36 },
+          "id": 29,
+          "options": {
+            "cellHeight": "sm",
+            "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+            "showHeader": true
+          },
+          "title": "Unhealthy Feeds",
+          "description": "Feeds whose last check left an error in status. Read from persisted per-feed state (rss2discord_feed_healthy), so a feed in permanent backoff stays listed for as long as it is broken even though its error counters have stopped moving. Paused feeds are not listed.",
+          "type": "table",
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+              "expr": "rss2discord_feed_healthy{namespace=~\"$namespace\", name=~\"$feedgroup\"} == 0",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "endpoint": true, "service": true, "pod": true, "container": true, "prometheus": true }, "renameByName": { "Value": "healthy" } } }
+          ]
         }
       ]
     },
@@ -519,6 +561,49 @@
               "legendFormat": "{{name}}",
               "refId": "A"
             }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "custom": { "align": "auto", "cellOptions": { "type": "color-text" }, "inspect": false },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 3600 },
+                  { "color": "red", "value": 21600 }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 38 },
+          "id": 30,
+          "options": {
+            "cellHeight": "sm",
+            "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+            "showHeader": true,
+            "sortBy": [ { "displayName": "Age", "desc": true } ]
+          },
+          "title": "Time Since Last Check (per feed)",
+          "description": "Age of each feed's last successful check (rss2discord_feed_last_checked_timestamp_seconds). Unlike the per-FeedGroup panels above, a stuck feed can't hide behind a healthy sibling. Feeds that have never been checked, and paused feeds, are not listed.",
+          "type": "table",
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+              "expr": "time() - rss2discord_feed_last_checked_timestamp_seconds{namespace=~\"$namespace\", name=~\"$feedgroup\"}",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "endpoint": true, "service": true, "pod": true, "container": true, "prometheus": true }, "renameByName": { "Value": "Age" } } }
           ]
         }
       ]
@@ -907,6 +992,6 @@
   "timezone": "",
   "title": "rss2discord-operator — FeedGroups",
   "uid": "rss2discord-feedgroups",
-  "version": 8,
+  "version": 9,
   "weekStart": ""
 }
