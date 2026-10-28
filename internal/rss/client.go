@@ -372,6 +372,38 @@ type nsText struct {
 	Text    string `xml:",chardata"`
 }
 
+// maxNSCandidates caps how many namespaces an nsTexts field remembers. Real
+// feeds carry one or two same-named elements per field; the cap only matters
+// for a hostile document.
+const maxNSCandidates = 8
+
+// nsTexts collects the candidates for one field, but -- unlike a plain
+// []nsText, which encoding/xml grows by one entry per matching element --
+// keeps only the first non-blank value per namespace, up to maxNSCandidates.
+// The 10MB response cap bounds bytes, not elements, so a single item with a
+// million <title/> elements would otherwise retain tens of MB of candidates
+// that pickText never looks at. pickText's result is unchanged: it only ever
+// returns the first non-blank candidate of a namespace tier.
+type nsTexts []nsText
+
+func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var el nsText
+	if err := d.DecodeElement(&el, &start); err != nil {
+		return err
+	}
+	el.Text = strings.TrimSpace(el.Text)
+	if el.Text == "" || len(*c) >= maxNSCandidates {
+		return nil
+	}
+	for _, existing := range *c {
+		if existing.XMLName.Space == el.XMLName.Space {
+			return nil
+		}
+	}
+	*c = append(*c, el)
+	return nil
+}
+
 // pickText returns the trimmed text of the most authoritative non-blank
 // candidate: the unqualified RSS 2.0 element, then the RSS 1.0 namespace, then
 // any other namespace (the lenient fallback for feeds that only carry e.g.
@@ -399,15 +431,15 @@ func pickText(cands []nsText) string {
 }
 
 type rssItem struct {
-	// These are slices of nsText, not strings, so namespaced extension
-	// elements with the same local name can't override the core fields;
-	// see nsText and pickText.
-	Title       []nsText `xml:"title"`
-	Link        []nsText `xml:"link"`
-	Description []nsText `xml:"description"`
-	GUID        []nsText `xml:"guid"`
-	PubDate     []nsText `xml:"pubDate"`
-	Author      []nsText `xml:"author"`
+	// These are nsTexts, not strings, so namespaced extension elements with
+	// the same local name can't override the core fields; see nsText and
+	// pickText.
+	Title       nsTexts `xml:"title"`
+	Link        nsTexts `xml:"link"`
+	Description nsTexts `xml:"description"`
+	GUID        nsTexts `xml:"guid"`
+	PubDate     nsTexts `xml:"pubDate"`
+	Author      nsTexts `xml:"author"`
 	// Creator matches Dublin Core's <dc:creator>, the de facto author field
 	// for feeds (e.g. WordPress) that don't use RSS's own <author>.
 	// encoding/xml matches by local name regardless of namespace prefix, so

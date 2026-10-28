@@ -3,6 +3,8 @@ package rss
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -709,5 +711,33 @@ func TestPickText(t *testing.T) {
 				t.Fatalf("pickText = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNSTextsBoundsRetainedCandidates asserts an item padded with thousands
+// of same-named elements keeps at most one candidate per namespace (and at
+// most maxNSCandidates overall) instead of one per element, without changing
+// which value pickText selects.
+func TestNSTextsBoundsRetainedCandidates(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<rss xmlns:media="http://search.yahoo.com/mrss/"><channel><item>`)
+	b.WriteString(strings.Repeat("<title/>", 5000))
+	b.WriteString(strings.Repeat("<media:title>M</media:title>", 5000))
+	b.WriteString("<title>Real</title><title>Later</title>")
+	for i := range 20 {
+		fmt.Fprintf(&b, `<x:title xmlns:x="urn:ns%d">N%d</x:title>`, i, i)
+	}
+	b.WriteString(`</item></channel></rss>`)
+
+	var env rssEnvelope
+	if err := unmarshalXML([]byte(b.String()), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cands := env.Channel.Items[0].Title
+	if len(cands) > maxNSCandidates {
+		t.Fatalf("retained %d candidates, want at most %d", len(cands), maxNSCandidates)
+	}
+	if got := pickText(cands); got != "Real" {
+		t.Fatalf("pickText = %q, want %q", got, "Real")
 	}
 }
