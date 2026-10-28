@@ -41,6 +41,8 @@ var allFailureClasses = []failureClass{
 	classParseError,
 	classUnrecognizedFormat,
 	classWebhookInvalid,
+	classBlockedAddress,
+	classTLSError,
 	classOther,
 }
 

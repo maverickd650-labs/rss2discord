@@ -509,3 +509,40 @@ func TestDefaultClient_LoopbackErrorNamesAddress(t *testing.T) {
 		t.Fatalf("expected non-public address error, got %v", err)
 	}
 }
+
+// TestDefaultClient_LoopbackErrorIsTypedBlockedAddress asserts the guard's
+// refusal survives http.Client's *url.Error / *net.OpError wrapping as a
+// typed *BlockedAddressError, so callers can classify it (a permanent feed
+// misconfiguration) without parsing the message.
+func TestDefaultClient_LoopbackErrorIsTypedBlockedAddress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sampleRSS))
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(nil).FetchEntries(t.Context(), srv.URL, CacheValidators{})
+	var blocked *BlockedAddressError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("expected errors.As to find *BlockedAddressError, got %T: %v", err, err)
+	}
+	if want := netip.MustParseAddr("127.0.0.1"); blocked.Addr != want {
+		t.Fatalf("BlockedAddressError.Addr = %v, want %v", blocked.Addr, want)
+	}
+}
+
+// TestGuardDialControl_BlockedAddressErrorText pins the error message, which
+// operators see in status conditions and logs, and the unmapped address
+// carried by the typed error.
+func TestGuardDialControl_BlockedAddressErrorText(t *testing.T) {
+	err := guardDialControl("tcp", "[::ffff:10.1.2.3]:80", nil)
+	var blocked *BlockedAddressError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("expected *BlockedAddressError, got %T: %v", err, err)
+	}
+	if want := netip.MustParseAddr("10.1.2.3"); blocked.Addr != want {
+		t.Fatalf("Addr = %v, want %v (IPv4-mapped form unmapped)", blocked.Addr, want)
+	}
+	if got, want := err.Error(), "refusing to connect to non-public address 10.1.2.3"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
