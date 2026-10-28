@@ -465,6 +465,9 @@ type rssItem struct {
 	Enclosure      *rssEnclosure `xml:"enclosure"`
 	MediaThumbnail *rssMediaURL  `xml:"thumbnail"`
 	MediaContent   []rssMediaURL `xml:"content"`
+	// MediaGroup is <media:group>, which some feeds wrap their thumbnail,
+	// content and description in; see mediaGroup.
+	MediaGroup *mediaGroup `xml:"group"`
 	// DCDate matches Dublin Core's <dc:date>, RDF's (RSS 1.0) date field --
 	// RDF items carry no <pubDate>. encoding/xml matches by local name
 	// regardless of namespace prefix, so this also covers <date> without a
@@ -495,21 +498,95 @@ func (m rssMediaURL) isImage() bool {
 	return strings.HasPrefix(m.Medium, "image") || strings.HasPrefix(m.Type, "image/")
 }
 
-// entryImage picks the first available image source from an RSS item's
-// enclosure or Media RSS thumbnail/content elements.
-func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMediaURL) string {
-	if enclosure != nil && strings.HasPrefix(enclosure.Type, "image/") && enclosure.URL != "" {
-		return enclosure.URL
+// mediaGroup is Media RSS's <media:group>, the wrapper YouTube's Atom feeds
+// (and some RSS feeds) put an entry's thumbnail and description in. Its
+// children are matched by local name, which is safe here because the group's
+// own children can't collide with an entry's core fields: only the entry's
+// direct children share a struct with <content>, <description> and <title>.
+type mediaGroup struct {
+	Thumbnail    firstThumbnail    `xml:"thumbnail"`
+	ImageContent firstImageContent `xml:"content"`
+	Description  string            `xml:"description"`
+}
+
+// firstThumbnail and firstImageContent keep only the first usable url among a
+// group's repeated <media:thumbnail> / image-typed <media:content> children,
+// so a group with many children retains one string rather than a slice sized
+// by the response. encoding/xml calls UnmarshalXML once per matching child.
+type (
+	firstThumbnail    string
+	firstImageContent string
+)
+
+func (f *firstThumbnail) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var m rssMediaURL
+	if err := d.DecodeElement(&m, &start); err != nil {
+		return err
 	}
-	if thumbnail != nil && thumbnail.URL != "" {
-		return thumbnail.URL
+	if *f == "" {
+		*f = firstThumbnail(strings.TrimSpace(m.URL))
 	}
-	for _, c := range content {
-		if c.isImage() && c.URL != "" {
-			return c.URL
+	return nil
+}
+
+func (f *firstImageContent) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var m rssMediaURL
+	if err := d.DecodeElement(&m, &start); err != nil {
+		return err
+	}
+	if *f == "" && m.isImage() {
+		*f = firstImageContent(strings.TrimSpace(m.URL))
+	}
+	return nil
+}
+
+// image returns the group's first thumbnail, else its first image-typed
+// <media:content>. It is nil-safe so callers needn't check for a group.
+func (g *mediaGroup) image() string {
+	if g == nil {
+		return ""
+	}
+	if g.Thumbnail != "" {
+		return string(g.Thumbnail)
+	}
+	return string(g.ImageContent)
+}
+
+// description returns the group's trimmed <media:description>; nil-safe.
+func (g *mediaGroup) description() string {
+	if g == nil {
+		return ""
+	}
+	return strings.TrimSpace(g.Description)
+}
+
+// mediaImage picks the first available Media RSS image: a direct thumbnail,
+// then direct image content, then whatever the entry's <media:group> holds.
+// Candidates are compared trimmed, so a whitespace-only url attribute can't
+// shadow a usable image further down the list.
+func mediaImage(thumbnail *rssMediaURL, content []rssMediaURL, group *mediaGroup) string {
+	if thumbnail != nil {
+		if u := strings.TrimSpace(thumbnail.URL); u != "" {
+			return u
 		}
 	}
-	return ""
+	for _, c := range content {
+		if u := strings.TrimSpace(c.URL); c.isImage() && u != "" {
+			return u
+		}
+	}
+	return group.image()
+}
+
+// entryImage picks the first available image source from an RSS item's
+// enclosure, Media RSS thumbnail/content elements, or <media:group>.
+func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMediaURL, group *mediaGroup) string {
+	if enclosure != nil && strings.HasPrefix(enclosure.Type, "image/") {
+		if u := strings.TrimSpace(enclosure.URL); u != "" {
+			return u
+		}
+	}
+	return mediaImage(thumbnail, content, group)
 }
 
 type atomEntry struct {
@@ -522,6 +599,14 @@ type atomEntry struct {
 	Published  string         `xml:"published"`
 	Author     atomAuthor     `xml:"author"`
 	Categories []atomCategory `xml:"category"`
+	// MediaThumbnail and MediaGroup carry Media RSS images/descriptions
+	// (YouTube feeds nest them in <media:group>). Only <thumbnail> and
+	// <group> are read directly: Atom has no elements by those names, whereas
+	// a direct <media:content>/<media:title>/<media:description> would share
+	// a local name with Content/Title and clobber them, so those are read
+	// only from inside the group (see mediaGroup).
+	MediaThumbnail *rssMediaURL `xml:"thumbnail"`
+	MediaGroup     *mediaGroup  `xml:"group"`
 	// Base is xml:base, an entry-level override of the feed's Base for
 	// resolving this entry's relative link/enclosure hrefs. encoding/xml
 	// matches "base,attr" by local name regardless of namespace prefix, so
@@ -566,7 +651,9 @@ func primaryLink(links []atomLink) string {
 func enclosureImage(links []atomLink) string {
 	for _, l := range links {
 		if l.Rel == "enclosure" && strings.HasPrefix(l.Type, "image/") {
-			return l.Href
+			if href := strings.TrimSpace(l.Href); href != "" {
+				return href
+			}
 		}
 	}
 	return ""
@@ -709,12 +796,17 @@ func rssItemsToEntries(items []rssItem) []Entry {
 			author = strings.TrimSpace(item.Creator)
 		}
 
+		description := pickText(item.Description)
+		if description == "" {
+			description = item.MediaGroup.description()
+		}
+
 		entries = append(entries, Entry{
 			ID:          id,
 			Title:       title,
 			Link:        link,
-			Description: pickText(item.Description),
-			Image:       strings.TrimSpace(entryImage(item.Enclosure, item.MediaThumbnail, item.MediaContent)),
+			Description: description,
+			Image:       strings.TrimSpace(entryImage(item.Enclosure, item.MediaThumbnail, item.MediaContent, item.MediaGroup)),
 			Author:      author,
 			Categories:  trimCategories(item.Categories),
 			Published:   published,
@@ -759,6 +851,16 @@ func parseAtom(data []byte) ([]Entry, error) {
 		if description == "" {
 			description = strings.TrimSpace(item.Content)
 		}
+		if description == "" {
+			description = item.MediaGroup.description()
+		}
+
+		// Enclosure link first, then Media RSS (direct thumbnail, then the
+		// group), all resolved against xml:base like the enclosure always was.
+		image := enclosureImage(item.Links)
+		if image == "" {
+			image = mediaImage(item.MediaThumbnail, nil, item.MediaGroup)
+		}
 
 		categoryTerms := make([]string, len(item.Categories))
 		for i, c := range item.Categories {
@@ -770,7 +872,7 @@ func parseAtom(data []byte) ([]Entry, error) {
 			Title:       strings.TrimSpace(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,
-			Image:       strings.TrimSpace(resolveAtomURL(base, enclosureImage(item.Links))),
+			Image:       strings.TrimSpace(resolveAtomURL(base, image)),
 			Author:      strings.TrimSpace(item.Author.Name),
 			Categories:  trimCategories(categoryTerms),
 			Published:   published,
