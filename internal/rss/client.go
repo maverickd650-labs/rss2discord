@@ -449,7 +449,11 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 // preferredNamespace reports whether space is one pickText (or a caller's
 // pickTextPrefer) ranks ahead of the any-namespace fallback.
 func preferredNamespace(space string) bool {
-	return space == "" || space == rss10Namespace
+	switch space {
+	case "", rss10Namespace, atomNamespace, contentNamespace:
+		return true
+	}
+	return false
 }
 
 // pickText returns the trimmed text of the most authoritative non-blank
