@@ -27,7 +27,7 @@ func BenchmarkParseFeed(b *testing.B) {
 	data := benchFeedXML(maxFeedResponseBytes - 1024)
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := parseFeed(data); err != nil {
+		if _, _, err := parseFeed(data); err != nil {
 			b.Fatal(err)
 		}
 	}

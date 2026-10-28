@@ -38,10 +38,19 @@ type Entry struct {
 	Title       string
 	Link        string
 	Description string
-	Image       string
-	Author      string
-	Categories  []string
-	Published   time.Time
+	// Content is the entry's full body when the feed carries one separately
+	// from its summary: RSS <content:encoded>, or Atom <content> (which, for
+	// Atom entries with no <summary>, is also used as Description). It is raw
+	// markup like Description; consumers strip it before display.
+	Content    string
+	Image      string
+	Author     string
+	Categories []string
+	Published  time.Time
+	// FeedTitle is the title of the feed the entry came from. The parser
+	// leaves it empty; the caller stamps it from FetchResult.FeedTitle so the
+	// entry can be rendered without threading the feed's metadata alongside it.
+	FeedTitle string
 	// Seq is the entry's 0-based position in the feed document (0 = first
 	// listed). RSS/Atom feeds list newest-first by convention, so a lower Seq
 	// means more recent. It's the recency tiebreak used when Published is
@@ -110,7 +119,10 @@ type CacheValidators struct {
 // keep using whatever it already has; ETag/LastModified are carried through
 // unchanged in that case so the caller can keep sending them next time.
 type FetchResult struct {
-	Entries      []Entry
+	Entries []Entry
+	// FeedTitle is the feed's own title (RSS/RDF channel title, Atom feed
+	// title), or "" if it has none. Empty when NotModified.
+	FeedTitle    string
 	NotModified  bool
 	ETag         string
 	LastModified string
@@ -325,13 +337,14 @@ func (c *Client) FetchEntries(ctx context.Context, feedURL string, validators Ca
 		return FetchResult{}, fmt.Errorf("feed response exceeds maximum allowed size of %d bytes", maxFeedResponseBytes)
 	}
 
-	entries, err := parseFeed(data)
+	entries, feedTitle, err := parseFeed(data)
 	if err != nil {
 		return FetchResult{}, err
 	}
 
 	return FetchResult{
 		Entries:      entries,
+		FeedTitle:    feedTitle,
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
 	}, nil
@@ -343,6 +356,10 @@ type rssEnvelope struct {
 }
 
 type rssChannel struct {
+	// Title is a slice of nsText for the same reason as rssItem's fields: a
+	// channel-level <itunes:title> or <media:title> shares the local name and
+	// would otherwise override the real <title>.
+	Title nsTexts   `xml:"title"`
 	Items []rssItem `xml:"item"`
 }
 
@@ -353,14 +370,29 @@ type rssChannel struct {
 // same local names RSS 2.0 uses (dc:creator and dc:date match rssItem's
 // Creator and DCDate regardless of namespace prefix).
 type rdfEnvelope struct {
-	XMLName xml.Name  `xml:"RDF"`
-	Items   []rssItem `xml:"item"`
+	XMLName xml.Name   `xml:"RDF"`
+	Channel rdfChannel `xml:"channel"`
+	Items   []rssItem  `xml:"item"`
+}
+
+// rdfChannel is RSS 1.0's <channel>, which carries feed metadata only; its
+// items are siblings (see rdfEnvelope).
+type rdfChannel struct {
+	Title nsTexts `xml:"title"`
 }
 
 // rss10Namespace is RSS 1.0's element namespace. RDF items declare it as
 // their default namespace, so their title/link/description carry it rather
 // than the empty namespace RSS 2.0 uses.
 const rss10Namespace = "http://purl.org/rss/1.0/"
+
+// atomNamespace is Atom's element namespace, declared as the default
+// namespace on a conforming <feed>.
+const atomNamespace = "http://www.w3.org/2005/Atom"
+
+// contentNamespace is the RSS 1.0 Content module's namespace, home of
+// <content:encoded>.
+const contentNamespace = "http://purl.org/rss/1.0/modules/content/"
 
 // nsText is an element's text plus the namespace it was declared in.
 // encoding/xml matches a struct tag by local name regardless of namespace, so
@@ -417,7 +449,11 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 // preferredNamespace reports whether space is one pickText (or a caller's
 // pickTextPrefer) ranks ahead of the any-namespace fallback.
 func preferredNamespace(space string) bool {
-	return space == "" || space == rss10Namespace
+	switch space {
+	case "", rss10Namespace, atomNamespace, contentNamespace:
+		return true
+	}
+	return false
 }
 
 // pickText returns the trimmed text of the most authoritative non-blank
@@ -426,7 +462,16 @@ func preferredNamespace(space string) bool {
 // <media:title>). Blank candidates, such as a self-closing <atom:link/>, are
 // skipped so they can't mask a usable value in a lower tier.
 func pickText(cands []nsText) string {
-	for _, space := range [...]string{"", rss10Namespace} {
+	return pickTextPrefer(cands, "", rss10Namespace)
+}
+
+// pickTextPrefer is pickText with the namespace tiers spelled out, for fields
+// whose authoritative namespace isn't RSS 2.0's (Atom's own elements, the
+// Content module's <content:encoded>). Candidates in a namespace outside
+// spaces are still a last resort, so a feed that omits the declaration (or
+// uses a lookalike) keeps working.
+func pickTextPrefer(cands []nsText, spaces ...string) string {
+	for _, space := range spaces {
 		for _, c := range cands {
 			if c.XMLName.Space != space {
 				continue
@@ -456,6 +501,10 @@ type rssItem struct {
 	GUID        nsTexts `xml:"guid"`
 	PubDate     nsTexts `xml:"pubDate"`
 	Author      nsTexts `xml:"author"`
+	// ContentEncoded is <content:encoded>, the full post body many RSS feeds
+	// (WordPress, Ghost, ...) carry alongside a short <description>. Matched
+	// by local name, so it needs the same namespace-aware pick as above.
+	ContentEncoded nsTexts `xml:"encoded"`
 	// Creator matches Dublin Core's <dc:creator>, the de facto author field
 	// for feeds (e.g. WordPress) that don't use RSS's own <author>.
 	// encoding/xml matches by local name regardless of namespace prefix, so
@@ -590,11 +639,13 @@ func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMe
 }
 
 type atomEntry struct {
-	ID         string         `xml:"id"`
-	Title      string         `xml:"title"`
-	Links      []atomLink     `xml:"link"`
-	Summary    string         `xml:"summary"`
-	Content    string         `xml:"content"`
+	ID      string     `xml:"id"`
+	Title   string     `xml:"title"`
+	Links   []atomLink `xml:"link"`
+	Summary string     `xml:"summary"`
+	// Content is a slice of nsText because a direct <media:content> on the
+	// entry shares the local name; see atomText.
+	Content    nsTexts        `xml:"content"`
 	Updated    string         `xml:"updated"`
 	Published  string         `xml:"published"`
 	Author     atomAuthor     `xml:"author"`
@@ -660,6 +711,9 @@ func enclosureImage(links []atomLink) string {
 }
 
 type atomFeed struct {
+	// Title is a slice of nsText so a feed-level <media:title> or
+	// <itunes:title> can't override Atom's own <title>; see atomText.
+	Title   nsTexts     `xml:"title"`
 	Entries []atomEntry `xml:"entry"`
 	// Base is the feed-level xml:base, used to resolve an entry's relative
 	// link/enclosure hrefs when the entry doesn't set its own.
@@ -730,10 +784,19 @@ func rootElementName(data []byte) (string, error) {
 	}
 }
 
-func parseFeed(data []byte) ([]Entry, error) {
+// atomText picks the Atom-namespaced value among same-named candidates,
+// falling back to un-namespaced (feeds that omit xmlns) and then any other
+// namespace.
+func atomText(cands []nsText) string {
+	return pickTextPrefer(cands, atomNamespace, "")
+}
+
+// parseFeed parses an RSS 2.0, Atom or RSS 1.0 (RDF) document into its
+// entries and the feed's own title ("" if it has none).
+func parseFeed(data []byte) ([]Entry, string, error) {
 	root, err := rootElementName(data)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	switch strings.ToLower(root) {
@@ -744,30 +807,30 @@ func parseFeed(data []byte) ([]Entry, error) {
 	case "rdf":
 		return parseRDF(data)
 	default:
-		return nil, &UnrecognizedFormatError{Root: root}
+		return nil, "", &UnrecognizedFormatError{Root: root}
 	}
 }
 
-func parseRSS(data []byte) ([]Entry, error) {
+func parseRSS(data []byte) ([]Entry, string, error) {
 	var envelope rssEnvelope
 	if err := unmarshalXML(data, &envelope); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return rssItemsToEntries(envelope.Channel.Items), nil
+	return rssItemsToEntries(envelope.Channel.Items), pickText(envelope.Channel.Title), nil
 }
 
 // parseRDF parses an RSS 1.0 (RDF) document. Unlike RSS 2.0, its <item>
 // elements are top-level siblings of <channel> rather than nested inside it,
 // so it needs its own envelope, but shares rssItem's field mapping and
 // rssItemsToEntries' entry construction.
-func parseRDF(data []byte) ([]Entry, error) {
+func parseRDF(data []byte) ([]Entry, string, error) {
 	var envelope rdfEnvelope
 	if err := unmarshalXML(data, &envelope); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return rssItemsToEntries(envelope.Items), nil
+	return rssItemsToEntries(envelope.Items), pickText(envelope.Channel.Title), nil
 }
 
 func rssItemsToEntries(items []rssItem) []Entry {
@@ -806,6 +869,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 			Title:       title,
 			Link:        link,
 			Description: description,
+			Content:     pickTextPrefer(item.ContentEncoded, contentNamespace, ""),
 			Image:       strings.TrimSpace(entryImage(item.Enclosure, item.MediaThumbnail, item.MediaContent, item.MediaGroup)),
 			Author:      author,
 			Categories:  trimCategories(item.Categories),
@@ -817,10 +881,10 @@ func rssItemsToEntries(items []rssItem) []Entry {
 	return entries
 }
 
-func parseAtom(data []byte) ([]Entry, error) {
+func parseAtom(data []byte) ([]Entry, string, error) {
 	var feed atomFeed
 	if err := unmarshalXML(data, &feed); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	feedBase := strings.TrimSpace(feed.Base)
@@ -847,9 +911,13 @@ func parseAtom(data []byte) ([]Entry, error) {
 			id = strings.TrimSpace(item.Title)
 		}
 
+		// Content is exposed even when it doubles as Description (no
+		// summary), so templates can use {{.Content}} regardless of which
+		// elements a given feed fills in.
+		content := atomText(item.Content)
 		description := strings.TrimSpace(item.Summary)
 		if description == "" {
-			description = strings.TrimSpace(item.Content)
+			description = content
 		}
 		if description == "" {
 			description = item.MediaGroup.description()
@@ -872,6 +940,7 @@ func parseAtom(data []byte) ([]Entry, error) {
 			Title:       strings.TrimSpace(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,
+			Content:     content,
 			Image:       strings.TrimSpace(resolveAtomURL(base, image)),
 			Author:      strings.TrimSpace(item.Author.Name),
 			Categories:  trimCategories(categoryTerms),
@@ -880,7 +949,7 @@ func parseAtom(data []byte) ([]Entry, error) {
 		})
 	}
 
-	return entries, nil
+	return entries, atomText(feed.Title), nil
 }
 
 func parseTime(value string) (time.Time, error) {

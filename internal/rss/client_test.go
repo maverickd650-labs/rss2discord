@@ -78,6 +78,21 @@ func TestFetchEntries_ParsesValidRSS(t *testing.T) {
 	}
 }
 
+func TestFetchEntries_ReturnsFeedTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<rss><channel><title>Example Blog</title><item><title>Hello</title></item></channel></rss>`))
+	}))
+	defer srv.Close()
+
+	result, err := NewClient(&http.Client{}).FetchEntries(t.Context(), srv.URL, CacheValidators{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FeedTitle != "Example Blog" {
+		t.Fatalf("FeedTitle = %q, want %q", result.FeedTitle, "Example Blog")
+	}
+}
+
 func TestFetchEntries_SendsETagAndLastModifiedValidators(t *testing.T) {
 	var gotIfNoneMatch, gotIfModifiedSince string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +291,7 @@ func TestParseFeed_ExtractsImage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			entries, err := parseFeed([]byte(tc.data))
+			entries, _, err := parseFeed([]byte(tc.data))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -447,7 +462,7 @@ func TestParseFeed_DefaultBranchFallsBackToAtomAndFails(t *testing.T) {
 	// RSS and the Atom decode attempts fail.
 	data := []byte(`<rdf:RDF><channel><unclosed`)
 
-	_, err := parseFeed(data)
+	_, _, err := parseFeed(data)
 	if err == nil {
 		t.Fatal("expected error for malformed non-rss/feed document, got nil")
 	}

@@ -436,6 +436,11 @@ func (r *FeedGroupReconciler) processFeed(
 	markFetchSucceeded()
 
 	entries := fetchResult.Entries
+	// Stamp the feed's title on each entry so templates can use {{.FeedTitle}}
+	// without threading it through sendNewEntries/buildDiscordMessage.
+	for i := range entries {
+		entries[i].FeedTitle = fetchResult.FeedTitle
+	}
 	if len(entries) == 0 {
 		// Nothing to send, so it's always safe to persist.
 		persistValidators()
@@ -1513,24 +1518,55 @@ func formatPublished(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// publishedUnix is t as Unix seconds, or 0 for the zero time (time.Time{}.Unix()
+// is a large negative number), consistent with formatPublished.
+func publishedUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// templateData is the value a message template executes against; its
+// exported fields and methods are the documented {{.Placeholders}}.
+type templateData struct {
+	Title       string
+	Description string
+	Link        string
+	Image       string
+	Published   string
+	// PublishedUnix is Published as Unix seconds (0 when undated, like
+	// Published's ""), for Discord's <t:UNIX:R> dynamic timestamps.
+	PublishedUnix int64
+	Author        string
+	Categories    string
+	FeedTitle     string
+
+	content string
+}
+
+// Content is the entry's full body with HTML stripped. It is a method rather
+// than a field so the strip -- over a body that can run to tens of KB -- only
+// happens for templates that actually reference {{.Content}}.
+func (d templateData) Content() string {
+	return stripHTML(d.content)
+}
+
 // renderTemplate executes tmpl against entry and clamps the result to max
 // runes. The second return value is how many runes were trimmed off (0 if
 // the rendered text already fit), as reported by truncateMessage.
 func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, int, error) {
-	data := struct {
-		Title       string
-		Description string
-		Link        string
-		Published   string
-		Author      string
-		Categories  string
-	}{
-		Title:       stripHTML(entry.Title),
-		Description: stripHTML(entry.Description),
-		Link:        entry.Link,
-		Published:   formatPublished(entry.Published),
-		Author:      entry.Author,
-		Categories:  strings.Join(entry.Categories, ", "),
+	data := templateData{
+		Title:         stripHTML(entry.Title),
+		Description:   stripHTML(entry.Description),
+		Link:          entry.Link,
+		Image:         httpURLOrEmpty(entry.Image),
+		Published:     formatPublished(entry.Published),
+		PublishedUnix: publishedUnix(entry.Published),
+		Author:        entry.Author,
+		Categories:    strings.Join(entry.Categories, ", "),
+		FeedTitle:     stripHTML(entry.FeedTitle),
+		content:       entry.Content,
 	}
 
 	var buf bytes.Buffer
