@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -360,6 +361,8 @@ func TestDeleteFeedGroupMetrics(t *testing.T) {
 	feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent).Inc()
 	feedRequestDuration.WithLabelValues(ns, name, operationSend).Observe(0.1)
 	feedLastSuccessTimestamp.WithLabelValues(ns, name).Set(123)
+	feedHealthy.WithLabelValues(ns, name, exampleFeedURL).Set(1)
+	feedLastCheckedTimestamp.WithLabelValues(ns, name, exampleFeedURL).Set(123)
 	messageOverflowChars.WithLabelValues(ns, name).Observe(42)
 	feedGroupReconcileDuration.WithLabelValues(ns, name).Observe(0.5)
 
@@ -372,6 +375,14 @@ func TestDeleteFeedGroupMetrics(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(feedLastSuccessTimestamp.WithLabelValues(ns, name)); got != 0 {
 		t.Fatalf("feedLastSuccessTimestamp after delete = %v, want 0", got)
+	}
+	// The per-feed gauges are checked by presence rather than value, since a
+	// recreated gauge reads 0 and 0 is a meaningful feedHealthy value.
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, exampleFeedURL); ok {
+		t.Fatal("feedHealthy series still present after delete")
+	}
+	if _, ok := feedGaugeValue(feedLastCheckedTimestamp, ns, name, exampleFeedURL); ok {
+		t.Fatal("feedLastCheckedTimestamp series still present after delete")
 	}
 	if got := histogramSampleCount(t, ns, name, operationSend); got != 0 {
 		t.Fatalf("send duration sample count after delete = %d, want 0", got)
@@ -395,6 +406,10 @@ func TestEnsureFeedStatuses_DropsRemovedFeedMetrics(t *testing.T) {
 
 	feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent).Inc()
 	feedOperationsTotal.WithLabelValues(ns, name, removedURL, outcomeSent).Inc()
+	for _, url := range []string{exampleFeedURL, removedURL} {
+		feedHealthy.WithLabelValues(ns, name, url).Set(0)
+		feedLastCheckedTimestamp.WithLabelValues(ns, name, url).Set(123)
+	}
 
 	feedGroup := &v1alpha1.FeedGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
@@ -411,6 +426,151 @@ func TestEnsureFeedStatuses_DropsRemovedFeedMetrics(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent)); got != 1 {
 		t.Fatalf("kept feed's series = %v, want 1", got)
+	}
+
+	for _, vec := range []*prometheus.GaugeVec{feedHealthy, feedLastCheckedTimestamp} {
+		if _, ok := feedGaugeValue(vec, ns, name, removedURL); ok {
+			t.Fatal("removed feed's per-feed gauge series still present")
+		}
+		if _, ok := feedGaugeValue(vec, ns, name, exampleFeedURL); !ok {
+			t.Fatal("kept feed's per-feed gauge series was dropped")
+		}
+	}
+}
+
+// feedGaugeValue reads the series of a per-feed gauge vec without creating
+// it, reporting whether it exists. WithLabelValues can't be used for presence
+// checks because it creates the series it is asked for.
+func feedGaugeValue(vec *prometheus.GaugeVec, namespace, name, rssURL string) (float64, bool) {
+	ch := make(chan prometheus.Metric, 64)
+	go func() {
+		vec.Collect(ch)
+		close(ch)
+	}()
+	var (
+		value float64
+		found bool
+	)
+	for metric := range ch {
+		var m dto.Metric
+		if err := metric.Write(&m); err != nil {
+			continue
+		}
+		labels := map[string]string{}
+		for _, lp := range m.GetLabel() {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		if labels[labelNamespace] == namespace && labels[labelName] == name && labels[labelFeedURL] == rssURL {
+			value, found = m.GetGauge().GetValue(), true
+		}
+	}
+	return value, found
+}
+
+// TestRecordFeedStateMetrics covers the per-feed health/freshness gauges
+// derived from persisted status: healthy tracks LastError (including for a
+// feed in permanent backoff, which is what keeps alerts alive while its
+// operations counter is flat), the timestamp parses LastChecked, and series
+// are omitted -- not zeroed -- when there is nothing truthful to report.
+func TestRecordFeedStateMetrics(t *testing.T) {
+	const (
+		healthyURL   = "https://example.com/healthy.xml"
+		backoffURL   = "https://example.com/backoff.xml"
+		neverURL     = "https://example.com/never.xml"
+		badStampURL  = "https://example.com/badstamp.xml"
+		pausedURL    = "https://example.com/paused.xml"
+		checkedStamp = "2026-03-04T05:06:07Z"
+	)
+	ns, name := "metrics-feedstate", "fg-feedstate"
+	defer deleteFeedGroupMetrics(ns, name)
+
+	fg := &v1alpha1.FeedGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Spec: v1alpha1.FeedGroupSpec{Feeds: []v1alpha1.FeedSpec{
+			{RSSUrl: healthyURL}, {RSSUrl: backoffURL}, {RSSUrl: neverURL},
+			{RSSUrl: badStampURL}, {RSSUrl: pausedURL, Paused: true},
+		}},
+		Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{
+			{RSSUrl: healthyURL, LastChecked: checkedStamp},
+			{RSSUrl: backoffURL, LastChecked: checkedStamp, LastError: "http 404", RetryCount: 9, BackoffUntil: "2099-01-01T00:00:00Z"},
+			// Never checked: LastChecked is optional and empty.
+			{RSSUrl: neverURL},
+			{RSSUrl: badStampURL, LastChecked: "not-a-time"},
+			{RSSUrl: pausedURL, LastChecked: checkedStamp, LastError: "http 404"},
+		}},
+	}
+	// Series that existed before the feed was paused / lost its timestamp must
+	// be removed, not left frozen.
+	feedHealthy.WithLabelValues(ns, name, pausedURL).Set(0)
+	feedLastCheckedTimestamp.WithLabelValues(ns, name, pausedURL).Set(1)
+	feedLastCheckedTimestamp.WithLabelValues(ns, name, badStampURL).Set(1)
+
+	recordFeedStateMetrics(fg)
+
+	wantStamp := float64(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC).Unix())
+	cases := []struct {
+		url         string
+		wantHealthy float64 // -1: no series expected
+		wantStamp   float64 // -1: no series expected
+	}{
+		{healthyURL, 1, wantStamp},
+		{backoffURL, 0, wantStamp},
+		{neverURL, 1, -1},
+		{badStampURL, 1, -1},
+		{pausedURL, -1, -1},
+	}
+	for _, tc := range cases {
+		check := func(vec *prometheus.GaugeVec, what string, want float64) {
+			got, ok := feedGaugeValue(vec, ns, name, tc.url)
+			switch {
+			case want < 0 && ok:
+				t.Errorf("%s %s = %v, want no series", what, tc.url, got)
+			case want >= 0 && !ok:
+				t.Errorf("%s %s: no series, want %v", what, tc.url, want)
+			case want >= 0 && got != want:
+				t.Errorf("%s %s = %v, want %v", what, tc.url, got, want)
+			}
+		}
+		check(feedHealthy, "feedHealthy", tc.wantHealthy)
+		check(feedLastCheckedTimestamp, "feedLastCheckedTimestamp", tc.wantStamp)
+	}
+
+	// A feed that recovers flips back to 1 on the next pass.
+	fg.Status.Feeds[1].LastError = ""
+	recordFeedStateMetrics(fg)
+	if got, _ := feedGaugeValue(feedHealthy, ns, name, backoffURL); got != 1 {
+		t.Errorf("feedHealthy after recovery = %v, want 1", got)
+	}
+}
+
+// TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile asserts the per-feed
+// gauges are refreshed even when requeueWithStatus short-circuits because
+// status is unchanged -- the common case for a feed idling in backoff -- so
+// they're populated after an operator restart without waiting for a change.
+func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
+	ns, name := "metrics-noop", "fg-noop"
+	defer deleteFeedGroupMetrics(ns, name)
+
+	fg, _ := newMetricsFeedGroup(ns, name, "")
+	fg.Status.Feeds[0].LastError = "http 410"
+	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:08Z"
+	// Apply the idempotent condition/generation updates requeueWithStatus makes
+	// up front so the snapshot below equals the final status and no API write
+	// (and therefore no client) is needed.
+	fg.Status.ObservedGeneration = fg.Generation
+	setReadyCondition(fg, nil, nil)
+	setFeedReachableCondition(fg)
+	original := fg.Status.DeepCopy()
+
+	if _, err := (&FeedGroupReconciler{}).requeueWithStatus(t.Context(), fg, original, "30m", 30*time.Minute, nil, false); err != nil {
+		t.Fatalf("requeueWithStatus: %v", err)
+	}
+
+	if got, ok := feedGaugeValue(feedHealthy, ns, name, exampleFeedURL); !ok || got != 0 {
+		t.Fatalf("feedHealthy = %v (present=%v), want 0", got, ok)
+	}
+	if _, ok := feedGaugeValue(feedLastCheckedTimestamp, ns, name, exampleFeedURL); !ok {
+		t.Fatal("feedLastCheckedTimestamp series missing")
 	}
 }
 

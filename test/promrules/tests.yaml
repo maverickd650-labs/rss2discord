@@ -97,3 +97,132 @@ tests:
       - eval_time: 30m
         alertname: RSS2DiscordFeedSendErrors
         exp_alerts: []
+
+  # rss2discord_feed_healthy == 0 held continuously proves
+  # RSS2DiscordFeedUnhealthy: pending (no alert) before the 30m `for`, firing
+  # after it. The sibling feed reporting 1 must never alert.
+  - interval: 1m
+    input_series:
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml"}'
+        values: "0x60"
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/other.xml"}'
+        values: "1x60"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RSS2DiscordFeedUnhealthy
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: RSS2DiscordFeedUnhealthy
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: demo
+              name: feedgroup-sample
+              rss_url: https://example.invalid/feed.xml
+            exp_annotations:
+              summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample is unhealthy"
+              description: >-
+                Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has
+                reported an error for at least 30m. Unlike the error-rate alerts this is driven
+                by the feed's persisted status, so it keeps firing while the feed is in
+                permanent backoff and retried only every few hours. Check the FeedGroup's
+                status conditions for the cause.
+
+  # A feed in permanent backoff: it failed (404) a few times at the start, then
+  # is only retried every few hours, so its error counter is flat for the rest
+  # of the test while rss2discord_feed_healthy stays 0 and its last successful
+  # check (timestamp 0) ages. This is the hole the per-feed gauges close: by 8h
+  # the rate()-based RSS2DiscordFeedFetchErrors alert has long resolved
+  # (exp_alerts: []) but RSS2DiscordFeedUnhealthy still fires, and
+  # RSS2DiscordFeedStale joins it once the last check is older than 6h (not yet
+  # at 5h).
+  # Sampled every 1m (the scrape cadence) rather than coarser: with gaps wider
+  # than Prometheus' 5m lookback the series would go stale between samples and
+  # reset the alert's `for` clock, which isn't what a scraped gauge does.
+  - interval: 1m
+    input_series:
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
+        values: "0+1x3 3x500"
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml"}'
+        values: "0x500"
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml"}'
+        values: "0x500"
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: RSS2DiscordFeedFetchErrors
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: RSS2DiscordFeedUnhealthy
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: demo
+              name: feedgroup-sample
+              rss_url: https://example.invalid/feed.xml
+            exp_annotations:
+              summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample is unhealthy"
+              description: >-
+                Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has
+                reported an error for at least 30m. Unlike the error-rate alerts this is driven
+                by the feed's persisted status, so it keeps firing while the feed is in
+                permanent backoff and retried only every few hours. Check the FeedGroup's
+                status conditions for the cause.
+      - eval_time: 5h
+        alertname: RSS2DiscordFeedStale
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: RSS2DiscordFeedStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: demo
+              name: feedgroup-sample
+              rss_url: https://example.invalid/feed.xml
+            exp_annotations:
+              summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has not been checked successfully recently"
+              description: >-
+                Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has not
+                had a successful check for more than 21600 seconds. Check that the operator is
+                running and the FeedGroup's interval is shorter than this threshold.
+
+  # RSS2DiscordFeedStale is per feed: one whose timestamp stopped advancing
+  # alerts even though a sibling in the same FeedGroup keeps being checked
+  # (its timestamp advances 60s per 1m of test time, so its age is always 0).
+  - interval: 1m
+    input_series:
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/frozen.xml"}'
+        values: "0x500"
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/fresh.xml"}'
+        values: "0+60x500"
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: RSS2DiscordFeedStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: demo
+              name: feedgroup-sample
+              rss_url: https://example.invalid/frozen.xml
+            exp_annotations:
+              summary: "Feed https://example.invalid/frozen.xml in FeedGroup demo/feedgroup-sample has not been checked successfully recently"
+              description: >-
+                Feed https://example.invalid/frozen.xml in FeedGroup demo/feedgroup-sample has not
+                had a successful check for more than 21600 seconds. Check that the operator is
+                running and the FeedGroup's interval is shorter than this threshold.
+
+  # A feed that has never been checked (or is paused) has no
+  # rss2discord_feed_last_checked_timestamp_seconds series at all -- the
+  # controller omits it rather than exporting 0 -- so RSS2DiscordFeedStale must
+  # stay silent no matter how long the test runs. Only a healthy-state series
+  # exists for it.
+  - interval: 1m
+    input_series:
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/new.xml"}'
+        values: "1x800"
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: RSS2DiscordFeedStale
+        exp_alerts: []
+      - eval_time: 12h
+        alertname: RSS2DiscordFeedUnhealthy
+        exp_alerts: []

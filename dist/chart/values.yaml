@@ -218,6 +218,21 @@ prometheusRule:
   ## How long an outcome must persist before the alert fires
   ##
   for: 15m
+  ## How long a feed must keep reporting rss2discord_feed_healthy == 0 before
+  ## RSS2DiscordFeedUnhealthy fires. That gauge comes from the feed's persisted
+  ## status, so unlike the rate-based alerts above it keeps firing while a
+  ## feed is in permanent backoff (retried every 10m, 20m ... up to 6h).
+  ##
+  unhealthyFor: 30m
+  ## RSS2DiscordFeedStale fires when a feed's last successful check
+  ## (rss2discord_feed_last_checked_timestamp_seconds) is older than this many
+  ## SECONDS (a plain number, not a duration string: it is rendered straight
+  ## into the PromQL expression). Default 21600 = 6h. Set it above the largest
+  ## spec.interval of any FeedGroup and above the 6h maximum permanent backoff,
+  ## or healthy-but-slow feeds will alert. Paused and never-checked feeds have
+  ## no series and so never alert.
+  ##
+  staleAfterSeconds: 21600
   ## Severity label applied to all generated alerts
   ##
   severity: warning

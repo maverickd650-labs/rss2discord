@@ -974,6 +974,10 @@ func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *
 		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", ready.Message)
 	}
 
+	// Before the no-op short-circuit below so the per-feed gauges are refreshed
+	// on every reconcile, not just ones that changed status.
+	recordFeedStateMetrics(feedGroup)
+
 	if apiequality.Semantic.DeepEqual(original, &feedGroup.Status) {
 		return ctrl.Result{RequeueAfter: duration}, nil
 	}

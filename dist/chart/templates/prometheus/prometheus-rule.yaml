@@ -82,4 +82,27 @@ spec:
           skipped an entry from feed {{ "{{" }} $labels.rss_url {{ "}}" }} after exhausting its retries
           because it could not be rendered with the feed's template, so it was not delivered.
           See the FeedGroup's Warning Events and Delivered condition for the entry and cause.
+    - alert: RSS2DiscordFeedUnhealthy
+      expr: rss2discord_feed_healthy == 0
+      for: {{ .Values.prometheusRule.unhealthyFor }}
+      labels:
+        severity: {{ .Values.prometheusRule.severity }}
+      annotations:
+        summary: Feed {{ "{{" }} $labels.rss_url {{ "}}" }} in FeedGroup {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} is unhealthy
+        description: >-
+          Feed {{ "{{" }} $labels.rss_url {{ "}}" }} in FeedGroup {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}
+          has reported an error for at least {{ .Values.prometheusRule.unhealthyFor }}.
+          Unlike the error-rate alerts this is driven by the feed's persisted status,
+          so it keeps firing while the feed is in permanent backoff and retried only
+          every few hours. Check the FeedGroup's status conditions for the cause.
+    - alert: RSS2DiscordFeedStale
+      expr: time() - rss2discord_feed_last_checked_timestamp_seconds > {{ .Values.prometheusRule.staleAfterSeconds }}
+      labels:
+        severity: {{ .Values.prometheusRule.severity }}
+      annotations:
+        summary: Feed {{ "{{" }} $labels.rss_url {{ "}}" }} in FeedGroup {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} has not been checked successfully recently
+        description: >-
+          Feed {{ "{{" }} $labels.rss_url {{ "}}" }} in FeedGroup {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }}
+          has not had a successful check for more than {{ .Values.prometheusRule.staleAfterSeconds }} seconds.
+          Check that the operator is running and the FeedGroup's interval is shorter than this threshold.
 {{- end }}
