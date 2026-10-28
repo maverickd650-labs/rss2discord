@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -1266,9 +1267,26 @@ var _ = Describe("FeedGroup Controller", func() {
 					pubDate:     time.Now().Format(time.RFC1123Z),
 					guid:        "invalid-interval-article",
 				},
-			), func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = overflowingInterval })
+			))
 			recorder := events.NewFakeRecorder(10)
 			reconciler.Recorder = recorder
+			// Admission now rejects an unparsable interval (CEL duration()),
+			// so model an object stored under an older schema by rewriting
+			// the interval as the reconciler reads it: this is the runtime
+			// backstop the schema check can't replace.
+			watchClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Client = interceptor.NewClient(watchClient, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					if fg, ok := obj.(*rss2discordv1alpha1.FeedGroup); ok {
+						fg.Spec.Interval = overflowingInterval
+					}
+					return nil
+				},
+			})
 
 			By("Reconciling: the entry is sent and the reconcile reports no error (an error would hot-loop on backoff)")
 			result, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
@@ -2187,6 +2205,54 @@ var _ = Describe("FeedGroup Controller", func() {
 			feedGroup := minimalFeedGroup("username-ok", "tech-news-bot")
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, feedGroup)).To(Succeed())
+		})
+	})
+
+	Describe("Bounds and format admission validation", func() {
+		build := func(name string, mutate func(*rss2discordv1alpha1.FeedGroup)) *rss2discordv1alpha1.FeedGroup {
+			fg := &rss2discordv1alpha1.FeedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: rss2discordv1alpha1.FeedGroupSpec{
+					DiscordWebhookSecretRef: corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: discordWebhookSecretName},
+						Key:                  secretURLKey,
+					},
+					Feeds: []rss2discordv1alpha1.FeedSpec{{RSSUrl: exampleFeedURL}},
+				},
+			}
+			mutate(fg)
+			return fg
+		}
+
+		DescribeTable("should reject out-of-range or malformed values",
+			func(mutate func(*rss2discordv1alpha1.FeedGroup), wantErr string) {
+				err := k8sClient.Create(ctx, build("admission-rejected", mutate))
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring(wantErr))
+			},
+			Entry("negative retries", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Retries = -1 }, "retries"),
+			Entry("retries over 100", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Retries = 101 }, "retries"),
+			Entry("negative catchUpLimit", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.CatchUpLimit = -1 }, "catchUpLimit"),
+			Entry("catchUpLimit over 100", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.CatchUpLimit = 101 }, "catchUpLimit"),
+			Entry("sub-minute interval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = "1ns" }, "interval must be at least 1m"),
+			Entry("overflowing interval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = "9999999999999h" }, "interval"),
+			Entry("sub-10s retryInterval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.RetryInterval = "1s" }, "retryInterval must be at least 10s"),
+			Entry("microsecond-sign unit", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = "100\u00b5s" }, "interval"),
+			Entry("non-http avatarURL", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.AvatarURL = "ftp://example.com/a.png" }, "avatarURL"),
+			Entry("non-numeric forumThreadID", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Feeds[0].ForumThreadID = "abc" }, "forumThreadID"),
+		)
+
+		It("should accept values at the boundaries", func() {
+			fg := build("admission-ok", func(fg *rss2discordv1alpha1.FeedGroup) {
+				fg.Spec.Retries = 100
+				fg.Spec.CatchUpLimit = 100
+				fg.Spec.Interval = "1m"
+				fg.Spec.RetryInterval = "10s"
+				fg.Spec.AvatarURL = "https://example.com/a.png"
+				fg.Spec.Feeds[0].ForumThreadID = "1234567890"
+			})
+			Expect(k8sClient.Create(ctx, fg)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, fg)).To(Succeed())
 		})
 	})
 

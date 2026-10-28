@@ -30,9 +30,9 @@ type FeedGroupSpecApplyConfiguration struct {
 	// The secret must contain the webhook URL under the specified key.
 	DiscordWebhookSecretRef *v1.SecretKeySelector `json:"discordWebhookSecretRef,omitempty"`
 	// interval is the duration between feed checks (e.g., "30m", "1h"),
-	// parsed by Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
+	// interval would requeue the FeedGroup in a tight reconcile loop,
+	// hammering every feed host on each pass.
 	Interval *string `json:"interval,omitempty"`
 	// format is the default template for Discord messages.
 	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Link}}, {{.Published}}, {{.Author}}, {{.Categories}}.
@@ -52,9 +52,9 @@ type FeedGroupSpecApplyConfiguration struct {
 	// retries is the number of times to retry failed operations (fetch/send).
 	Retries *int32 `json:"retries,omitempty"`
 	// retryInterval is the duration between retries (e.g., "5m"), parsed by
-	// Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// Go's time.ParseDuration. Must be at least 10s: a shorter interval
+	// would requeue the FeedGroup in a tight reconcile loop, hammering every
+	// feed host on each pass.
 	RetryInterval *string `json:"retryInterval,omitempty"`
 	// feeds is the list of RSS feed configurations in this group. Capped at
 	// maxConcurrentFetches (see feedgroup_controller.go) so a single

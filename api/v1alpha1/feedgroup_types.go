@@ -121,6 +121,7 @@ type FeedSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[0-9]+$`
 	ForumThreadID string `json:"forumThreadID,omitempty"`
 
 	// paused stops processing this feed if set to true.
@@ -137,13 +138,14 @@ type FeedGroupSpec struct {
 	DiscordWebhookSecretRef corev1.SecretKeySelector `json:"discordWebhookSecretRef"`
 
 	// interval is the duration between feed checks (e.g., "30m", "1h"),
-	// parsed by Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
+	// interval would requeue the FeedGroup in a tight reconcile loop,
+	// hammering every feed host on each pass.
 	// +default="30m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m')",message="interval must be at least 1m"
 	// +optional
 	Interval string `json:"interval,omitempty"`
 
@@ -176,21 +178,25 @@ type FeedGroupSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
 	AvatarURL string `json:"avatarURL,omitempty"`
 
 	// retries is the number of times to retry failed operations (fetch/send).
 	// +default=3
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
 	// +optional
 	Retries int32 `json:"retries,omitempty"`
 
 	// retryInterval is the duration between retries (e.g., "5m"), parsed by
-	// Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// Go's time.ParseDuration. Must be at least 10s: a shorter interval
+	// would requeue the FeedGroup in a tight reconcile loop, hammering every
+	// feed host on each pass.
 	// +default="5m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('10s')",message="retryInterval must be at least 10s"
 	// +optional
 	RetryInterval string `json:"retryInterval,omitempty"`
 
@@ -213,6 +219,8 @@ type FeedGroupSpec struct {
 	// floods the webhook with every existing entry at once. Entries beyond
 	// the limit are treated as already seen and are not sent.
 	// +default=5
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
 	// +optional
 	CatchUpLimit int32 `json:"catchUpLimit,omitempty"`
 }

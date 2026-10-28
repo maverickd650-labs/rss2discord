@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: feedgroups.rss2discord.maverickd650.dev
 spec:
   group: rss2discord.maverickd650.dev
@@ -58,6 +58,7 @@ spec:
                   from this group.
                 maxLength: 2048
                 minLength: 1
+                pattern: ^https?://
                 type: string
               catchUpLimit:
                 default: 5
@@ -68,6 +69,8 @@ spec:
                   floods the webhook with every existing entry at once. Entries beyond
                   the limit are treated as already seen and are not sent.
                 format: int32
+                maximum: 100
+                minimum: 0
                 type: integer
               discordWebhookSecretRef:
                 description: |-
@@ -220,6 +223,7 @@ spec:
                         instead of creating a new one. Takes precedence over ForumThreadName.
                       maxLength: 32
                       minLength: 1
+                      pattern: ^[0-9]+$
                       type: string
                     forumThreadName:
                       description: |-
@@ -266,30 +270,38 @@ spec:
                 default: 30m
                 description: |-
                   interval is the duration between feed checks (e.g., "30m", "1h"),
-                  parsed by Go's time.ParseDuration. Must not be negative: a negative or
-                  unreasonably short interval would requeue the FeedGroup in a tight
-                  reconcile loop, hammering every feed host on each pass.
+                  parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
+                  interval would requeue the FeedGroup in a tight reconcile loop,
+                  hammering every feed host on each pass.
                 maxLength: 32
                 minLength: 1
-                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                 type: string
+                x-kubernetes-validations:
+                - message: interval must be at least 1m
+                  rule: duration(self) >= duration('1m')
               retries:
                 default: 3
                 description: retries is the number of times to retry failed operations
                   (fetch/send).
                 format: int32
+                maximum: 100
+                minimum: 0
                 type: integer
               retryInterval:
                 default: 5m
                 description: |-
                   retryInterval is the duration between retries (e.g., "5m"), parsed by
-                  Go's time.ParseDuration. Must not be negative: a negative or
-                  unreasonably short interval would requeue the FeedGroup in a tight
-                  reconcile loop, hammering every feed host on each pass.
+                  Go's time.ParseDuration. Must be at least 10s: a shorter interval
+                  would requeue the FeedGroup in a tight reconcile loop, hammering every
+                  feed host on each pass.
                 maxLength: 32
                 minLength: 1
-                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
                 type: string
+                x-kubernetes-validations:
+                - message: retryInterval must be at least 10s
+                  rule: duration(self) >= duration('10s')
               username:
                 description: |-
                   username overrides the webhook's default display name for messages
