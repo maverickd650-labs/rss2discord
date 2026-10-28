@@ -1254,6 +1254,57 @@ var _ = Describe("FeedGroup Controller", func() {
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 
+		It("should persist status and send once when the interval cannot be parsed", func() {
+			const feedGroupName = "test-feedgroup-invalid-interval"
+
+			By("Creating a FeedGroup with an unparsable interval and a feed with one new entry")
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-invalid-interval", createRSSFeed(
+				testEntry{
+					title:       "Invalid Interval Article",
+					description: "Must be sent exactly once",
+					link:        "https://example.com/invalid-interval-article",
+					pubDate:     time.Now().Format(time.RFC1123Z),
+					guid:        "invalid-interval-article",
+				},
+			), func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = overflowingInterval })
+			recorder := events.NewFakeRecorder(10)
+			reconciler.Recorder = recorder
+
+			By("Reconciling: the entry is sent and the reconcile reports no error (an error would hot-loop on backoff)")
+			result, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">=", 30*time.Minute),
+				"the 30m fallback (plus jitter) should be used in place of the unparsable interval")
+			Expect(discordServer.MessageCount()).To(Equal(1))
+
+			By("Verifying the delivery state was persisted despite the bad interval")
+			updated := &rss2discordv1alpha1.FeedGroup{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
+			fs := feedStatusFor(updated, rssServer.URL())
+			Expect(fs.LastSent).NotTo(BeEmpty())
+			Expect(fs.LastSeenEntry).NotTo(BeEmpty())
+			Expect(fs.LastChecked).NotTo(BeEmpty())
+
+			By("Verifying Ready=False/InvalidInterval names the offending value, with one Warning Event")
+			ready := apimeta.FindStatusCondition(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("InvalidInterval"))
+			Expect(ready.Message).To(ContainSubstring("interval"))
+			Expect(ready.Message).To(ContainSubstring(overflowingInterval))
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("InvalidInterval")))
+
+			By("Reconciling again, with the feed due: nothing is re-sent and no second Event fires")
+			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(discordServer.MessageCount()).To(Equal(1))
+			Consistently(recorder.Events).ShouldNot(Receive())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
+			ready = apimeta.FindStatusCondition(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal("InvalidInterval"))
+		})
+
 		It("should never let a later entry's success skip an earlier entry that failed to send", func() {
 			const feedGroupName = "test-feedgroup-send-error-no-skip"
 
@@ -1715,7 +1766,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Applying status computed from the first copy")
 			ensureFeedStatuses(fgA)
 			fgA.Status.ObservedGeneration = fgA.Generation
-			setReadyCondition(fgA, nil)
+			setReadyCondition(fgA, nil, nil)
 			setFeedReachableCondition(fgA)
 			Expect(reconciler.applyStatus(ctx, fgA)).To(Succeed())
 
@@ -1735,7 +1786,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Applying status computed from the second, now-stale copy -- must not fail with a conflict")
 			ensureFeedStatuses(fgB)
 			fgB.Status.ObservedGeneration = fgB.Generation
-			setReadyCondition(fgB, nil)
+			setReadyCondition(fgB, nil, nil)
 			setFeedReachableCondition(fgB)
 			Expect(reconciler.applyStatus(ctx, fgB)).To(Succeed())
 		})

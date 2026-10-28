@@ -1,15 +1,22 @@
 package controller
 
 import (
-	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	ctrl "sigs.k8s.io/controller-runtime"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
+)
+
+// overflowingInterval passes the CRD's Pattern and MaxLength yet is rejected
+// by time.ParseDuration (overflow); notParsable is rejected outright.
+const (
+	overflowingInterval = "9999999999999h"
+	notParsable         = "nope"
 )
 
 // shortContent is reused across truncation test cases below.
@@ -145,7 +152,7 @@ func TestParseDurationWithDefault(t *testing.T) {
 	}{
 		{name: "blank uses fallback", in: "  ", want: fallback},
 		{name: "valid duration parsed", in: "90s", want: 90 * time.Second},
-		{name: "invalid duration returns fallback and error", in: "nope", want: fallback, wantErr: true},
+		{name: "invalid duration returns fallback and error", in: notParsable, want: fallback, wantErr: true},
 		// The CRD's Pattern validation on Interval/RetryInterval
 		// (feedgroup_types.go) accepts unbounded digit runs, so a value like
 		// this passes admission but still overflows time.ParseDuration.
@@ -168,22 +175,70 @@ func TestParseDurationWithDefault(t *testing.T) {
 	}
 }
 
-// TestRequeueWithStatus_InvalidIntervalReturnsError asserts requeueWithStatus
-// surfaces a duration-parse failure as an error rather than silently
-// requeuing, since interval/RetryInterval can pass the CRD's Pattern
-// validation yet still fail time.ParseDuration (see the overflow case in
-// TestParseDurationWithDefault above).
-func TestRequeueWithStatus_InvalidIntervalReturnsError(t *testing.T) {
-	feedGroup := &v1alpha1.FeedGroup{}
-	original := feedGroup.Status.DeepCopy()
-
-	r := &FeedGroupReconciler{}
-	result, err := r.requeueWithStatus(context.Background(), feedGroup, original, "99999999999999999999h", time.Minute, nil, true)
-	if err == nil {
-		t.Fatal("expected error for an invalid interval, got nil")
+// TestInvalidIntervalError asserts both interval fields are checked (so a bad
+// retryInterval is reported even on reconciles that requeue on interval), and
+// that blank or valid values are not flagged. The overflow case passes the
+// CRD's Pattern and MaxLength but is rejected by time.ParseDuration.
+func TestInvalidIntervalError(t *testing.T) {
+	cases := []struct {
+		name         string
+		spec         v1alpha1.FeedGroupSpec
+		wantContains string // empty means no error expected
+	}{
+		{name: "both blank", spec: v1alpha1.FeedGroupSpec{}},
+		{name: "both valid", spec: v1alpha1.FeedGroupSpec{Interval: "30m", RetryInterval: "1m"}},
+		{name: "overflowing interval", spec: v1alpha1.FeedGroupSpec{Interval: overflowingInterval}, wantContains: `spec.interval: invalid duration "` + overflowingInterval + `"`},
+		{name: "overflowing retryInterval", spec: v1alpha1.FeedGroupSpec{Interval: "30m", RetryInterval: overflowingInterval}, wantContains: `spec.retryInterval: invalid duration "` + overflowingInterval + `"`},
+		{name: "interval reported first", spec: v1alpha1.FeedGroupSpec{Interval: notParsable, RetryInterval: notParsable}, wantContains: "spec.interval"},
 	}
-	if result != (ctrl.Result{}) {
-		t.Fatalf("expected zero-value Result on error, got %+v", result)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := invalidIntervalError(&tc.spec)
+			if tc.wantContains == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantContains) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.wantContains)
+			}
+		})
+	}
+}
+
+// TestSetReadyCondition_InvalidIntervalPrecedence asserts InvalidInterval
+// outranks the per-feed summary (the spec is wrong however the feeds fared)
+// but yields to WebhookUnresolved (no feed was processed, so the webhook
+// failure is the more fundamental problem).
+func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
+	intervalErr := invalidIntervalError(&v1alpha1.FeedGroupSpec{Interval: overflowingInterval})
+	webhookErr := errors.New("secret missing")
+
+	readyReason := func(fg *v1alpha1.FeedGroup) string {
+		c := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeReady)
+		if c == nil {
+			t.Fatal("Ready condition not set")
+		}
+		return c.Reason
+	}
+
+	failing := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u", LastError: "boom"}}}}
+	setReadyCondition(failing, nil, intervalErr)
+	if got := readyReason(failing); got != reasonInvalidInterval {
+		t.Fatalf("with a failing feed and a bad interval: reason = %q, want %q", got, reasonInvalidInterval)
+	}
+
+	both := &v1alpha1.FeedGroup{}
+	setReadyCondition(both, webhookErr, intervalErr)
+	if got := readyReason(both); got != "WebhookUnresolved" {
+		t.Fatalf("with a webhook failure and a bad interval: reason = %q, want WebhookUnresolved", got)
+	}
+
+	// Correcting the interval clears the condition on the next reconcile.
+	setReadyCondition(failing, nil, nil)
+	if got := readyReason(failing); got != "FeedErrors" {
+		t.Fatalf("after the interval is fixed: reason = %q, want FeedErrors", got)
 	}
 }
 
