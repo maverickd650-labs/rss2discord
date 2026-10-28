@@ -558,6 +558,73 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 	})
 }
 
+// TestRenderTemplate_Published asserts a date-less entry (zero Published)
+// renders an empty {{.Published}} rather than "0001-01-01T00:00:00Z", while a
+// real date is still formatted as RFC 3339 UTC.
+func TestRenderTemplate_Published(t *testing.T) {
+	tmpl, err := compileTemplate("test", "[{{.Published}}]", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Run("zero published renders empty", func(t *testing.T) {
+		got, _, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "[]"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("non-zero published unchanged", func(t *testing.T) {
+		entry := rss.Entry{Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
+		got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "[2024-05-06T07:08:09Z]"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestBuildDiscordMessage_EmbedTimestamp asserts an entry without a publish
+// date leaves the embed timestamp empty (discord.Embed omits it from the
+// payload) instead of sending year 0001, and that real dates are unchanged.
+func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
+	feedGroup := &v1alpha1.FeedGroup{}
+	feed := &v1alpha1.FeedSpec{}
+	embedSpec := &v1alpha1.EmbedSpec{Enabled: true}
+	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		published time.Time
+		want      string
+	}{
+		{name: "zero published", want: ""},
+		{name: "non-zero published", published: time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600)), want: "2024-05-06T07:08:09Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{Title: "T", Published: tc.published})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if msg.Embed == nil {
+				t.Fatal("expected an embed to be set")
+			}
+			if msg.Embed.Timestamp != tc.want {
+				t.Fatalf("msg.Embed.Timestamp = %q, want %q", msg.Embed.Timestamp, tc.want)
+			}
+		})
+	}
+}
+
 func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	tmpl, err := compileTemplate("test", "{{.Title}}", "")
 	if err != nil {
