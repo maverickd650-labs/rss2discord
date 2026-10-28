@@ -935,21 +935,44 @@ const requeueJitterMaxFactor = 0.1
 // the Ready condition unconditionally, since per-feed status is stale/empty
 // and would otherwise misreport as healthy.
 //
+// An Interval/RetryInterval that time.ParseDuration rejects (the CRD Pattern
+// admits overflowing values) must never abort this function: by now messages
+// may already have been sent, and returning before the status write would
+// discard LastSent/LastSeenEntry/LastChecked, so every error-backoff retry
+// would re-send the same entries. The requeue uses fallback instead, the
+// problem is surfaced on Ready (see setReadyCondition) plus one Warning Event
+// on the transition, and the result carries no error, which would only
+// hot-loop the same failure through controller-runtime's backoff.
+//
 // jitter controls whether requeueJitterMaxFactor is applied to the computed
 // duration. It must be false when fallback is itself an externally-dictated
 // wait -- currently only Discord's rate-limit Retry-After -- since that
 // duration is already the exact minimum wait Discord demands, not a
 // self-chosen periodicity that benefits from desynchronization.
 func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, interval string, fallback time.Duration, webhookErr error, jitter bool) (ctrl.Result, error) {
-	duration, err := parseDurationWithDefault(interval, fallback)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	// parseDurationWithDefault returns fallback alongside its error; the error
+	// itself is reported via intervalErr below, for both fields at once.
+	duration, _ := parseDurationWithDefault(interval, fallback)
 	duration = jitterDuration(duration, jitter)
 
 	feedGroup.Status.ObservedGeneration = feedGroup.Generation
-	setReadyCondition(feedGroup, webhookErr)
+	prevReady := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
+	prevReason, prevMessage := "", ""
+	if prevReady != nil {
+		prevReason, prevMessage = prevReady.Reason, prevReady.Message
+	}
+	setReadyCondition(feedGroup, webhookErr, invalidIntervalError(&feedGroup.Spec))
 	setFeedReachableCondition(feedGroup)
+
+	// Gate the Event on the condition's reason/message actually changing (as
+	// recordConfigError does for feeds), not on every reconcile that still
+	// sees the bad value. ObservedGeneration is deliberately not compared, so
+	// an unrelated spec edit doesn't repeat the Event.
+	if ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); r.Recorder != nil &&
+		ready != nil && ready.Reason == reasonInvalidInterval &&
+		(ready.Reason != prevReason || ready.Message != prevMessage) {
+		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", ready.Message)
+	}
 
 	if apiequality.Semantic.DeepEqual(original, &feedGroup.Status) {
 		return ctrl.Result{RequeueAfter: duration}, nil
@@ -1035,13 +1058,33 @@ func jitterDuration(duration time.Duration, enabled bool) time.Duration {
 // set, means the webhook Secret itself couldn't be resolved -- a
 // group-level failure that preempts any per-feed status, since no feed was
 // even attempted.
-func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr error) {
+//
+// intervalErr, if set, means spec.interval or spec.retryInterval can't be
+// parsed (see invalidIntervalError) and the controller is polling on its
+// default cadence instead. It ranks below webhookErr -- with no feed
+// processed, the webhook failure is the more fundamental problem and its
+// retry cadence is the one that matters -- but above the per-feed summary:
+// the spec is wrong no matter how the feeds fared, and until it's fixed the
+// group is not running on the schedule the user asked for. The InvalidInterval
+// condition clears on its own the reconcile after the spec is corrected.
+func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr, intervalErr error) {
 	if webhookErr != nil {
 		apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             "WebhookUnresolved",
 			Message:            webhookErr.Error(),
+			ObservedGeneration: feedGroup.Generation,
+		})
+		return
+	}
+
+	if intervalErr != nil {
+		apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
+			Type:               v1alpha1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             reasonInvalidInterval,
+			Message:            intervalErr.Error(),
 			ObservedGeneration: feedGroup.Generation,
 		})
 		return
@@ -1065,6 +1108,30 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr error) {
 		Message:            message,
 		ObservedGeneration: feedGroup.Generation,
 	})
+}
+
+// reasonInvalidInterval is the Ready condition reason (and Warning Event
+// reason) for a spec.interval/spec.retryInterval that time.ParseDuration
+// rejects.
+const reasonInvalidInterval = "InvalidInterval"
+
+// invalidIntervalError reports the first of spec.interval and
+// spec.retryInterval that parseDurationWithDefault rejects, or nil. It checks
+// both fields regardless of which one this reconcile happens to requeue on, so
+// the Ready condition doesn't flap between the normal and retry paths (and
+// re-fire its Event each time) while only one of them is bad. The CRD Pattern
+// admits values like "9999999999999h" that overflow time.ParseDuration, and
+// objects admitted under an older schema may hold others.
+func invalidIntervalError(spec *v1alpha1.FeedGroupSpec) error {
+	for _, field := range []struct{ name, value string }{
+		{"interval", spec.Interval},
+		{"retryInterval", spec.RetryInterval},
+	} {
+		if _, err := parseDurationWithDefault(field.value, 0); err != nil {
+			return fmt.Errorf("spec.%s: %w; using the default instead", field.name, err)
+		}
+	}
+	return nil
 }
 
 // countFailingFeeds reports how many feeds currently have a non-empty
