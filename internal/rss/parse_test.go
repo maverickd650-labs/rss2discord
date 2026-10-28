@@ -723,10 +723,13 @@ func TestNSTextsBoundsRetainedCandidates(t *testing.T) {
 	b.WriteString(`<rss xmlns:media="http://search.yahoo.com/mrss/"><channel><item>`)
 	b.WriteString(strings.Repeat("<title/>", 5000))
 	b.WriteString(strings.Repeat("<media:title>M</media:title>", 5000))
-	b.WriteString("<title>Real</title><title>Later</title>")
+	// 20 distinct extension namespaces fill the fallback cap before the real
+	// unqualified and RSS 1.0 values arrive; those must still be retained.
 	for i := range 20 {
 		fmt.Fprintf(&b, `<x:title xmlns:x="urn:ns%d">N%d</x:title>`, i, i)
 	}
+	b.WriteString(`<r:title xmlns:r="http://purl.org/rss/1.0/">RDF</r:title>`)
+	b.WriteString("<title>Real</title><title>Later</title>")
 	b.WriteString(`</item></channel></rss>`)
 
 	var env rssEnvelope
@@ -734,8 +737,9 @@ func TestNSTextsBoundsRetainedCandidates(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	cands := env.Channel.Items[0].Title
-	if len(cands) > maxNSCandidates {
-		t.Fatalf("retained %d candidates, want at most %d", len(cands), maxNSCandidates)
+	// maxNSCandidates fallbacks plus the unqualified and RSS 1.0 tiers.
+	if len(cands) > maxNSCandidates+2 {
+		t.Fatalf("retained %d candidates, want at most %d", len(cands), maxNSCandidates+2)
 	}
 	if got := pickText(cands); got != "Real" {
 		t.Fatalf("pickText = %q, want %q", got, "Real")

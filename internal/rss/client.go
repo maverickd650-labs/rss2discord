@@ -392,16 +392,32 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 		return err
 	}
 	el.Text = strings.TrimSpace(el.Text)
-	if el.Text == "" || len(*c) >= maxNSCandidates {
+	if el.Text == "" {
 		return nil
 	}
+	others := 0
 	for _, existing := range *c {
 		if existing.XMLName.Space == el.XMLName.Space {
 			return nil
 		}
+		if !preferredNamespace(existing.XMLName.Space) {
+			others++
+		}
+	}
+	// Only the fallback tier is capped: a preferred namespace is always
+	// admitted, so a run of extension namespaces ahead of it can't push out
+	// the value pickText would choose.
+	if !preferredNamespace(el.XMLName.Space) && others >= maxNSCandidates {
+		return nil
 	}
 	*c = append(*c, el)
 	return nil
+}
+
+// preferredNamespace reports whether space is one pickText (or a caller's
+// pickTextPrefer) ranks ahead of the any-namespace fallback.
+func preferredNamespace(space string) bool {
+	return space == "" || space == rss10Namespace
 }
 
 // pickText returns the trimmed text of the most authoritative non-blank
