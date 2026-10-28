@@ -516,13 +516,13 @@ func (g *mediaGroup) image() string {
 		return ""
 	}
 	for _, t := range g.Thumbnails {
-		if t.URL != "" {
-			return t.URL
+		if u := strings.TrimSpace(t.URL); u != "" {
+			return u
 		}
 	}
 	for _, c := range g.Contents {
-		if c.isImage() && c.URL != "" {
-			return c.URL
+		if u := strings.TrimSpace(c.URL); c.isImage() && u != "" {
+			return u
 		}
 	}
 	return ""
@@ -538,13 +538,17 @@ func (g *mediaGroup) description() string {
 
 // mediaImage picks the first available Media RSS image: a direct thumbnail,
 // then direct image content, then whatever the entry's <media:group> holds.
+// Candidates are compared trimmed, so a whitespace-only url attribute can't
+// shadow a usable image further down the list.
 func mediaImage(thumbnail *rssMediaURL, content []rssMediaURL, group *mediaGroup) string {
-	if thumbnail != nil && thumbnail.URL != "" {
-		return thumbnail.URL
+	if thumbnail != nil {
+		if u := strings.TrimSpace(thumbnail.URL); u != "" {
+			return u
+		}
 	}
 	for _, c := range content {
-		if c.isImage() && c.URL != "" {
-			return c.URL
+		if u := strings.TrimSpace(c.URL); c.isImage() && u != "" {
+			return u
 		}
 	}
 	return group.image()
@@ -553,8 +557,10 @@ func mediaImage(thumbnail *rssMediaURL, content []rssMediaURL, group *mediaGroup
 // entryImage picks the first available image source from an RSS item's
 // enclosure, Media RSS thumbnail/content elements, or <media:group>.
 func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMediaURL, group *mediaGroup) string {
-	if enclosure != nil && strings.HasPrefix(enclosure.Type, "image/") && enclosure.URL != "" {
-		return enclosure.URL
+	if enclosure != nil && strings.HasPrefix(enclosure.Type, "image/") {
+		if u := strings.TrimSpace(enclosure.URL); u != "" {
+			return u
+		}
 	}
 	return mediaImage(thumbnail, content, group)
 }
@@ -621,7 +627,9 @@ func primaryLink(links []atomLink) string {
 func enclosureImage(links []atomLink) string {
 	for _, l := range links {
 		if l.Rel == "enclosure" && strings.HasPrefix(l.Type, "image/") {
-			return l.Href
+			if href := strings.TrimSpace(l.Href); href != "" {
+				return href
+			}
 		}
 	}
 	return ""

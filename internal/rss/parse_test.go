@@ -126,6 +126,14 @@ func TestEnclosureImage(t *testing.T) {
 			want:  "",
 		},
 		{
+			name: "whitespace-only href skipped for a later usable one",
+			links: []atomLink{
+				{Href: "  ", Rel: relEnclosure, Type: imageJPEG},
+				{Href: picJPEGURL, Rel: relEnclosure, Type: imageJPEG},
+			},
+			want: picJPEGURL,
+		},
+		{
 			name:  "alternate link with image type ignored",
 			links: []atomLink{{Href: picJPEGURL, Rel: relAlternate, Type: imageJPEG}},
 			want:  "",
@@ -218,6 +226,16 @@ func TestEntryImage(t *testing.T) {
 				{URL: "http://g.png", Medium: mediumImage},
 			}},
 			want: "http://g.png",
+		},
+		{
+			// Whitespace-only url attributes at every earlier tier must not
+			// shadow the usable group image.
+			name:      "whitespace-only urls skipped",
+			enclosure: &rssEnclosure{URL: "  ", Type: imageJPEG},
+			thumbnail: &rssMediaURL{URL: "\n"},
+			content:   []rssMediaURL{{URL: " ", Medium: mediumImage}},
+			group:     &mediaGroup{Thumbnails: []rssMediaURL{{URL: " "}, {URL: " " + groupJPEGURL + " "}}},
+			want:      groupJPEGURL,
 		},
 		{
 			name:  "group without usable image",
