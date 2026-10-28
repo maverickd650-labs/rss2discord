@@ -1196,3 +1196,34 @@ func TestParseFeed_FeedTitle(t *testing.T) {
 		})
 	}
 }
+
+// An Atom type="xhtml" construct holds its value in a child <div>, which a
+// chardata-only field would drop; type="html"/"text" must stay unchanged.
+func TestParseFeed_AtomXHTMLConstructs(t *testing.T) {
+	const doc = `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="http://www.w3.org/1999/xhtml"><title type="xhtml"><x:div>Feed <b>Name</b></x:div></title>
+<entry><id>1</id>
+<title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">Hello <i>world</i></div></title>
+<summary type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Short</p></div></summary>
+<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Full body</p></div></content></entry>
+<entry><id>2</id><title type="html">A &amp;lt;b&amp;gt;</title><summary type="text">Plain</summary></entry></feed>`
+	res, title, err := parseFeed([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `<x:div>Feed <b>Name</b></x:div>`; title != want {
+		t.Errorf("feed title = %q, want %q", title, want)
+	}
+	e := res[0]
+	for name, pair := range map[string][2]string{
+		"title":   {e.Title, `<div xmlns="http://www.w3.org/1999/xhtml">Hello <i>world</i></div>`},
+		"summary": {e.Description, `<div xmlns="http://www.w3.org/1999/xhtml"><p>Short</p></div>`},
+		"content": {e.Content, `<div xmlns="http://www.w3.org/1999/xhtml"><p>Full body</p></div>`},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s = %q, want %q", name, pair[0], pair[1])
+		}
+	}
+	if res[1].Title != "A &lt;b&gt;" || res[1].Description != "Plain" {
+		t.Errorf("html/text constructs changed: %q / %q", res[1].Title, res[1].Description)
+	}
+}

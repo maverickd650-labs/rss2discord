@@ -420,7 +420,19 @@ type nsTexts []nsText
 
 func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var el nsText
-	if err := d.DecodeElement(&el, &start); err != nil {
+	if isXHTMLConstruct(start) {
+		// An Atom type="xhtml" text construct wraps its value in a child
+		// <div>, which chardata alone would drop. Keep the raw inner markup;
+		// the controller's stripHTML turns it into plain text. Only xhtml is
+		// read this way: innerxml of type="html" is still-escaped markup.
+		var x struct {
+			Inner string `xml:",innerxml"`
+		}
+		if err := d.DecodeElement(&x, &start); err != nil {
+			return err
+		}
+		el = nsText{XMLName: start.Name, Text: x.Inner}
+	} else if err := d.DecodeElement(&el, &start); err != nil {
 		return err
 	}
 	el.Text = strings.TrimSpace(el.Text)
@@ -444,6 +456,18 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	}
 	*c = append(*c, el)
 	return nil
+}
+
+// isXHTMLConstruct reports whether start is an Atom text construct declared
+// type="xhtml". encoding/xml matches the attribute by local name, so this also
+// covers a namespaced or unprefixed spelling.
+func isXHTMLConstruct(start xml.StartElement) bool {
+	for _, a := range start.Attr {
+		if a.Name.Local == "type" && strings.EqualFold(strings.TrimSpace(a.Value), "xhtml") {
+			return true
+		}
+	}
+	return false
 }
 
 // preferredNamespace reports whether space is one pickText (or a caller's
@@ -639,12 +663,14 @@ func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMe
 }
 
 type atomEntry struct {
-	ID      string     `xml:"id"`
-	Title   string     `xml:"title"`
-	Links   []atomLink `xml:"link"`
-	Summary string     `xml:"summary"`
-	// Content is a slice of nsText because a direct <media:content> on the
-	// entry shares the local name; see atomText.
+	ID    string     `xml:"id"`
+	Links []atomLink `xml:"link"`
+	// Title, Summary and Content are nsTexts: Content because a direct
+	// <media:content> on the entry shares its local name (see atomText), and
+	// all three so type="xhtml" values (a child <div>) are captured; see
+	// nsTexts.UnmarshalXML.
+	Title      nsTexts        `xml:"title"`
+	Summary    nsTexts        `xml:"summary"`
 	Content    nsTexts        `xml:"content"`
 	Updated    string         `xml:"updated"`
 	Published  string         `xml:"published"`
@@ -908,14 +934,14 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			id = strings.TrimSpace(link)
 		}
 		if id == "" {
-			id = strings.TrimSpace(item.Title)
+			id = atomText(item.Title)
 		}
 
 		// Content is exposed even when it doubles as Description (no
 		// summary), so templates can use {{.Content}} regardless of which
 		// elements a given feed fills in.
 		content := atomText(item.Content)
-		description := strings.TrimSpace(item.Summary)
+		description := atomText(item.Summary)
 		if description == "" {
 			description = content
 		}
@@ -937,7 +963,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		entries = append(entries, Entry{
 			ID:          id,
-			Title:       strings.TrimSpace(item.Title),
+			Title:       atomText(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,
 			Content:     content,
