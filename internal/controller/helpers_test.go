@@ -21,6 +21,13 @@ const (
 
 // shortContent is reused across truncation test cases below.
 const shortContent = "short"
+
+// Shared fixtures that several tests below (and fuzz_test.go) repeat.
+const (
+	jsAlertURL        = "javascript:alert(1)"
+	discordRelativeTS = "<t:1714979289:R>"
+	imageFixtureURL   = "https://x/a.png"
+)
 const truncateMe = "truncate me"
 
 // excerptText is reused across the "continue reading" stripHTML test cases
@@ -57,7 +64,7 @@ func TestHTTPURLOrEmpty(t *testing.T) {
 	}{
 		{name: "https kept", input: "https://example.com/a", want: "https://example.com/a"},
 		{name: "http kept", input: "http://example.com/a", want: "http://example.com/a"},
-		{name: "javascript dropped", input: "javascript:alert(1)", want: ""},
+		{name: "javascript dropped", input: jsAlertURL, want: ""},
 		{name: "data dropped", input: "data:text/html,<script>", want: ""},
 		{name: "empty dropped", input: "", want: ""},
 	}
@@ -700,7 +707,7 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 		// A non-UTC zone: the Unix value is zone-independent.
 		published := time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600))
 		got := render(t, "<t:{{.PublishedUnix}}:R>", rss.Entry{Published: published})
-		if want := "<t:1714979289:R>"; got != want {
+		if want := discordRelativeTS; got != want {
 			t.Fatalf("renderTemplate() = %q, want %q", got, want)
 		}
 	})
@@ -714,7 +721,7 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 			t.Fatalf("guarded template rendered %q for an undated entry, want empty", got)
 		}
 		dated := rss.Entry{Published: time.Unix(1714979289, 0)}
-		if got, want := render(t, format, dated), "<t:1714979289:R>"; got != want {
+		if got, want := render(t, format, dated), discordRelativeTS; got != want {
 			t.Fatalf("renderTemplate() = %q, want %q", got, want)
 		}
 	})
@@ -774,10 +781,10 @@ func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
 		name, style, image   string
 		wantThumb, wantLarge string
 	}{
-		{name: "default is thumbnail", image: "https://x/a.png", wantThumb: "https://x/a.png"},
-		{name: "explicit thumbnail", style: "thumbnail", image: "https://x/a.png", wantThumb: "https://x/a.png"},
-		{name: "image style", style: "image", image: "https://x/a.png", wantLarge: "https://x/a.png"},
-		{name: "unsafe scheme dropped", style: "image", image: "javascript:alert(1)"},
+		{name: "default is thumbnail", image: imageFixtureURL, wantThumb: imageFixtureURL},
+		{name: "explicit thumbnail", style: "thumbnail", image: imageFixtureURL, wantThumb: imageFixtureURL},
+		{name: "image style", style: "image", image: imageFixtureURL, wantLarge: imageFixtureURL},
+		{name: "unsafe scheme dropped", style: "image", image: jsAlertURL},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

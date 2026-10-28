@@ -75,13 +75,15 @@ func TestNormalizeWebhookURL_SharesRateLimitKey(t *testing.T) {
 	}
 }
 
+const imageFixtureURL = "https://x/a.png"
+
 func TestEmbedToPayload_ImageStyles(t *testing.T) {
-	thumb := embedToPayload(Embed{Title: "t", ThumbnailURL: "https://x/a.png"})
+	thumb := embedToPayload(Embed{Title: "t", ThumbnailURL: imageFixtureURL})
 	if thumb.Thumbnail == nil || thumb.Image != nil {
 		t.Fatalf("thumbnail style: %+v", thumb)
 	}
-	img := embedToPayload(Embed{Title: "t", ImageURL: "https://x/a.png"})
-	if img.Image == nil || img.Image.URL != "https://x/a.png" || img.Thumbnail != nil {
+	img := embedToPayload(Embed{Title: "t", ImageURL: imageFixtureURL})
+	if img.Image == nil || img.Image.URL != imageFixtureURL || img.Thumbnail != nil {
 		t.Fatalf("image style: %+v", img)
 	}
 }
