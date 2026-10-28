@@ -210,22 +210,19 @@ func TestEntryImage(t *testing.T) {
 		{
 			name:    "group thumbnail used after direct sources",
 			content: []rssMediaURL{{URL: "http://c.mp4", Medium: mediumVideo}},
-			group:   &mediaGroup{Thumbnails: []rssMediaURL{{URL: groupJPEGURL}}},
+			group:   &mediaGroup{Thumbnail: groupJPEGURL},
 			want:    groupJPEGURL,
 		},
 		{
 			name:      "direct thumbnail preferred over group",
 			thumbnail: &rssMediaURL{URL: thumbJPEGURL},
-			group:     &mediaGroup{Thumbnails: []rssMediaURL{{URL: groupJPEGURL}}},
+			group:     &mediaGroup{Thumbnail: groupJPEGURL},
 			want:      thumbJPEGURL,
 		},
 		{
-			name: "group image content used when group has no thumbnail",
-			group: &mediaGroup{Contents: []rssMediaURL{
-				{URL: "http://g.mp4", Medium: mediumVideo},
-				{URL: "http://g.png", Medium: mediumImage},
-			}},
-			want: "http://g.png",
+			name:  "group image content used when group has no thumbnail",
+			group: &mediaGroup{ImageContent: "http://g.png"},
+			want:  "http://g.png",
 		},
 		{
 			// Whitespace-only url attributes at every earlier tier must not
@@ -234,12 +231,12 @@ func TestEntryImage(t *testing.T) {
 			enclosure: &rssEnclosure{URL: "  ", Type: imageJPEG},
 			thumbnail: &rssMediaURL{URL: "\n"},
 			content:   []rssMediaURL{{URL: " ", Medium: mediumImage}},
-			group:     &mediaGroup{Thumbnails: []rssMediaURL{{URL: " "}, {URL: " " + groupJPEGURL + " "}}},
+			group:     &mediaGroup{Thumbnail: groupJPEGURL},
 			want:      groupJPEGURL,
 		},
 		{
 			name:  "group without usable image",
-			group: &mediaGroup{Thumbnails: []rssMediaURL{{}}, Contents: []rssMediaURL{{URL: "http://g.mp4", Medium: mediumVideo}}},
+			group: &mediaGroup{},
 			want:  "",
 		},
 	}
@@ -248,6 +245,41 @@ func TestEntryImage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := entryImage(tc.enclosure, tc.thumbnail, tc.content, tc.group); got != tc.want {
 				t.Fatalf("entryImage() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMediaGroupDecodeKeepsFirstUsable(t *testing.T) {
+	cases := []struct {
+		name, xml, want string
+	}{
+		{
+			name: "first non-blank thumbnail wins, later ones dropped",
+			xml: `<group><thumbnail url=" "/><thumbnail url=" http://g1.jpg "/>` +
+				`<thumbnail url="http://g2.jpg"/><content url="http://c.png" medium="image"/></group>`,
+			want: "http://g1.jpg",
+		},
+		{
+			name: "first image content wins when no thumbnail",
+			xml: `<group><content url="http://g.mp4" medium="video"/>` +
+				`<content url="http://first.png" medium="image"/><content url="http://g2.png" type="image/png"/></group>`,
+			want: "http://first.png",
+		},
+		{
+			name: "no usable image",
+			xml:  `<group><thumbnail/><content url="http://g.mp4" medium="video"/></group>`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var g mediaGroup
+			if err := xml.Unmarshal([]byte(tc.xml), &g); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := g.image(); got != tc.want {
+				t.Fatalf("image() = %q, want %q", got, tc.want)
 			}
 		})
 	}

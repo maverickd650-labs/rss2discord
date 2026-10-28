@@ -504,9 +504,40 @@ func (m rssMediaURL) isImage() bool {
 // own children can't collide with an entry's core fields: only the entry's
 // direct children share a struct with <content>, <description> and <title>.
 type mediaGroup struct {
-	Thumbnails  []rssMediaURL `xml:"thumbnail"`
-	Contents    []rssMediaURL `xml:"content"`
-	Description string        `xml:"description"`
+	Thumbnail    firstThumbnail    `xml:"thumbnail"`
+	ImageContent firstImageContent `xml:"content"`
+	Description  string            `xml:"description"`
+}
+
+// firstThumbnail and firstImageContent keep only the first usable url among a
+// group's repeated <media:thumbnail> / image-typed <media:content> children,
+// so a group with many children retains one string rather than a slice sized
+// by the response. encoding/xml calls UnmarshalXML once per matching child.
+type (
+	firstThumbnail    string
+	firstImageContent string
+)
+
+func (f *firstThumbnail) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var m rssMediaURL
+	if err := d.DecodeElement(&m, &start); err != nil {
+		return err
+	}
+	if *f == "" {
+		*f = firstThumbnail(strings.TrimSpace(m.URL))
+	}
+	return nil
+}
+
+func (f *firstImageContent) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var m rssMediaURL
+	if err := d.DecodeElement(&m, &start); err != nil {
+		return err
+	}
+	if *f == "" && m.isImage() {
+		*f = firstImageContent(strings.TrimSpace(m.URL))
+	}
+	return nil
 }
 
 // image returns the group's first thumbnail, else its first image-typed
@@ -515,17 +546,10 @@ func (g *mediaGroup) image() string {
 	if g == nil {
 		return ""
 	}
-	for _, t := range g.Thumbnails {
-		if u := strings.TrimSpace(t.URL); u != "" {
-			return u
-		}
+	if g.Thumbnail != "" {
+		return string(g.Thumbnail)
 	}
-	for _, c := range g.Contents {
-		if u := strings.TrimSpace(c.URL); c.isImage() && u != "" {
-			return u
-		}
-	}
-	return ""
+	return string(g.ImageContent)
 }
 
 // description returns the group's trimmed <media:description>; nil-safe.
