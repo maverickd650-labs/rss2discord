@@ -415,7 +415,11 @@ func (r *FeedGroupReconciler) processFeed(
 		hasSeenID = false
 	}
 	if !hasSeenID {
-		if feedGroup.Spec.CatchUpLimit == 0 && lastSeenID == "" && len(entries) > 0 {
+		catchUpLimit := defaultCatchUpLimit
+		if feedGroup.Spec.CatchUpLimit != nil {
+			catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
+		}
+		if catchUpLimit == 0 && lastSeenID == "" && len(entries) > 0 {
 			// catchUpLimit: 0 on a true first sync (no watermark at all)
 			// means "don't post the backlog": start from the newest entry.
 			// A watermark that merely scrolled out of the feed's window is
@@ -424,7 +428,7 @@ func (r *FeedGroupReconciler) processFeed(
 			skipBacklog(feedGroup, fs, entries)
 			entries = nil
 		} else {
-			entries = limitCatchUp(entries, int(feedGroup.Spec.CatchUpLimit))
+			entries = limitCatchUp(entries, catchUpLimit)
 		}
 	}
 

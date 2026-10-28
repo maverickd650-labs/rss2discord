@@ -239,7 +239,7 @@ type FeedGroupSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	// +optional
-	CatchUpLimit int32 `json:"catchUpLimit,omitempty"`
+	CatchUpLimit *int32 `json:"catchUpLimit,omitempty"`
 }
 
 // FeedStatus is the observed state of a single feed within a FeedGroup,

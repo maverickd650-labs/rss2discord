@@ -781,7 +781,7 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 	ctx := t.Context()
 
-	run := func(t *testing.T, lastSeen string) (sent int, fs *v1alpha1.FeedStatus) {
+	run := func(t *testing.T, lastSeen string, limit *int32) (sent int, fs *v1alpha1.FeedStatus) {
 		t.Helper()
 		ns, name := "skip-backlog-unit", "fg-skip-"+lastSeen
 		defer deleteFeedGroupMetrics(ns, name)
@@ -789,7 +789,7 @@ func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 		defer discordServer.Close()
 
 		fg, feed := newMetricsFeedGroup(ns, name, "")
-		fg.Spec.CatchUpLimit = 0
+		fg.Spec.CatchUpLimit = limit
 		fg.Status.Feeds[0].LastSeenEntry = lastSeen
 		client := discordServer.DiscordClientBuilder()(discordServer.URL())
 		(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
@@ -797,13 +797,18 @@ func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 	}
 
 	t.Run("first sync sends nothing and sets the watermark", func(t *testing.T) {
-		sent, fs := run(t, "")
+		sent, fs := run(t, "", new(int32(0)))
 		if sent != 0 || fs.LastSeenEntry != "https://example.com/article" {
 			t.Fatalf("sent=%d watermark=%q", sent, fs.LastSeenEntry)
 		}
 	})
 	t.Run("scrolled-out watermark still delivers", func(t *testing.T) {
-		if sent, _ := run(t, "gone"); sent != 1 {
+		if sent, _ := run(t, "gone", new(int32(0))); sent != 1 {
+			t.Fatalf("sent=%d, want 1", sent)
+		}
+	})
+	t.Run("omitted limit delivers the backlog", func(t *testing.T) {
+		if sent, _ := run(t, "", nil); sent != 1 {
 			t.Fatalf("sent=%d, want 1", sent)
 		}
 	})

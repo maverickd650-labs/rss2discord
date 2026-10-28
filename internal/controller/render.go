@@ -49,6 +49,10 @@ const defaultMessageFormat = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.L
 // description can easily exceed this once stripped to plain text.
 const maxDiscordMessageLength = 2000
 
+// maxTemplateReplaceBytes bounds each replace result before allocating it,
+// including intermediate values in pipelines, well above Discord's limits.
+const maxTemplateReplaceBytes = 1024 * 1024
+
 // compileMessageTemplate parses a feed's Discord message template once per
 // feed per reconcile, instead of reparsing it for every entry sent.
 func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*template.Template, error) {
@@ -93,8 +97,15 @@ var templateFuncs = template.FuncMap{
 	"lower": strings.ToLower,
 	"upper": strings.ToUpper,
 	"trim":  strings.TrimSpace,
-	"replace": func(old, new, s string) string {
-		return strings.ReplaceAll(s, old, new)
+	"replace": func(old, new, s string) (string, error) {
+		count := strings.Count(s, old)
+		remaining := len(s) - count*len(old)
+		// Compare before multiplying to avoid overflow. Count handles an
+		// empty old string as one match per UTF-8 boundary, like ReplaceAll.
+		if remaining > maxTemplateReplaceBytes || (count > 0 && len(new) > (maxTemplateReplaceBytes-remaining)/count) {
+			return "", fmt.Errorf("replace: result exceeds maximum size of %d bytes", maxTemplateReplaceBytes)
+		}
+		return strings.ReplaceAll(s, old, new), nil
 	},
 	// discordTime renders a Discord dynamic timestamp, e.g.
 	// {{.PublishedUnix | discordTime "R"}}. An undated entry
@@ -193,6 +204,10 @@ func stripHTML(input string) string {
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
 			name, _ := z.TagName()
 			tag := string(name)
+			// Atom XHTML may use prefixes inherited from the feed element.
+			if _, local, ok := strings.Cut(tag, ":"); ok {
+				tag = local
+			}
 			switch {
 			case skipUntil != "":
 				if tag == skipUntil {

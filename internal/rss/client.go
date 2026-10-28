@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 )
 
@@ -34,7 +35,11 @@ const defaultTimeout = 15 * time.Second
 const userAgent = "rss2discord-operator (+https://github.com/maverickd650/rss2discord-operator)"
 
 type Entry struct {
-	ID          string
+	ID string
+	// IDFromLink records a link fallback when the feed has no GUID/Atom ID.
+	// Consumers can preserve meaningful URL fragments and ref parameters for
+	// these entries while normalizing GUID-based identities more aggressively.
+	IDFromLink  bool
 	Title       string
 	Link        string
 	Description string
@@ -431,6 +436,9 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 		if err := d.DecodeElement(&x, &start); err != nil {
 			return err
 		}
+		if !hasVisibleXHTMLText(x.Inner) {
+			return nil
+		}
 		el = nsText{XMLName: start.Name, Text: x.Inner}
 	} else if err := d.DecodeElement(&el, &start); err != nil {
 		return err
@@ -456,6 +464,36 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	}
 	*c = append(*c, el)
 	return nil
+}
+
+// hasVisibleXHTMLText ignores empty wrappers, comments, and script/style
+// bodies so a markup-only Atom summary doesn't mask usable content.
+func hasVisibleXHTMLText(markup string) bool {
+	z := html.NewTokenizer(strings.NewReader(markup))
+	var skipUntil string
+	for {
+		switch tokenType := z.Next(); tokenType {
+		case html.ErrorToken:
+			return false
+		case html.TextToken:
+			if skipUntil == "" && strings.TrimSpace(string(z.Text())) != "" {
+				return true
+			}
+		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
+			name, _ := z.TagName()
+			tag := string(name)
+			if _, local, ok := strings.Cut(tag, ":"); ok {
+				tag = local
+			}
+			if skipUntil != "" {
+				if tokenType == html.EndTagToken && tag == skipUntil {
+					skipUntil = ""
+				}
+			} else if tokenType == html.StartTagToken && (tag == "script" || tag == "style") {
+				skipUntil = tag
+			}
+		}
+	}
 }
 
 // isXHTMLConstruct reports whether start is an Atom text construct declared
@@ -873,6 +911,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 		}
 
 		id := pickText(item.GUID)
+		idFromLink := id == "" && link != ""
 		if id == "" {
 			id = link
 		}
@@ -892,6 +931,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 
 		entries = append(entries, Entry{
 			ID:          id,
+			IDFromLink:  idFromLink,
 			Title:       title,
 			Link:        link,
 			Description: description,
@@ -930,6 +970,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		link := resolveAtomURL(base, primaryLink(item.Links))
 
 		id := strings.TrimSpace(item.ID)
+		idFromLink := id == "" && strings.TrimSpace(link) != ""
 		if id == "" {
 			id = strings.TrimSpace(link)
 		}
@@ -963,6 +1004,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		entries = append(entries, Entry{
 			ID:          id,
+			IDFromLink:  idFromLink,
 			Title:       atomText(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,

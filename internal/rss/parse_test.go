@@ -1227,3 +1227,34 @@ func TestParseFeed_AtomXHTMLConstructs(t *testing.T) {
 		t.Errorf("html/text constructs changed: %q / %q", res[1].Title, res[1].Description)
 	}
 }
+
+func TestParseFeed_AtomXHTMLSummaryFallback(t *testing.T) {
+	const content = `<x:div><x:p>Full body</x:p></x:div>`
+	for _, tc := range []struct {
+		name, summary, want string
+	}{
+		{name: "empty summary body", summary: "", want: content},
+		{name: "empty wrapper", summary: `<div xmlns="http://www.w3.org/1999/xhtml"/>`, want: content},
+		{name: "prefixed whitespace", summary: "<x:div><x:p> \n\t </x:p></x:div>", want: content},
+		{name: "comments and breaks", summary: `<x:div><!-- hidden --><x:br/></x:div>`, want: content},
+		{name: "whitespace entity", summary: `<x:div>&#160;</x:div>`, want: content},
+		{name: "script and style only", summary: `<x:div><x:script>hidden</x:script><x:style>hidden</x:style></x:div>`, want: content},
+		{name: "visible markup preserved", summary: `<x:div><x:p>Short</x:p><x:p>Next</x:p></x:div>`, want: `<x:div><x:p>Short</x:p><x:p>Next</x:p></x:div>`},
+		{name: "visible entity", summary: `<x:div>&amp;</x:div>`, want: `<x:div>&amp;</x:div>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="http://www.w3.org/1999/xhtml"><entry><id>1</id>` +
+				`<summary type="xhtml">` + tc.summary + `</summary><content type="xhtml">` + content + `</content></entry></feed>`
+			entries, _, err := parseFeed([]byte(doc))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parse: entries=%v err=%v", entries, err)
+			}
+			if got := entries[0].Description; got != tc.want {
+				t.Errorf("description=%q, want %q", got, tc.want)
+			}
+			if got := entries[0].Content; got != content {
+				t.Errorf("content=%q, want %q", got, content)
+			}
+		})
+	}
+}

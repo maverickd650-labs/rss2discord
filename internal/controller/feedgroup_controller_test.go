@@ -477,6 +477,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying FeedGroup status was updated")
 			updated := &rss2discordv1alpha1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupNameBasic, Namespace: namespace}, updated)).To(Succeed())
+			Expect(updated.Spec.CatchUpLimit).To(HaveValue(Equal(int32(5))), "omitted catchUpLimit must default to 5")
 
 			Expect(feedStatusFor(updated, rssServer.URL()).LastChecked).NotTo(BeEmpty())
 			Expect(feedStatusFor(updated, rssServer.URL()).LastSeenEntry).NotTo(BeEmpty())
@@ -635,7 +636,7 @@ var _ = Describe("FeedGroup Controller", func() {
 				pubDate:     time.Now().Add(-1 * time.Hour).Format(time.RFC1123Z),
 				guid:        "original-article",
 			}), withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
-				fg.Spec.CatchUpLimit = 5
+				fg.Spec.CatchUpLimit = new(int32(5))
 			})
 
 			By("Running the first reconciliation, which sends and records the original entry")
@@ -731,7 +732,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			}
 
 			discordServer, _, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-catchup", createRSSFeed(entries...), withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
-				fg.Spec.CatchUpLimit = 3
+				fg.Spec.CatchUpLimit = new(int32(3))
 			})
 
 			By("Running reconciliation")
@@ -756,14 +757,15 @@ var _ = Describe("FeedGroup Controller", func() {
 					guid:        fmt.Sprintf("skip-backlog-%d", i),
 				})
 			}
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-skip-backlog", createRSSFeed(entries...), withRetries("5m", 3))
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-skip-backlog", createRSSFeed(entries...), withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
+				fg.Spec.CatchUpLimit = new(int32(0))
+			})
 
-			By("Setting catchUpLimit to an explicit 0 (omitempty drops it from a typed create, so patch it in)")
+			By("Verifying typed creation preserves an explicit catchUpLimit of 0")
 			fg := &rss2discordv1alpha1.FeedGroup{}
 			key := types.NamespacedName{Name: feedGroupName, Namespace: namespace}
 			Expect(k8sClient.Get(ctx, key, fg)).To(Succeed())
-			Expect(fg.Spec.CatchUpLimit).To(Equal(int32(5)), "an omitted catchUpLimit must keep defaulting to 5")
-			Expect(k8sClient.Patch(ctx, fg, client.RawPatch(types.MergePatchType, []byte(`{"spec":{"catchUpLimit":0}}`)))).To(Succeed())
+			Expect(fg.Spec.CatchUpLimit).To(HaveValue(Equal(int32(0))))
 
 			By("Reconciling the first sync")
 			_, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
@@ -808,7 +810,7 @@ var _ = Describe("FeedGroup Controller", func() {
 				noDate("Article B", "b"),
 				noDate("Article A", "a"), // index 2 = oldest
 			), withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
-				fg.Spec.CatchUpLimit = 2
+				fg.Spec.CatchUpLimit = new(int32(2))
 			})
 
 			By("Running the first reconcile")
@@ -2021,7 +2023,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Creating a mock Discord server that rate-limits many deliveries")
 			discordServer, _, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-rl-stop", createRSSFeed(entries...), func(fg *rss2discordv1alpha1.FeedGroup) {
 				fg.Spec.RetryInterval = "5m"
-				fg.Spec.CatchUpLimit = 5
+				fg.Spec.CatchUpLimit = new(int32(5))
 			})
 			discordServer.FailNextRequestsRateLimited(10, "2")
 
@@ -2282,8 +2284,8 @@ var _ = Describe("FeedGroup Controller", func() {
 			},
 			Entry("negative retries", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Retries = -1 }, "retries"),
 			Entry("retries over 100", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Retries = 101 }, "retries"),
-			Entry("negative catchUpLimit", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.CatchUpLimit = -1 }, "catchUpLimit"),
-			Entry("catchUpLimit over 100", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.CatchUpLimit = 101 }, "catchUpLimit"),
+			Entry("negative catchUpLimit", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.CatchUpLimit = new(int32(-1)) }, "catchUpLimit"),
+			Entry("catchUpLimit over 100", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.CatchUpLimit = new(int32(101)) }, "catchUpLimit"),
 			Entry("sub-minute interval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = "1ns" }, "interval must be at least 1m"),
 			Entry("overflowing interval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.Interval = "9999999999999h" }, "interval"),
 			Entry("sub-10s retryInterval", func(fg *rss2discordv1alpha1.FeedGroup) { fg.Spec.RetryInterval = "1s" }, "retryInterval must be at least 10s"),
@@ -2298,7 +2300,7 @@ var _ = Describe("FeedGroup Controller", func() {
 		It("should accept values at the boundaries", func() {
 			fg := build("admission-ok", func(fg *rss2discordv1alpha1.FeedGroup) {
 				fg.Spec.Retries = 100
-				fg.Spec.CatchUpLimit = 100
+				fg.Spec.CatchUpLimit = new(int32(100))
 				fg.Spec.Interval = "1m"
 				fg.Spec.RetryInterval = "10s"
 				fg.Spec.AvatarURL = "https://example.com/a.png"

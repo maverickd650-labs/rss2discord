@@ -82,12 +82,13 @@ const (
 // normalizeIdentity normalizes id when it's an http(s) URL (an entry's ID
 // is frequently just its permalink, since the RSS/Atom parser falls back to
 // Link, then Title, when a feed has no GUID): lowercases the scheme/host,
-// drops the fragment, and strips known tracking query parameters, so that
-// churn limited to those doesn't change the result. Anything that isn't a
+// drops the fragment, and strips known tracking query parameters. Link
+// fallbacks retain fragments and ref parameters, which can identify distinct
+// entries when no GUID is available. Anything that isn't a
 // URL (an opaque GUID, or a Title used as a last-resort identity) is
 // returned unchanged, since there's no generically safe way to normalize
 // arbitrary text.
-func normalizeIdentity(id string) string {
+func normalizeIdentity(id string, fromLink bool) string {
 	// Opaque GUIDs and title fallbacks are common and can't be URLs we
 	// normalize, so skip the (allocating) parse for anything that doesn't
 	// start with an http(s) scheme.
@@ -101,10 +102,15 @@ func normalizeIdentity(id string) string {
 
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
 	parsed.Host = strings.ToLower(parsed.Host)
-	parsed.Fragment = ""
+	if !fromLink {
+		parsed.Fragment = ""
+	}
 
 	if query := parsed.Query(); len(query) > 0 {
 		for param := range query {
+			if fromLink && strings.EqualFold(param, "ref") {
+				continue
+			}
 			if trackingQueryParams[strings.ToLower(param)] || strings.HasPrefix(strings.ToLower(param), "utm_") {
 				query.Del(param)
 			}
@@ -118,9 +124,9 @@ func normalizeIdentity(id string) string {
 // entryIdentity resolves entry's stable identity, used for both the
 // catch-up watermark (LastSeenEntry) and per-entry dedup (LastSent):
 // entry.ID itself (already resolved via GUID -> Link -> Title precedence by
-// the RSS/Atom parser), normalized when it's a URL.
+// the RSS/Atom parser), normalized according to its source when it's a URL.
 func entryIdentity(entry rss.Entry) string {
-	return normalizeIdentity(entry.ID)
+	return normalizeIdentity(entry.ID, entry.IDFromLink)
 }
 
 // computeEntryKey hashes an entry's identity into a fixed-length key for

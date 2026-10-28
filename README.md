@@ -209,6 +209,7 @@ Templates can also call a few helpers, written pipeline-style:
 | `discordTime "R"` | Discord dynamic timestamp from `.PublishedUnix`; styles are `t T d D f F R`. Renders empty for an undated entry: `{{.PublishedUnix \| discordTime "R"}}` |
 
 An unknown function is a config error; an invalid `discordTime` style fails that entry's render.
+A `replace` result larger than 1 MiB also fails that entry's render, including intermediate pipeline values.
 
 ### Webhook URLs
 
