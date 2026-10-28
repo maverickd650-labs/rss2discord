@@ -1527,27 +1527,38 @@ func publishedUnix(t time.Time) int64 {
 	return t.Unix()
 }
 
+// templateData is the value a message template executes against; its
+// exported fields and methods are the documented {{.Placeholders}}.
+type templateData struct {
+	Title       string
+	Description string
+	Link        string
+	Image       string
+	Published   string
+	// PublishedUnix is Published as Unix seconds (0 when undated, like
+	// Published's ""), for Discord's <t:UNIX:R> dynamic timestamps.
+	PublishedUnix int64
+	Author        string
+	Categories    string
+	FeedTitle     string
+
+	content string
+}
+
+// Content is the entry's full body with HTML stripped. It is a method rather
+// than a field so the strip -- over a body that can run to tens of KB -- only
+// happens for templates that actually reference {{.Content}}.
+func (d templateData) Content() string {
+	return stripHTML(d.content)
+}
+
 // renderTemplate executes tmpl against entry and clamps the result to max
 // runes. The second return value is how many runes were trimmed off (0 if
 // the rendered text already fit), as reported by truncateMessage.
 func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, int, error) {
-	data := struct {
-		Title       string
-		Description string
-		Content     string
-		Link        string
-		Image       string
-		Published   string
-		// PublishedUnix is Published as Unix seconds (0 when undated, like
-		// Published's ""), for Discord's <t:UNIX:R> dynamic timestamps.
-		PublishedUnix int64
-		Author        string
-		Categories    string
-		FeedTitle     string
-	}{
+	data := templateData{
 		Title:         stripHTML(entry.Title),
 		Description:   stripHTML(entry.Description),
-		Content:       stripHTML(entry.Content),
 		Link:          entry.Link,
 		Image:         httpURLOrEmpty(entry.Image),
 		Published:     formatPublished(entry.Published),
@@ -1555,6 +1566,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 		Author:        entry.Author,
 		Categories:    strings.Join(entry.Categories, ", "),
 		FeedTitle:     stripHTML(entry.FeedTitle),
+		content:       entry.Content,
 	}
 
 	var buf bytes.Buffer
