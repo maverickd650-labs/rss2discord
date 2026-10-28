@@ -357,13 +357,105 @@ type rdfEnvelope struct {
 	Items   []rssItem `xml:"item"`
 }
 
+// rss10Namespace is RSS 1.0's element namespace. RDF items declare it as
+// their default namespace, so their title/link/description carry it rather
+// than the empty namespace RSS 2.0 uses.
+const rss10Namespace = "http://purl.org/rss/1.0/"
+
+// nsText is an element's text plus the namespace it was declared in.
+// encoding/xml matches a struct tag by local name regardless of namespace, so
+// a plain string field for "link" would also be written by <atom:link> and
+// "title" by <media:title> (last match wins), clobbering the real value.
+// Collecting every match lets pickText choose by namespace instead.
+type nsText struct {
+	XMLName xml.Name
+	Text    string `xml:",chardata"`
+}
+
+// maxNSCandidates caps how many namespaces an nsTexts field remembers. Real
+// feeds carry one or two same-named elements per field; the cap only matters
+// for a hostile document.
+const maxNSCandidates = 8
+
+// nsTexts collects the candidates for one field, but -- unlike a plain
+// []nsText, which encoding/xml grows by one entry per matching element --
+// keeps only the first non-blank value per namespace, up to maxNSCandidates.
+// The 10MB response cap bounds bytes, not elements, so a single item with a
+// million <title/> elements would otherwise retain tens of MB of candidates
+// that pickText never looks at. pickText's result is unchanged: it only ever
+// returns the first non-blank candidate of a namespace tier.
+type nsTexts []nsText
+
+func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var el nsText
+	if err := d.DecodeElement(&el, &start); err != nil {
+		return err
+	}
+	el.Text = strings.TrimSpace(el.Text)
+	if el.Text == "" {
+		return nil
+	}
+	others := 0
+	for _, existing := range *c {
+		if existing.XMLName.Space == el.XMLName.Space {
+			return nil
+		}
+		if !preferredNamespace(existing.XMLName.Space) {
+			others++
+		}
+	}
+	// Only the fallback tier is capped: a preferred namespace is always
+	// admitted, so a run of extension namespaces ahead of it can't push out
+	// the value pickText would choose.
+	if !preferredNamespace(el.XMLName.Space) && others >= maxNSCandidates {
+		return nil
+	}
+	*c = append(*c, el)
+	return nil
+}
+
+// preferredNamespace reports whether space is one pickText (or a caller's
+// pickTextPrefer) ranks ahead of the any-namespace fallback.
+func preferredNamespace(space string) bool {
+	return space == "" || space == rss10Namespace
+}
+
+// pickText returns the trimmed text of the most authoritative non-blank
+// candidate: the unqualified RSS 2.0 element, then the RSS 1.0 namespace, then
+// any other namespace (the lenient fallback for feeds that only carry e.g.
+// <media:title>). Blank candidates, such as a self-closing <atom:link/>, are
+// skipped so they can't mask a usable value in a lower tier.
+func pickText(cands []nsText) string {
+	for _, space := range [...]string{"", rss10Namespace} {
+		for _, c := range cands {
+			if c.XMLName.Space != space {
+				continue
+			}
+			if v := strings.TrimSpace(c.Text); v != "" {
+				return v
+			}
+		}
+	}
+
+	for _, c := range cands {
+		if v := strings.TrimSpace(c.Text); v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
 type rssItem struct {
-	Title       string `xml:"title"`
-	Link        string `xml:"link"`
-	Description string `xml:"description"`
-	GUID        string `xml:"guid"`
-	PubDate     string `xml:"pubDate"`
-	Author      string `xml:"author"`
+	// These are nsTexts, not strings, so namespaced extension elements with
+	// the same local name can't override the core fields; see nsText and
+	// pickText.
+	Title       nsTexts `xml:"title"`
+	Link        nsTexts `xml:"link"`
+	Description nsTexts `xml:"description"`
+	GUID        nsTexts `xml:"guid"`
+	PubDate     nsTexts `xml:"pubDate"`
+	Author      nsTexts `xml:"author"`
 	// Creator matches Dublin Core's <dc:creator>, the de facto author field
 	// for feeds (e.g. WordPress) that don't use RSS's own <author>.
 	// encoding/xml matches by local name regardless of namespace prefix, so
@@ -594,31 +686,34 @@ func parseRDF(data []byte) ([]Entry, error) {
 func rssItemsToEntries(items []rssItem) []Entry {
 	entries := make([]Entry, 0, len(items))
 	for i, item := range items {
-		published, _ := parseTime(item.PubDate)
+		title := pickText(item.Title)
+		link := pickText(item.Link)
+
+		published, _ := parseTime(pickText(item.PubDate))
 		if published.IsZero() {
 			// RDF (RSS 1.0) items carry no <pubDate>; dc:date is their date
 			// field instead.
 			published, _ = parseTime(item.DCDate)
 		}
 
-		id := strings.TrimSpace(item.GUID)
+		id := pickText(item.GUID)
 		if id == "" {
-			id = strings.TrimSpace(item.Link)
+			id = link
 		}
 		if id == "" {
-			id = strings.TrimSpace(item.Title)
+			id = title
 		}
 
-		author := strings.TrimSpace(item.Author)
+		author := pickText(item.Author)
 		if author == "" {
 			author = strings.TrimSpace(item.Creator)
 		}
 
 		entries = append(entries, Entry{
 			ID:          id,
-			Title:       strings.TrimSpace(item.Title),
-			Link:        strings.TrimSpace(item.Link),
-			Description: strings.TrimSpace(item.Description),
+			Title:       title,
+			Link:        link,
+			Description: pickText(item.Description),
 			Image:       strings.TrimSpace(entryImage(item.Enclosure, item.MediaThumbnail, item.MediaContent)),
 			Author:      author,
 			Categories:  trimCategories(item.Categories),

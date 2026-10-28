@@ -1,7 +1,10 @@
 package rss
 
 import (
+	"encoding/xml"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +18,10 @@ const (
 	picJPEGURL   = "http://pic.jpg"
 	thumbJPEGURL = "http://thumb.jpg"
 	encURL       = "http://enc"
+
+	titleReal      = "Real"
+	titleOnlyMedia = "OnlyMedia"
+	linkA1         = "https://a/1"
 )
 
 func TestParseTime(t *testing.T) {
@@ -574,5 +581,167 @@ func TestParseFeed_DecodesNonUTF8Encodings(t *testing.T) {
 				t.Fatalf("expected title %q, got %q", want, entries[0].Title)
 			}
 		})
+	}
+}
+
+// encoding/xml matches struct tags by local name regardless of namespace, so
+// extension elements such as <atom:link> and <media:title> used to overwrite
+// the core RSS fields. These cases pin that the unqualified RSS element wins
+// regardless of document order.
+func TestParseFeed_RSSNamespacedElementsDoNotOverrideCoreFields(t *testing.T) {
+	const nsDecls = `xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"`
+
+	tests := []struct {
+		name string
+		item string
+		want Entry
+	}{
+		{
+			name: "atom:link and media:title after the core elements",
+			item: `<title>Real</title><link>https://a/1</link><atom:link href="https://a/self" rel="self"/>` +
+				`<media:title>MediaTitle</media:title><description>short</description>`,
+			want: Entry{ID: linkA1, Title: titleReal, Link: linkA1, Description: "short"},
+		},
+		{
+			name: "extension elements before the core elements",
+			item: `<atom:link href="https://a/self" rel="self"/><media:title>MediaTitle</media:title>` +
+				`<media:description>MediaDesc</media:description>` +
+				`<title>Real</title><link>https://a/1</link><description>short</description>`,
+			want: Entry{ID: linkA1, Title: titleReal, Link: linkA1, Description: "short"},
+		},
+		{
+			name: "itunes:author does not override author",
+			item: `<title>T</title><author>core@example.com</author><itunes:author>Podcaster</itunes:author>`,
+			want: Entry{ID: "T", Title: "T", Author: "core@example.com"},
+		},
+		{
+			name: "itunes:author before author",
+			item: `<title>T</title><itunes:author>Podcaster</itunes:author><author>core@example.com</author>`,
+			want: Entry{ID: "T", Title: "T", Author: "core@example.com"},
+		},
+		{
+			name: "itunes:author is used when there is no author",
+			item: `<title>T</title><itunes:author>Podcaster</itunes:author>`,
+			want: Entry{ID: "T", Title: "T", Author: "Podcaster"},
+		},
+		{
+			name: "namespaced-only title is still used as a lenient fallback",
+			item: `<media:title>OnlyMedia</media:title>`,
+			want: Entry{ID: titleOnlyMedia, Title: titleOnlyMedia},
+		},
+		{
+			name: "blank core element does not mask a namespaced value",
+			item: `<title>  </title><media:title>OnlyMedia</media:title>`,
+			want: Entry{ID: titleOnlyMedia, Title: titleOnlyMedia},
+		},
+		{
+			name: "self-closing atom:link alone leaves the link empty",
+			item: `<title>T</title><atom:link href="https://a/self" rel="self"/>`,
+			want: Entry{ID: "T", Title: "T"},
+		},
+		{
+			name: "guid is not overridden by a namespaced guid",
+			item: `<title>T</title><guid>real-guid</guid><media:guid>other</media:guid>`,
+			want: Entry{ID: "real-guid", Title: "T"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := []byte(`<rss ` + nsDecls + `><channel><item>` + tt.item + `</item></channel></rss>`)
+
+			entries, err := parseFeed(data)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("expected 1 entry, got %d", len(entries))
+			}
+			got := entries[0]
+			if got.ID != tt.want.ID || got.Title != tt.want.Title || got.Link != tt.want.Link ||
+				got.Description != tt.want.Description || got.Author != tt.want.Author {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// RSS 1.0 items live in the http://purl.org/rss/1.0/ default namespace, so
+// that namespace must outrank unrelated extension namespaces.
+func TestParseFeed_RDFDefaultNamespacePreferredOverExtensions(t *testing.T) {
+	data := []byte(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:media="http://search.yahoo.com/mrss/">
+<channel><title>C</title></channel>
+<item><media:title>MediaTitle</media:title><title>Real</title><link>http://example.com/rdf-ns-item</link></item>
+</rdf:RDF>`)
+
+	entries, err := parseFeed(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Title != titleReal || entries[0].Link != "http://example.com/rdf-ns-item" || entries[0].ID != "http://example.com/rdf-ns-item" {
+		t.Fatalf("unexpected entry: %+v", entries[0])
+	}
+}
+
+func TestPickText(t *testing.T) {
+	mk := func(space, text string) nsText {
+		return nsText{XMLName: xml.Name{Space: space, Local: "x"}, Text: text}
+	}
+	tests := []struct {
+		name  string
+		cands []nsText
+		want  string
+	}{
+		{"empty", nil, ""},
+		{"unqualified wins over rss1.0 and others", []nsText{mk("urn:other", "o"), mk(rss10Namespace, "r"), mk("", "u")}, "u"},
+		{"rss1.0 wins over others", []nsText{mk("urn:other", "o"), mk(rss10Namespace, "r")}, "r"},
+		{"first non-blank of any namespace", []nsText{mk("urn:a", "  "), mk("urn:b", "b"), mk("urn:c", "c")}, "b"},
+		{"blank candidates skipped within a tier", []nsText{mk("", " \n"), mk("", "u")}, "u"},
+		{"all blank", []nsText{mk("", ""), mk("urn:a", " ")}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pickText(tt.cands); got != tt.want {
+				t.Fatalf("pickText = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNSTextsBoundsRetainedCandidates asserts an item padded with thousands
+// of same-named elements keeps at most one candidate per namespace (and at
+// most maxNSCandidates overall) instead of one per element, without changing
+// which value pickText selects.
+func TestNSTextsBoundsRetainedCandidates(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<rss xmlns:media="http://search.yahoo.com/mrss/"><channel><item>`)
+	b.WriteString(strings.Repeat("<title/>", 5000))
+	b.WriteString(strings.Repeat("<media:title>M</media:title>", 5000))
+	// 20 distinct extension namespaces fill the fallback cap before the real
+	// unqualified and RSS 1.0 values arrive; those must still be retained.
+	for i := range 20 {
+		fmt.Fprintf(&b, `<x:title xmlns:x="urn:ns%d">N%d</x:title>`, i, i)
+	}
+	b.WriteString(`<r:title xmlns:r="http://purl.org/rss/1.0/">RDF</r:title>`)
+	b.WriteString("<title>Real</title><title>Later</title>")
+	b.WriteString(`</item></channel></rss>`)
+
+	var env rssEnvelope
+	if err := unmarshalXML([]byte(b.String()), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cands := env.Channel.Items[0].Title
+	// maxNSCandidates fallbacks plus the unqualified and RSS 1.0 tiers.
+	if len(cands) > maxNSCandidates+2 {
+		t.Fatalf("retained %d candidates, want at most %d", len(cands), maxNSCandidates+2)
+	}
+	if got := pickText(cands); got != "Real" {
+		t.Fatalf("pickText = %q, want %q", got, "Real")
 	}
 }
