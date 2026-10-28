@@ -60,6 +60,10 @@ func jitterDuration(duration time.Duration, enabled bool) time.Duration {
 // for that, and also for objects admitted under an older, less strict schema.
 const minParsedInterval = 10 * time.Second
 
+// parseDurationWithDefault parses value as a Go duration and floors parsed
+// values at minParsedInterval. Whitespace-only input returns fallback without
+// error; invalid input returns fallback and a wrapped parse error. The fallback
+// is returned unchanged, without applying the floor.
 func parseDurationWithDefault(value string, fallback time.Duration) (time.Duration, error) {
 	if strings.TrimSpace(value) == "" {
 		return fallback, nil
@@ -73,6 +77,7 @@ func parseDurationWithDefault(value string, fallback time.Duration) (time.Durati
 	return max(duration, minParsedInterval), nil
 }
 
+// maxRetryCount returns the configured retry limit, with a minimum of one.
 func maxRetryCount(specRetries int32) int32 {
 	if specRetries < 1 {
 		return 1
@@ -119,9 +124,8 @@ func nextBackoffUntil(now time.Time, backoff time.Duration) string {
 
 // permanentBackoffDuration returns the exponential backoff for a permanent
 // fetch failure at retryCount (1-based, already incremented before call).
-// The formula is base * 2^retryCount, capped at maxPermanentBackoff. Callers
-// check whether the result >= maxPermanentBackoff to decide whether to set the
-// sentinel vs. a concrete timestamp.
+// The formula is base * 2^retryCount, capped at maxPermanentBackoff, with
+// retryCount floored at 1. A non-positive base returns maxPermanentBackoff.
 func permanentBackoffDuration(retryCount int, base time.Duration) time.Duration {
 	if retryCount < 1 {
 		retryCount = 1

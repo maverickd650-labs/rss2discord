@@ -82,8 +82,8 @@ const (
 // normalizeIdentity normalizes id when it's an http(s) URL (an entry's ID
 // is frequently just its permalink, since the RSS/Atom parser falls back to
 // Link, then Title, when a feed has no GUID): lowercases the scheme/host,
-// drops the fragment, and strips known tracking query parameters. Link
-// fallbacks retain fragments and ref parameters, which can identify distinct
+// drops the fragment, and strips known tracking query parameters. When
+// fromLink is true, fragments and ref parameters are retained to identify distinct
 // entries when no GUID is available. Anything that isn't a
 // URL (an opaque GUID, or a Title used as a last-resort identity) is
 // returned unchanged, since there's no generically safe way to normalize
@@ -166,8 +166,8 @@ func pruneLastSent(sent map[string]string, max int) {
 	}
 }
 
-// entriesContainID reports whether id matches any entry's identity (see
-// entryIdentity).
+// entriesContainID reports whether id matches any entry's identity after
+// clampWatermark, as stored in LastSeenEntry.
 func entriesContainID(entries []rss.Entry, id string) bool {
 	for _, entry := range entries {
 		if clampWatermark(entryIdentity(entry)) == id {

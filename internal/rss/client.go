@@ -423,6 +423,10 @@ const maxNSCandidates = 8
 // returns the first non-blank candidate of a namespace tier.
 type nsTexts []nsText
 
+// UnmarshalXML retains the first non-blank value per namespace, subject to
+// nsTexts' retention limits. XHTML constructs retain raw inner markup only when
+// they contain visible text; other constructs retain decoded character data.
+// XML decoding errors are returned; blank or excess candidates are ignored.
 func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var el nsText
 	if isXHTMLConstruct(start) {
@@ -496,9 +500,9 @@ func hasVisibleXHTMLText(markup string) bool {
 	}
 }
 
-// isXHTMLConstruct reports whether start is an Atom text construct declared
-// type="xhtml". encoding/xml matches the attribute by local name, so this also
-// covers a namespaced or unprefixed spelling.
+// isXHTMLConstruct reports whether start declares type="xhtml", trimming
+// attribute whitespace and ignoring case. Attribute namespaces and the element's
+// name are not checked.
 func isXHTMLConstruct(start xml.StartElement) bool {
 	for _, a := range start.Attr {
 		if a.Name.Local == "type" && strings.EqualFold(strings.TrimSpace(a.Value), "xhtml") {
@@ -897,6 +901,10 @@ func parseRDF(data []byte) ([]Entry, string, error) {
 	return rssItemsToEntries(envelope.Items), pickText(envelope.Channel.Title), nil
 }
 
+// rssItemsToEntries converts RSS 2.0 or RSS 1.0 items in document order, recording
+// each item's index in Seq. Identity falls back from GUID to link to title, with
+// IDFromLink set only for a link fallback. Invalid or missing dates become zero
+// times after trying pubDate and then dc:date.
 func rssItemsToEntries(items []rssItem) []Entry {
 	entries := make([]Entry, 0, len(items))
 	for i, item := range items {
@@ -947,6 +955,12 @@ func rssItemsToEntries(items []rssItem) []Entry {
 	return entries
 }
 
+// parseAtom returns entries in document order and the feed title, or nil entries
+// and an empty title on an XML decoding error. Identity falls back from ID to
+// resolved link to title, with IDFromLink set only for a link fallback. XHTML
+// text constructs retain their inner markup. Description falls back from summary
+// to content to the Media RSS group description. Invalid or missing dates become
+// zero times after trying published and then updated.
 func parseAtom(data []byte) ([]Entry, string, error) {
 	var feed atomFeed
 	if err := unmarshalXML(data, &feed); err != nil {

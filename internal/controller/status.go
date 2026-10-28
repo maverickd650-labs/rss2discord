@@ -49,6 +49,7 @@ const maxConditionMessageBytes = 1024
 
 // clampText truncates s to at most max bytes without splitting a UTF-8
 // sequence, marking the cut with an ellipsis.
+// max must be at least the ellipsis's three-byte UTF-8 length.
 func clampText(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -78,8 +79,8 @@ func markFeedCheckSuccess(feedGroup *v1alpha1.FeedGroup) {
 
 // ensureFeedStatuses rebuilds feedGroup.Status.Feeds to have exactly one
 // entry per feed in feedGroup.Spec.Feeds, in spec order: existing entries are
-// matched up by RSSUrl and carried over untouched, new feeds get a
-// zero-valued entry, and entries for feeds no longer in the spec are
+// matched up by RSSUrl, new feeds get an entry with their RSSUrl, and
+// entries for feeds no longer in the spec are
 // dropped. This both initializes status on a fresh FeedGroup and prunes
 // stale entries left behind by an edited/removed feed (the same
 // unbounded-growth problem maxLastSentPerFeed guards against one level
@@ -93,6 +94,8 @@ func markFeedCheckSuccess(feedGroup *v1alpha1.FeedGroup) {
 // writes) needs to avoid seeing a reordered-but-otherwise-identical slice as
 // a change. It also drops the rss_url-labeled metric series of any feed it
 // prunes (see deleteFeedMetrics).
+// Retained entries have nil LastSent maps initialized, LastError bounded, and
+// oversized LastSeenEntry values replaced by clampWatermark digests.
 func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) {
 	existing := make(map[string]v1alpha1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
@@ -125,7 +128,7 @@ func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) {
 	}
 }
 
-// feedStatusFor returns the FeedStatus for url, which must already exist
+// feedStatusFor returns a pointer to the FeedStatus for url, or nil if absent
 // (ensureFeedStatuses runs once at the start of every Reconcile and creates
 // an entry for every feed in Spec.Feeds, so any url drawn from Spec.Feeds is
 // guaranteed to be found).
@@ -159,9 +162,7 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 // requeueWithStatus persists feedGroup's status and requeues after the given
 // interval (falling back to fallback if interval is unset or invalid). The
 // status write (applyStatus) is skipped when the status hasn't actually
-// changed from original, since a conditional-GET 304 makes the common
-// reconcile a no-op that would otherwise still pay for a status write every
-// interval -- a no-op server-side apply still costs an API round trip.
+// changed from original, avoiding an API round trip for unchanged status.
 // webhookErr, if non-nil, means the reconcile never got far enough to
 // process any feed (the webhook Secret couldn't be resolved); it takes over
 // the Ready condition unconditionally, since per-feed status is stale/empty
@@ -173,8 +174,8 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 // discard LastSent/LastSeenEntry/LastChecked, so every error-backoff retry
 // would re-send the same entries. The requeue uses fallback instead, the
 // problem is surfaced on Ready (see setReadyCondition) plus one Warning Event
-// on the transition, and the result carries no error, which would only
-// hot-loop the same failure through controller-runtime's backoff.
+// on the transition. Duration parse errors are not returned; status conversion
+// or API write errors from applyStatus are returned with an empty result.
 //
 // jitter controls whether requeueJitterMaxFactor is applied to the computed
 // duration. It must be false when fallback is itself an externally-dictated
@@ -246,6 +247,7 @@ const statusFieldOwner = "feedgroup-controller"
 // nothing to scrub first and no optimistic-concurrency precondition to
 // trip: field-ownership merging, not "did anything else change first", is
 // what decides whether this write succeeds.
+// Status conversion errors and errors from the API write are returned unchanged.
 func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup) error {
 	status, err := statusApplyConfiguration(&feedGroup.Status)
 	if err != nil {
@@ -265,6 +267,7 @@ func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1alph
 // remembered to wire it in. The round trip also preserves omitempty exactly:
 // a field the typed status omits is absent from the apply, so this manager
 // releases it and the API server removes it, just as before.
+// JSON encoding or decoding errors return nil and a wrapped error.
 func statusApplyConfiguration(status *v1alpha1.FeedGroupStatus) (*acv1alpha1.FeedGroupStatusApplyConfiguration, error) {
 	raw, err := json.Marshal(status)
 	if err != nil {
@@ -378,6 +381,7 @@ func countFailingFeeds(feeds []v1alpha1.FeedStatus) int {
 // is narrower than Ready: it only reflects each feed's Reachable condition
 // (fetch failures), not Discord send/render failures (Delivered), so a
 // feed-side outage is distinguishable from a webhook misconfiguration.
+// Missing or Unknown Reachable conditions are not counted as failures.
 func setFeedReachableCondition(feedGroup *v1alpha1.FeedGroup) {
 	unreachable := map[string]string{}
 	for _, fs := range feedGroup.Status.Feeds {
@@ -417,6 +421,7 @@ func setFeedReachableCondition(feedGroup *v1alpha1.FeedGroup) {
 // whether the condition's Message actually changed -- is deterministic
 // across reconciles of the same status, which requeueWithStatus relies on to
 // skip no-op status writes.
+// reasons must be non-empty.
 func dominantErrorReason(reasons map[string]string) string {
 	counts := make(map[string]int, len(reasons))
 	for _, reason := range reasons {

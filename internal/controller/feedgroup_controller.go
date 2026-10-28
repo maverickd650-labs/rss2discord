@@ -251,10 +251,11 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return result, err
 }
 
-// processFeed fetches/filters/sends entries for a single feed and updates
-// its FeedStatus accordingly. It returns whether the reconcile should retry
-// sooner than the normal interval, and, if Discord rate limited the
-// webhook, how long to wait before the next attempt.
+// processFeed handles a completed fetch, filters/sends entries for a single
+// feed, and updates its FeedStatus. now is an RFC3339 status timestamp.
+// Fetch, configuration, rendering, and delivery errors are recorded in status.
+// It returns whether the reconcile should retry sooner than the normal interval
+// and, if Discord rate limited the webhook, how long to wait before the next attempt.
 func (r *FeedGroupReconciler) processFeed(
 	ctx context.Context,
 	feedGroup *v1alpha1.FeedGroup,
@@ -476,6 +477,11 @@ func (r *FeedGroupReconciler) processFeed(
 // sendNewEntries scans entries in order, skipping forward past lastSeenID
 // (if hasSeenID is set) before sending anything, then sends each not-yet-sent
 // entry that passes the filter and updates fs (feed's FeedStatus) as it goes.
+// entries must be sorted oldest-to-newest; now is an RFC3339 send timestamp.
+// Rendering and delivery failures update status and stop the scan unless a
+// render failure qualifies for skipping. The results indicate whether to retry
+// sooner, the rate-limit wait, and whether an unresolved entry remains pending
+// even if its retries are exhausted.
 func (r *FeedGroupReconciler) sendNewEntries(
 	ctx context.Context,
 	feedGroup *v1alpha1.FeedGroup,
@@ -795,8 +801,9 @@ func matchesFilter(filter *v1alpha1.Filter, entry rss.Entry, filterRegex *regexp
 }
 
 // skipBacklog records the newest of entries (sorted oldest-to-newest) as the
-// feed's watermark without sending anything, so only entries published after
-// this point are delivered. The identity is the same one sendNewEntries would
+// feed's watermark without sending anything and sets Delivered to BacklogSkipped.
+// entries must be non-empty; later scans resume after this entry rather than
+// comparing publication times. The identity is the same one sendNewEntries would
 // have stored after sending that entry, so the next forward-scan resumes
 // right behind it.
 func skipBacklog(feedGroup *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, entries []rss.Entry) {

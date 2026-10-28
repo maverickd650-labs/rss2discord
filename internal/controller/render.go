@@ -55,6 +55,8 @@ const maxTemplateReplaceBytes = 1024 * 1024
 
 // compileMessageTemplate parses a feed's Discord message template once per
 // feed per reconcile, instead of reparsing it for every entry sent.
+// A blank feed format falls back to the group format, then defaultMessageFormat.
+// Template parse errors are returned to the caller.
 func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*template.Template, error) {
 	tmplText := strings.TrimSpace(feed.Format)
 	if tmplText == "" {
@@ -68,7 +70,8 @@ func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSp
 }
 
 // compileTemplate parses text as a Discord message template, falling back
-// to fallback when text is blank.
+// to fallback when text is blank. Leading and trailing whitespace is removed
+// from text. Parse errors, including unknown helper names, are returned.
 func compileTemplate(name, text, fallback string) (*template.Template, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -82,7 +85,8 @@ func compileTemplate(name, text, fallback string) (*template.Template, error) {
 // templates are user-supplied. Arguments are ordered so they pipeline
 // ({{.Description | truncate 200}}).
 var templateFuncs = template.FuncMap{
-	// truncate clamps s to n runes, ending in an ellipsis when it cuts.
+	// truncate clamps s to n runes, ending in an ellipsis when it cuts and n > 1.
+	// Non-positive limits return empty text.
 	"truncate": func(n int, s string) string {
 		out, _ := truncateMessage(s, n)
 		return out
@@ -97,6 +101,8 @@ var templateFuncs = template.FuncMap{
 	"lower": strings.ToLower,
 	"upper": strings.ToUpper,
 	"trim":  strings.TrimSpace,
+	// replace replaces all occurrences of old in s, returning an error if the
+	// result would exceed maxTemplateReplaceBytes, even in an intermediate pipeline.
 	"replace": func(old, new, s string) (string, error) {
 		count := strings.Count(s, old)
 		remaining := len(s) - count*len(old)
@@ -110,6 +116,8 @@ var templateFuncs = template.FuncMap{
 	// discordTime renders a Discord dynamic timestamp, e.g.
 	// {{.PublishedUnix | discordTime "R"}}. An undated entry
 	// (PublishedUnix 0) renders "" rather than "<t:0:R>" (1970).
+	// style must be one of t, T, d, D, f, F, or R; other values return an error,
+	// including when unix is 0.
 	"discordTime": func(style string, unix int64) (string, error) {
 		if !strings.Contains("tTdDfFR", style) || len(style) != 1 {
 			return "", fmt.Errorf("discordTime: unknown style %q (want one of t T d D f F R)", style)
@@ -131,9 +139,9 @@ func resolveEmbedSpec(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) *v
 	return feedGroup.Spec.Embed
 }
 
-// parseHexColor parses a "#RRGGBB" or "RRGGBB" string into Discord's 24-bit
-// embed color integer, defaulting to 0 (black/unset) for blank or malformed
-// input rather than failing the whole message.
+// parseHexColor parses a hexadecimal embed color such as "#RRGGBB" or "RRGGBB",
+// accepting surrounding whitespace. It returns 0 for blank input or a parse
+// error; it does not enforce six digits or the 24-bit RGB range.
 func parseHexColor(s string) int {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
 	if s == "" {
@@ -146,8 +154,9 @@ func parseHexColor(s string) int {
 	return int(v)
 }
 
-// httpURLOrEmpty returns rawURL unchanged if it's a well-formed http(s) URL,
-// or "" otherwise. Entry links/images come straight from feed XML, which is
+// httpURLOrEmpty returns rawURL unchanged if it parses with an http or https
+// scheme, or "" otherwise. It does not require a host or check reachability.
+// Entry links/images come straight from feed XML, which is
 // untrusted external content; Discord embeds (msg.Embed.URL/ThumbnailURL)
 // are happy to carry through a javascript:/data: URI verbatim, so this keeps
 // those out before they ever reach a user's client.
@@ -309,6 +318,7 @@ func (d templateData) Content() string {
 // renderTemplate executes tmpl against entry and clamps the result to max
 // runes. The second return value is how many runes were trimmed off (0 if
 // the rendered text already fit), as reported by truncateMessage.
+// Execution errors, including helper errors, are returned with empty text and zero overflow.
 func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, int, error) {
 	data := templateData{
 		Title:         stripHTML(entry.Title),
@@ -333,10 +343,13 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 }
 
 // buildDiscordMessage renders entry into the message that should actually
-// be sent: an embed (colored bubble with title/description/thumbnail) when
+// be sent: an embed (colored bubble with title/description and an optional image) when
 // embedSpec is enabled, or plain text content otherwise. It also resolves
 // forum-channel thread targeting (ForumThreadID takes precedence over a
 // rendered ForumThreadName) and group-level webhook branding.
+// ImageStyle selects a large image or, by default, a thumbnail. Template execution
+// errors and blank plain-text content or rendered thread names return an empty
+// message and an error. Successful builds record truncation in messageOverflowChars.
 func buildDiscordMessage(
 	feedGroup *v1alpha1.FeedGroup,
 	embedSpec *v1alpha1.EmbedSpec,
@@ -423,6 +436,9 @@ func buildDiscordMessage(
 // rather than truncating them itself. The second return value is how many
 // runes were cut (0 if content already fit), so callers can report how
 // often/how severely truncation actually happens.
+// A cut ends in an ellipsis when max > 1; max == 1 keeps the first rune and
+// max <= 0 returns empty text. Overflow is the original rune count minus max,
+// floored at zero, so a negative max increases the reported count.
 func truncateMessage(content string, max int) (string, int) {
 	// len(content) >= rune count, so a byte length within max can't overflow;
 	// this skips the []rune allocation for the overwhelmingly common case.

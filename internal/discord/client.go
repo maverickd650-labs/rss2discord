@@ -46,6 +46,9 @@ func NewClientWithHTTP(webhookURL string, httpClient *http.Client) *Client {
 // limiter puts every one of them into cooldown, not just this one. Passing a
 // nil limiter disables that cross-Client behavior (equivalent to
 // NewClientWithHTTP).
+// Surrounding URL whitespace is trimmed, and PTB/Canary hosts are normalized
+// before choosing the shared rate-limit key. A nil httpClient uses NewHTTPClient;
+// URL validation is deferred to SendMessage.
 func NewClientWithLimiter(webhookURL string, httpClient *http.Client, limiter *RateLimiter) *Client {
 	if httpClient == nil {
 		httpClient = NewHTTPClient()
@@ -59,8 +62,9 @@ func NewClientWithLimiter(webhookURL string, httpClient *http.Client, limiter *R
 // of, the AllowedWebhookHosts check: the allowlist is not broadened, so the
 // request can still only ever go to an already-allowed host. Only an exact,
 // port-less match is rewritten; lookalikes (evil.ptb.discord.com,
-// ptb.discord.com.evil.com) and non-https URLs pass through unchanged and are
-// then rejected by SendMessage. Normalizing here also makes a PTB and a
+// ptb.discord.com.evil.com) pass through unchanged. The scheme is preserved;
+// SendMessage rejects non-HTTPS URLs. Parse failures also pass through unchanged.
+// Normalizing here also makes a PTB and a
 // regular URL for the same webhook share one rate-limit key.
 func normalizeWebhookURL(raw string) string {
 	u, err := url.Parse(raw)
@@ -383,6 +387,9 @@ func (c *Client) SendMessageText(ctx context.Context, content string) error {
 // field individually stays under its own per-field limit.
 const maxEmbedTotalLength = 6000
 
+// embedToPayload converts e to the webhook payload, clamping its description
+// to the combined embed text budget and omitting empty media, author, and footer
+// fields. ThumbnailURL and ImageURL are included independently when set.
 func embedToPayload(e Embed) discordEmbed {
 	e = clampEmbedTotalLength(e)
 	payload := discordEmbed{
