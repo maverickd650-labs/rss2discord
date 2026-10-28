@@ -255,14 +255,19 @@ manager:
   image:
     repository: ghcr.io/maverickd650/rss2discord-operator
     # tag: ""   # defaults to the chart's appVersion
+  # maxConcurrentReconciles: 1   # --max-concurrent-feedgroup-reconciles
+  # otlpEndpoint: ""             # --otlp-endpoint (tracing off when empty)
+  # logLevel: ""                 # --zap-log-level: debug, info, error or an integer
   resources:
     limits:
       cpu: 500m
-      memory: 128Mi
+      memory: 256Mi
     requests:
       cpu: 10m
       memory: 64Mi
 ```
+
+One reconcile can buffer up to 10 feed responses of 10MB each, so scale `resources.limits.memory` with `maxConcurrentReconciles` and the size of your feeds (`GOMEMLIMIT` follows the limit).
 
 Resource names drop the redundant `-controller-manager` suffix — with a release named `rss2discord-operator`, the Deployment, ServiceAccount, and Service are all named `rss2discord-operator` (selection still happens on the `control-plane: controller-manager` label). The `kubectl apply -f dist/install.yaml` path keeps the longer `rss2discord-operator-controller-manager` names, so prefer the label selector in commands that target the pod.
 

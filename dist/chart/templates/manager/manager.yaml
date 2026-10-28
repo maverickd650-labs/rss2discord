@@ -84,6 +84,15 @@ spec:
         - --metrics-bind-address=0
         {{- end }}
         - --health-probe-bind-address=:{{ .Values.manager.healthProbe.port }}
+        {{- with .Values.manager.maxConcurrentReconciles }}
+        - --max-concurrent-feedgroup-reconciles={{ . }}
+        {{- end }}
+        {{- with .Values.manager.otlpEndpoint }}
+        - --otlp-endpoint={{ . }}
+        {{- end }}
+        {{- with .Values.manager.logLevel }}
+        - --zap-log-level={{ . }}
+        {{- end }}
         {{- range .Values.manager.args }}
         - {{ tpl . $ }}
         {{- end }}

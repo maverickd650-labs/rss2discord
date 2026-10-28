@@ -141,6 +141,16 @@ func TestChartGolden(t *testing.T) {
 			name:     "manager_defaults",
 			showOnly: managerTemplate,
 		},
+		// The optional manager flags (omitted by default) render as args.
+		{
+			name:     "manager_extra_flags",
+			showOnly: managerTemplate,
+			setValues: []string{
+				"manager.maxConcurrentReconciles=4",
+				"manager.otlpEndpoint=otel-collector.observability:4317",
+				"manager.logLevel=debug",
+			},
+		},
 		{
 			name:      "manager_metrics_insecure",
 			showOnly:  managerTemplate,
