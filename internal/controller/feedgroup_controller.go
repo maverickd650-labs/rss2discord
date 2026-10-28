@@ -1368,7 +1368,44 @@ func compileTemplate(name, text, fallback string) (*template.Template, error) {
 	if text == "" {
 		text = fallback
 	}
-	return template.New(name).Parse(text)
+	return template.New(name).Funcs(templateFuncs).Parse(text)
+}
+
+// templateFuncs are the helpers available in message templates. Keep the set
+// small and pure: no environment, file, network or reflection access, since
+// templates are user-supplied. Arguments are ordered so they pipeline
+// ({{.Description | truncate 200}}).
+var templateFuncs = template.FuncMap{
+	// truncate clamps s to n runes, ending in an ellipsis when it cuts.
+	"truncate": func(n int, s string) string {
+		out, _ := truncateMessage(s, n)
+		return out
+	},
+	// default returns def when v is blank.
+	"default": func(def, v string) string {
+		if strings.TrimSpace(v) == "" {
+			return def
+		}
+		return v
+	},
+	"lower": strings.ToLower,
+	"upper": strings.ToUpper,
+	"trim":  strings.TrimSpace,
+	"replace": func(old, new, s string) string {
+		return strings.ReplaceAll(s, old, new)
+	},
+	// discordTime renders a Discord dynamic timestamp, e.g.
+	// {{.PublishedUnix | discordTime "R"}}. An undated entry
+	// (PublishedUnix 0) renders "" rather than "<t:0:R>" (1970).
+	"discordTime": func(style string, unix int64) (string, error) {
+		if !strings.Contains("tTdDfFR", style) || len(style) != 1 {
+			return "", fmt.Errorf("discordTime: unknown style %q (want one of t T d D f F R)", style)
+		}
+		if unix == 0 {
+			return "", nil
+		}
+		return fmt.Sprintf("<t:%d:%s>", unix, style), nil
+	},
 }
 
 // resolveEmbedSpec returns the feed's embed config if it set one, otherwise
