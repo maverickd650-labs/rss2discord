@@ -644,6 +644,88 @@ func TestRenderTemplate_Published(t *testing.T) {
 	})
 }
 
+// TestRenderTemplate_NewFields covers the placeholders added after the
+// original six: Content, Image, FeedTitle and PublishedUnix.
+func TestRenderTemplate_NewFields(t *testing.T) {
+	render := func(t *testing.T, format string, entry rss.Entry) string {
+		t.Helper()
+		tmpl, err := compileTemplate("test", format, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return got
+	}
+
+	t.Run("Content is HTML-stripped", func(t *testing.T) {
+		entry := rss.Entry{Content: "<p>Full <b>body</b> &amp; more</p><script>alert(1)</script>"}
+		if got, want := render(t, "{{.Content}}", entry), "Full body & more"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("Content is distinct from Description", func(t *testing.T) {
+		entry := rss.Entry{Description: shortContent, Content: "long"}
+		if got, want := render(t, "{{.Description}}/{{.Content}}", entry), shortContent+"/long"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("Image passes http(s) URLs through", func(t *testing.T) {
+		entry := rss.Entry{Image: "https://cdn.example.com/a.jpg"}
+		if got, want := render(t, "{{.Image}}", entry), "https://cdn.example.com/a.jpg"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("Image with unsafe scheme is blanked", func(t *testing.T) {
+		for _, image := range []string{"javascript:void(0)", "data:text/html,<script>x</script>", "ftp://example.com/a.jpg"} {
+			if got := render(t, "[{{.Image}}]", rss.Entry{Image: image}); got != "[]" {
+				t.Fatalf("Image %q rendered %q, want it blanked", image, got)
+			}
+		}
+	})
+
+	t.Run("FeedTitle is HTML-stripped", func(t *testing.T) {
+		entry := rss.Entry{FeedTitle: "<b>Example</b> &amp; Co"}
+		if got, want := render(t, "{{.FeedTitle}}", entry), "Example & Co"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("PublishedUnix is Unix seconds", func(t *testing.T) {
+		// A non-UTC zone: the Unix value is zone-independent.
+		published := time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600))
+		got := render(t, "<t:{{.PublishedUnix}}:R>", rss.Entry{Published: published})
+		if want := "<t:1714979289:R>"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("zero PublishedUnix is 0 and guardable", func(t *testing.T) {
+		const format = "{{if .PublishedUnix}}<t:{{.PublishedUnix}}:R>{{end}}"
+		if got := render(t, "<t:{{.PublishedUnix}}:R>", rss.Entry{}); got != "<t:0:R>" {
+			t.Fatalf("renderTemplate() = %q, want %q", got, "<t:0:R>")
+		}
+		if got := render(t, format, rss.Entry{}); got != "" {
+			t.Fatalf("guarded template rendered %q for an undated entry, want empty", got)
+		}
+		dated := rss.Entry{Published: time.Unix(1714979289, 0)}
+		if got, want := render(t, format, dated), "<t:1714979289:R>"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("all new fields empty on a zero entry", func(t *testing.T) {
+		if got, want := render(t, "[{{.Content}}|{{.Image}}|{{.FeedTitle}}]", rss.Entry{}), "[||]"; got != want {
+			t.Fatalf("renderTemplate() = %q, want %q", got, want)
+		}
+	})
+}
+
 // TestBuildDiscordMessage_EmbedTimestamp asserts an entry without a publish
 // date leaves the embed timestamp empty (discord.Embed omits it from the
 // payload) instead of sending year 0001, and that real dates are unchanged.

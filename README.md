@@ -171,7 +171,28 @@ Default (used only when `embed.enabled` is false):
 [Read more]({{.Link}})
 ```
 
-Available fields: `.Title`, `.Description`, `.Link`, `.Published`, `.Author`, `.Categories` (comma-separated).
+Available fields:
+
+| Field | Description |
+|---|---|
+| `.Title` | Entry title (HTML stripped) |
+| `.Description` | Entry summary (HTML stripped) |
+| `.Content` | Full entry body (HTML stripped): RSS `<content:encoded>`, or Atom `<content>`. Empty if the feed has none. For an Atom entry without a `<summary>`, this is the same text as `.Description`. Long bodies are cut to Discord's message limit, so you'll usually want something like `{{.Description}}` instead unless you know the feed's posts are short |
+| `.Link` | Entry URL |
+| `.Image` | Lead image URL (an enclosure or Media RSS thumbnail), or empty if there isn't one or it isn't an `http(s)` URL |
+| `.Published` | Publish time as RFC 3339 UTC, or empty if the entry has no date |
+| `.PublishedUnix` | Publish time as Unix seconds, or `0` if the entry has no date |
+| `.Author` | Entry author |
+| `.Categories` | Entry categories, comma-separated |
+| `.FeedTitle` | The feed's own title (RSS/RDF `<channel><title>`, Atom `<feed><title>`; HTML stripped), useful when one webhook carries several feeds |
+
+`.PublishedUnix` is meant for Discord's dynamic timestamps, which render in each reader's own time zone: `<t:{{.PublishedUnix}}:R>` shows "3 hours ago". An entry without a date has `.PublishedUnix` of `0`, which Discord would render as 1970, so guard it:
+
+```YAML
+{{if .PublishedUnix}}Posted <t:{{.PublishedUnix}}:R>{{end}}
+```
+
+For example, `[{{.FeedTitle}}] **{{.Title}}**` prefixes each message with the feed it came from.
 
 ### Forum channels
 
@@ -337,7 +358,7 @@ Common issues:
 
 - `LastError: webhook - discord webhook URL is empty` — the secret or key in `discordWebhookSecretRef` is wrong.
 - FeedGroup not updating — check `interval` and the operator logs.
-- Messages formatted wrong — check template placeholders against `.Title`, `.Description`, `.Link`, `.Published`.
+- Messages formatted wrong — check template placeholders against the [available fields](#message-template).
 - A feed that keeps returning a "permanent" error (e.g. HTTP 404/403) is retried with exponential backoff capped at 6h, so it recovers on its own once the source is back; editing the spec retries it immediately.
 - An entry that can't be rendered is skipped (Warning Event `EntrySkipped`, `skipped` metric outcome) once the group's `retries` are exhausted, so it doesn't block newer entries — but only if other entries in the feed do render. If the template fails for every entry, they are held until you fix it.
 

@@ -27,6 +27,9 @@ const (
 	titleReal      = "Real"
 	titleOnlyMedia = "OnlyMedia"
 	linkA1         = "https://a/1"
+	descShort      = "short"
+	summaryShort   = "Short"
+	bodyFull       = "Full body"
 )
 
 func TestParseTime(t *testing.T) {
@@ -297,7 +300,7 @@ func TestParseFeed_AtomEntry(t *testing.T) {
 </entry>
 </feed>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -344,7 +347,7 @@ func TestParseFeed_AtomResolvesRelativeLinksAgainstXMLBase(t *testing.T) {
 </entry>
 </feed>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,7 +375,7 @@ func TestParseFeed_AtomLeavesRelativeLinkUnchangedWithoutBase(t *testing.T) {
 <entry><id>1</id><title>No base</title><link rel="alternate" href="/2026/article"/></entry>
 </feed>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -411,7 +414,7 @@ func TestParseFeed_RSSFallsBackToLinkAndTitleForID(t *testing.T) {
 <item><title>OnlyTitle</title></item>
 </channel></rss>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -436,7 +439,7 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 <item><title>Second</title></item>
 <item><title>Third</title></item>
 </channel></rss>`)
-	rssEntries, err := parseFeed(rssData)
+	rssEntries, _, err := parseFeed(rssData)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -451,7 +454,7 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 <entry><title>First</title></entry>
 <entry><title>Second</title></entry>
 </feed>`)
-	atomEntries, err := parseFeed(atomData)
+	atomEntries, _, err := parseFeed(atomData)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -463,7 +466,7 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 }
 
 func TestParseFeed_InvalidXML(t *testing.T) {
-	if _, err := parseFeed([]byte("<not-closed")); err == nil {
+	if _, _, err := parseFeed([]byte("<not-closed")); err == nil {
 		t.Fatal("expected error for malformed XML, got nil")
 	}
 }
@@ -484,7 +487,7 @@ func TestParseFeed_RSSAuthorAndCategories(t *testing.T) {
 </item>
 </channel></rss>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -518,7 +521,7 @@ func TestParseFeed_AtomAuthorAndCategories(t *testing.T) {
 </entry>
 </feed>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -559,7 +562,7 @@ func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
 	// would "succeed" with zero entries and no error).
 	data := []byte(`<?xml version="1.0"?>
 <feedwrapper><entry><id>1</id><title>X</title></entry></feedwrapper>`)
-	_, err := parseFeed(data)
+	_, _, err := parseFeed(data)
 	if err == nil {
 		t.Fatal("expected an error for an unrecognized root element")
 	}
@@ -585,7 +588,7 @@ func TestParseFeed_MalformedBodyAfterValidRoot(t *testing.T) {
 		"rdf":  `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			entries, err := parseFeed([]byte(doc))
+			entries, _, err := parseFeed([]byte(doc))
 			if err == nil {
 				t.Fatalf("expected a decode error, got entries %v", entries)
 			}
@@ -610,7 +613,7 @@ func TestParseFeed_RDF(t *testing.T) {
 </item>
 </rdf:RDF>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -651,7 +654,7 @@ func TestParseFeed_DecodesNonUTF8Encodings(t *testing.T) {
 			data := []byte("<?xml version=\"1.0\" encoding=\"" + tc.encoding + "\"?>" +
 				"<rss><channel><item><title>Caf\xe9</title><guid>1</guid></item></channel></rss>")
 
-			entries, err := parseFeed(data)
+			entries, _, err := parseFeed(data)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -681,14 +684,14 @@ func TestParseFeed_RSSNamespacedElementsDoNotOverrideCoreFields(t *testing.T) {
 			name: "atom:link and media:title after the core elements",
 			item: `<title>Real</title><link>https://a/1</link><atom:link href="https://a/self" rel="self"/>` +
 				`<media:title>MediaTitle</media:title><description>short</description>`,
-			want: Entry{ID: linkA1, Title: titleReal, Link: linkA1, Description: "short"},
+			want: Entry{ID: linkA1, Title: titleReal, Link: linkA1, Description: descShort},
 		},
 		{
 			name: "extension elements before the core elements",
 			item: `<atom:link href="https://a/self" rel="self"/><media:title>MediaTitle</media:title>` +
 				`<media:description>MediaDesc</media:description>` +
 				`<title>Real</title><link>https://a/1</link><description>short</description>`,
-			want: Entry{ID: linkA1, Title: titleReal, Link: linkA1, Description: "short"},
+			want: Entry{ID: linkA1, Title: titleReal, Link: linkA1, Description: descShort},
 		},
 		{
 			name: "itunes:author does not override author",
@@ -731,7 +734,7 @@ func TestParseFeed_RSSNamespacedElementsDoNotOverrideCoreFields(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			data := []byte(`<rss ` + nsDecls + `><channel><item>` + tt.item + `</item></channel></rss>`)
 
-			entries, err := parseFeed(data)
+			entries, _, err := parseFeed(data)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -758,7 +761,7 @@ func TestParseFeed_RDFDefaultNamespacePreferredOverExtensions(t *testing.T) {
 <item><media:title>MediaTitle</media:title><title>Real</title><link>http://example.com/rdf-ns-item</link></item>
 </rdf:RDF>`)
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -833,7 +836,7 @@ func TestParseFeed_YouTubeAtomFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := parseFeed(data)
+	entries, _, err := parseFeed(data)
 	if err != nil {
 		t.Fatalf("parseFeed: %v", err)
 	}
@@ -886,7 +889,7 @@ func TestParseFeed_AtomMediaGroupDoesNotClobberCoreFields(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			doc := `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><entry>` + body + `</entry></feed>`
-			entries, err := parseFeed([]byte(doc))
+			entries, _, err := parseFeed([]byte(doc))
 			if err != nil || len(entries) != 1 {
 				t.Fatalf("parseFeed: %v, %d entries", err, len(entries))
 			}
@@ -952,7 +955,7 @@ func TestParseFeed_AtomMediaImagePrecedenceAndDescriptionFallback(t *testing.T) 
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			entries, err := parseFeed([]byte(head + tc.body + `</entry></feed>`))
+			entries, _, err := parseFeed([]byte(head + tc.body + `</entry></feed>`))
 			if err != nil || len(entries) != 1 {
 				t.Fatalf("parseFeed: %v, %d entries", err, len(entries))
 			}
@@ -974,7 +977,7 @@ func TestParseFeed_RSSMediaGroup(t *testing.T) {
 		`<enclosure url="https://cdn.example/e.jpg" type="image/jpeg"/></item>` +
 		`</channel></rss>`
 
-	entries, err := parseFeed([]byte(doc))
+	entries, _, err := parseFeed([]byte(doc))
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("parseFeed: %v, %d entries", err, len(entries))
 	}
@@ -982,7 +985,214 @@ func TestParseFeed_RSSMediaGroup(t *testing.T) {
 		t.Errorf("item 0 image/description = %q/%q", entries[0].Image, entries[0].Description)
 	}
 	// A real description and an enclosure image both outrank the group.
-	if entries[1].Image != "https://cdn.example/e.jpg" || entries[1].Description != "Real" {
+	if entries[1].Image != "https://cdn.example/e.jpg" || entries[1].Description != titleReal {
 		t.Errorf("item 1 image/description = %q/%q", entries[1].Image, entries[1].Description)
+	}
+}
+
+func TestParseFeed_RSSContentEncoded(t *testing.T) {
+	const cns = `xmlns:content="http://purl.org/rss/1.0/modules/content/"`
+	cases := []struct {
+		name        string
+		doc         string
+		wantContent string
+		wantDesc    string
+	}{
+		{
+			name: "prefixed content:encoded",
+			doc: `<rss ` + cns + `><channel><item><title>T</title><description>short</description>` +
+				`<content:encoded><![CDATA[<p>Full <b>body</b></p>]]></content:encoded></item></channel></rss>`,
+			wantContent: "<p>Full <b>body</b></p>",
+			wantDesc:    descShort,
+		},
+		{
+			// No namespace declaration at all: the local name still matches.
+			name: "unprefixed encoded",
+			doc: `<rss><channel><item><title>T</title><description>short</description>` +
+				`<encoded>Plain body</encoded></item></channel></rss>`,
+			wantContent: "Plain body",
+			wantDesc:    descShort,
+		},
+		{
+			name: "content namespace beats lookalike in another namespace",
+			doc: `<rss ` + cns + ` xmlns:x="urn:other"><channel><item><title>T</title>` +
+				`<content:encoded>Real</content:encoded><x:encoded>Impostor</x:encoded></item></channel></rss>`,
+			wantContent: titleReal,
+		},
+		{
+			name: "lookalike before real element still loses",
+			doc: `<rss ` + cns + ` xmlns:x="urn:other"><channel><item><title>T</title>` +
+				`<x:encoded>Impostor</x:encoded><content:encoded>Real</content:encoded></item></channel></rss>`,
+			wantContent: titleReal,
+		},
+		{
+			name: "blank content:encoded does not mask a lower tier",
+			doc: `<rss ` + cns + ` xmlns:x="urn:other"><channel><item><title>T</title>` +
+				`<content:encoded>  </content:encoded><x:encoded>Fallback</x:encoded></item></channel></rss>`,
+			wantContent: "Fallback",
+		},
+		{
+			name:        "absent",
+			doc:         `<rss><channel><item><title>T</title><description>d</description></item></channel></rss>`,
+			wantContent: "",
+			wantDesc:    "d",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, _, err := parseFeed([]byte(tc.doc))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parseFeed: %v, %d entries", err, len(entries))
+			}
+			if entries[0].Content != tc.wantContent {
+				t.Errorf("Content = %q, want %q", entries[0].Content, tc.wantContent)
+			}
+			if entries[0].Description != tc.wantDesc {
+				t.Errorf("Description = %q, want %q", entries[0].Description, tc.wantDesc)
+			}
+		})
+	}
+}
+
+func TestParseFeed_AtomContent(t *testing.T) {
+	const head = `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><entry><id>1</id>`
+	cases := []struct {
+		name        string
+		body        string
+		wantContent string
+		wantDesc    string
+	}{
+		{
+			name:        "content alongside summary",
+			body:        `<summary>Short</summary><content type="html">Full body</content>`,
+			wantContent: bodyFull,
+			wantDesc:    summaryShort,
+		},
+		{
+			// With no summary the content is already the description; it is
+			// still exposed as Content too.
+			name:        "content without summary",
+			body:        `<content>Only body</content>`,
+			wantContent: "Only body",
+			wantDesc:    "Only body",
+		},
+		{
+			name:        "summary only",
+			body:        `<summary>Short</summary>`,
+			wantContent: "",
+			wantDesc:    summaryShort,
+		},
+		{
+			name:        "direct media:content does not clobber content",
+			body:        `<summary>Short</summary><content>Full body</content><media:content url="https://cdn.example/v.mp4"/>`,
+			wantContent: bodyFull,
+			wantDesc:    summaryShort,
+		},
+		{
+			name:        "direct media:content before content",
+			body:        `<media:content url="https://cdn.example/v.mp4"/><content>Full body</content>`,
+			wantContent: bodyFull,
+			wantDesc:    bodyFull,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, _, err := parseFeed([]byte(head + tc.body + `</entry></feed>`))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parseFeed: %v, %d entries", err, len(entries))
+			}
+			if entries[0].Content != tc.wantContent || entries[0].Description != tc.wantDesc {
+				t.Errorf("content/description = %q/%q, want %q/%q",
+					entries[0].Content, entries[0].Description, tc.wantContent, tc.wantDesc)
+			}
+		})
+	}
+}
+
+func TestParseFeed_FeedTitle(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{
+			name: "rss",
+			doc:  `<rss><channel><title> My Blog </title><item><title>Item</title></item></channel></rss>`,
+			want: "My Blog",
+		},
+		{
+			name: "rss without title",
+			doc:  `<rss><channel><item><title>Item</title></item></channel></rss>`,
+			want: "",
+		},
+		{
+			// Item titles are nested one level down and must not be taken
+			// for the channel's.
+			name: "rss title after items",
+			doc:  `<rss><channel><item><title>Item</title></item><title>Late Title</title></channel></rss>`,
+			want: "Late Title",
+		},
+		{
+			name: "rss channel-level extension titles do not override",
+			doc: `<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/">` +
+				`<channel><title>Real Show</title><itunes:title>Itunes Title</itunes:title>` +
+				`<media:title>Media Title</media:title><item><title>Ep</title></item></channel></rss>`,
+			want: "Real Show",
+		},
+		{
+			name: "rss extension title first still loses",
+			doc: `<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>` +
+				`<media:title>Media Title</media:title><title>Real Show</title></channel></rss>`,
+			want: "Real Show",
+		},
+		{
+			name: "rss falls back to a lone extension title",
+			doc: `<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>` +
+				`<media:title>Media Title</media:title></channel></rss>`,
+			want: "Media Title",
+		},
+		{
+			name: "atom",
+			doc: `<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>` +
+				`<entry><id>1</id><title>Entry</title></entry></feed>`,
+			want: "Atom Feed",
+		},
+		{
+			name: "atom without xmlns",
+			doc:  `<feed><title>Bare Atom</title><entry><id>1</id></entry></feed>`,
+			want: "Bare Atom",
+		},
+		{
+			name: "atom feed-level extension titles do not override",
+			doc: `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">` +
+				`<media:title>Media Title</media:title><title>Atom Feed</title><itunes:title>Itunes Title</itunes:title>` +
+				`<entry><id>1</id></entry></feed>`,
+			want: "Atom Feed",
+		},
+		{
+			name: "rdf",
+			doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">` +
+				`<channel><title>RDF Feed</title><link>http://example.com</link></channel>` +
+				`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
+			want: "RDF Feed",
+		},
+		{
+			name: "rdf channel-level extension title does not override",
+			doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:media="http://search.yahoo.com/mrss/">` +
+				`<channel><title>RDF Feed</title><media:title>Media Title</media:title></channel>` +
+				`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
+			want: "RDF Feed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := parseFeed([]byte(tc.doc))
+			if err != nil {
+				t.Fatalf("parseFeed: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("feed title = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -22,21 +22,25 @@ func FuzzParseFeed(f *testing.F) {
 		`<?xml version="1.0"?><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>C</title></channel><item><title>T</title><link>http://example.com</link><dc:creator>A</dc:creator><dc:date>2015-10-21T07:28:00Z</dc:date></item></rdf:RDF>`,
 		`<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><channel><item><title>Real</title><link>https://a/1</link><atom:link href="https://a/self" rel="self"/><media:title>MediaTitle</media:title><description>short</description></item></channel></rss>`,
 		`<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><entry><id>yt:video:a</id><content>C</content><media:group><media:content url="u"/><media:thumbnail url="t"/><media:description>D</media:description></media:group></entry></feed>`,
+		`<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/"><channel><media:title>M</media:title><title>Feed</title><item><title>T</title><content:encoded><![CDATA[<p>Body</p>]]></content:encoded></item></channel></rss>`,
+		`<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><title>Feed</title><media:title>M</media:title><entry><id>1</id><summary>S</summary><content>C</content></entry></feed>`,
 	}
 	for _, seed := range seeds {
 		f.Add([]byte(seed))
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		entries, err := parseFeed(data)
+		entries, feedTitle, err := parseFeed(data)
 		if err != nil {
 			return
 		}
+		_ = feedTitle
 		for _, e := range entries {
 			_ = e.ID
 			_ = e.Title
 			_ = e.Link
 			_ = e.Description
+			_ = e.Content
 			_ = e.Image
 			_ = e.Author
 			_ = e.Categories

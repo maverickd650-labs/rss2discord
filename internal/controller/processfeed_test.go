@@ -69,6 +69,29 @@ func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 	}
 }
 
+// TestProcessFeed_FeedTitleReachesTemplate asserts the title the fetch
+// returned for the feed is what {{.FeedTitle}} renders for its entries.
+func TestProcessFeed_FeedTitleReachesTemplate(t *testing.T) {
+	ctx := t.Context()
+	ns, name := "processfeed-feed-title", "fg-feed-title"
+	defer deleteFeedGroupMetrics(ns, name)
+
+	discordServer := NewMockDiscordServer()
+	defer discordServer.Close()
+
+	fg, feed := newMetricsFeedGroup(ns, name, "[{{.FeedTitle}}] {{.Title}}")
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+
+	fetchResult := oneEntryFetch()
+	fetchResult.FeedTitle = "Example Blog"
+	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, fetchResult, nil, client, testReconcileTime)
+
+	bodies := discordServer.Bodies()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "[Example Blog] ") {
+		t.Fatalf("expected one message carrying the feed title, got %q", bodies)
+	}
+}
+
 // TestProcessFeed_InvalidMessageTemplate asserts a feed whose Format fails
 // to parse as a template is not retried -- like the filter-regex case above,
 // a template compile error is a deterministic FeedSpec misconfiguration that
