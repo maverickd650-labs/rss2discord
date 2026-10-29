@@ -1022,6 +1022,9 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 // A config error on a non-empty first fetch must not mark the feed
 // initialized: once the config is fixed, catchUpLimit 0 still skips the
 // backlog instead of delivering all of it.
+// configErrURLPrefix keeps the entry URLs of the config-error test unique in the package.
+const configErrURLPrefix = "https://config-error.example.test/"
+
 func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	ns, name := initializationUnitNS, "config-error-first-sync"
 	defer deleteFeedGroupMetrics(ns, name)
@@ -1036,8 +1039,8 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	r := &FeedGroupReconciler{}
 
 	entries := []rss.Entry{
-		{ID: "https://example.com/first", Title: "first", Link: "https://example.com/first", Seq: 2},
-		{ID: "https://example.com/second", Title: "second", Link: "https://example.com/second", Seq: 1},
+		{ID: configErrURLPrefix + "newer", Title: "newer", Link: configErrURLPrefix + "newer", Seq: 2},
+		{ID: configErrURLPrefix + "older", Title: "older", Link: configErrURLPrefix + "older", Seq: 1},
 	}
 	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
 	if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
