@@ -288,7 +288,7 @@ manager:
       memory: 64Mi
 ```
 
-One reconcile can buffer up to 10 feed responses of 10MB each, so scale `resources.limits.memory` with `maxConcurrentReconciles` and the size of your feeds (`GOMEMLIMIT` follows the limit).
+One reconcile can buffer up to 10 feed responses of 10MB each, so scale `resources.limits.memory` with `maxConcurrentReconciles` and the size of your feeds (`GOMEMLIMIT` follows the limit). Responses over 10MB are rejected, and only the first 1000 entries of a feed (the newest, since feeds list newest-first) are read.
 
 Resource names drop the redundant `-controller-manager` suffix — with a release named `rss2discord-operator`, the Deployment, ServiceAccount, and Service are all named `rss2discord-operator` (selection still happens on the `control-plane: controller-manager` label). The `kubectl apply -f dist/install.yaml` path keeps the longer `rss2discord-operator-controller-manager` names, so prefer the label selector in commands that target the pod.
 

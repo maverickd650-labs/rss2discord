@@ -24,6 +24,23 @@ import (
 // controlled).
 const maxFeedResponseBytes = 10 * 1024 * 1024 // 10MB
 
+// maxFeedEntries bounds how many <item>/<entry> elements a feed document
+// decodes. The response-size cap bounds bytes, not elements: a 10MB body of
+// empty <item/> elements would otherwise decode into well over a million
+// ~280-byte structs, hundreds of MiB against a manager that runs several
+// fetches at once. Real feeds publish a few dozen entries (archive and
+// podcast feeds a few hundred); 1000 leaves ample headroom while keeping the
+// decoded form to a few hundred KiB. The first entries in document order are
+// the ones kept -- feeds list newest-first, and the controller only needs the
+// newest entries -- so a longer feed is truncated to its most recent
+// maxFeedEntries rather than rejected.
+const maxFeedEntries = 1000
+
+// maxCategories bounds how many categories one entry retains. Categories are
+// only joined into a short display string; real entries carry a handful of
+// tags, so the cap only matters for a hostile document.
+const maxCategories = 50
+
 // defaultTimeout bounds how long a single feed fetch may take, since the
 // feed URL is untrusted input and a slow/hanging server must not stall
 // reconciliation indefinitely.
@@ -363,8 +380,8 @@ type rssChannel struct {
 	// Title is a slice of nsText for the same reason as rssItem's fields: a
 	// channel-level <itunes:title> or <media:title> shares the local name and
 	// would otherwise override the real <title>.
-	Title nsTexts   `xml:"title"`
-	Items []rssItem `xml:"item"`
+	Title nsTexts  `xml:"title"`
+	Items rssItems `xml:"item"`
 }
 
 // rdfEnvelope is RSS 1.0's document shape: root <rdf:RDF>, with <item>
@@ -376,7 +393,7 @@ type rssChannel struct {
 type rdfEnvelope struct {
 	XMLName xml.Name   `xml:"RDF"`
 	Channel rdfChannel `xml:"channel"`
-	Items   []rssItem  `xml:"item"`
+	Items   rssItems   `xml:"item"`
 }
 
 // rdfChannel is RSS 1.0's <channel>, which carries feed metadata only; its
@@ -556,6 +573,34 @@ func pickTextPrefer(cands []nsText, spaces ...string) string {
 	return ""
 }
 
+// appendBounded decodes the element at start into a new T and appends it to s
+// unless s already holds limit elements, in which case the element is skipped
+// without being decoded. It is the shared body of the bounded slice types
+// below, whose UnmarshalXML encoding/xml calls once per matching element.
+func appendBounded[T any](d *xml.Decoder, start xml.StartElement, s []T, limit int) ([]T, error) {
+	if len(s) >= limit {
+		return s, d.Skip()
+	}
+	var v T
+	if err := d.DecodeElement(&v, &start); err != nil {
+		return s, err
+	}
+	return append(s, v), nil
+}
+
+// rssItems collects a document's <item> elements but, unlike a plain
+// []rssItem, stops decoding after maxFeedEntries: later items are skipped
+// rather than allocated. Document order is kept, so Entry.Seq is unaffected.
+type rssItems []rssItem
+
+// UnmarshalXML retains the first maxFeedEntries items. XML decoding errors are
+// returned; excess items are ignored.
+func (c *rssItems) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var err error
+	*c, err = appendBounded(d, start, *c, maxFeedEntries)
+	return err
+}
+
 type rssItem struct {
 	// These are nsTexts, not strings, so namespaced extension elements with
 	// the same local name can't override the core fields; see nsText and
@@ -575,10 +620,10 @@ type rssItem struct {
 	// encoding/xml matches by local name regardless of namespace prefix, so
 	// this also covers <creator> without a dc: prefix.
 	Creator        string        `xml:"creator"`
-	Categories     []string      `xml:"category"`
+	Categories     rssCategories `xml:"category"`
 	Enclosure      *rssEnclosure `xml:"enclosure"`
 	MediaThumbnail *rssMediaURL  `xml:"thumbnail"`
-	MediaContent   []rssMediaURL `xml:"content"`
+	MediaContent   mediaContents `xml:"content"`
 	// MediaGroup is <media:group>, which some feeds wrap their thumbnail,
 	// content and description in; see mediaGroup.
 	MediaGroup *mediaGroup `xml:"group"`
@@ -610,6 +655,49 @@ type rssMediaURL struct {
 
 func (m rssMediaURL) isImage() bool {
 	return strings.HasPrefix(m.Medium, "image") || strings.HasPrefix(m.Type, "image/")
+}
+
+// usableImage reports whether m is an image with a non-blank url, the only
+// kind of <media:content> mediaImage ever selects.
+func (m rssMediaURL) usableImage() bool {
+	return m.isImage() && strings.TrimSpace(m.URL) != ""
+}
+
+// mediaContents collects an item's direct <media:content> elements but keeps
+// only the first usable image: mediaImage never looks past it, so retaining one
+// element is equivalent to retaining all of them and costs nothing for an item
+// padded with thousands of siblings.
+type mediaContents []rssMediaURL
+
+// UnmarshalXML retains the first image-typed element with a non-blank url.
+// XML decoding errors are returned; other elements are ignored.
+func (c *mediaContents) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var m rssMediaURL
+	if err := d.DecodeElement(&m, &start); err != nil {
+		return err
+	}
+	if len(*c) == 0 && m.usableImage() {
+		*c = append(*c, m)
+	}
+	return nil
+}
+
+// rssCategories collects an item's <category> text, trimmed, keeping the first
+// maxCategories non-blank values.
+type rssCategories []string
+
+// UnmarshalXML retains the trimmed text of non-blank categories up to
+// maxCategories. XML decoding errors are returned; blank or excess categories
+// are ignored.
+func (c *rssCategories) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var text string
+	if err := d.DecodeElement(&text, &start); err != nil {
+		return err
+	}
+	if text = strings.TrimSpace(text); text != "" && len(*c) < maxCategories {
+		*c = append(*c, text)
+	}
+	return nil
 }
 
 // mediaGroup is Media RSS's <media:group>, the wrapper YouTube's Atom feeds
@@ -685,8 +773,8 @@ func mediaImage(thumbnail *rssMediaURL, content []rssMediaURL, group *mediaGroup
 		}
 	}
 	for _, c := range content {
-		if u := strings.TrimSpace(c.URL); c.isImage() && u != "" {
-			return u
+		if c.usableImage() {
+			return strings.TrimSpace(c.URL)
 		}
 	}
 	return group.image()
@@ -703,9 +791,21 @@ func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMe
 	return mediaImage(thumbnail, content, group)
 }
 
+// atomEntries collects a feed's <entry> elements but, like rssItems, stops
+// decoding after maxFeedEntries.
+type atomEntries []atomEntry
+
+// UnmarshalXML retains the first maxFeedEntries entries. XML decoding errors are
+// returned; excess entries are ignored.
+func (c *atomEntries) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var err error
+	*c, err = appendBounded(d, start, *c, maxFeedEntries)
+	return err
+}
+
 type atomEntry struct {
-	ID    string     `xml:"id"`
-	Links []atomLink `xml:"link"`
+	ID    string    `xml:"id"`
+	Links atomLinks `xml:"link"`
 	// Title, Summary and Content are nsTexts: Content because a direct
 	// <media:content> on the entry shares its local name (see atomText), and
 	// all three so type="xhtml" values (a child <div>) are captured; see
@@ -716,7 +816,7 @@ type atomEntry struct {
 	Updated    string         `xml:"updated"`
 	Published  string         `xml:"published"`
 	Author     atomAuthor     `xml:"author"`
-	Categories []atomCategory `xml:"category"`
+	Categories atomCategories `xml:"category"`
 	// MediaThumbnail and MediaGroup carry Media RSS images/descriptions
 	// (YouTube feeds nest them in <media:group>). Only <thumbnail> and
 	// <group> are read directly: Atom has no elements by those names, whereas
@@ -743,10 +843,65 @@ type atomCategory struct {
 	Term string `xml:"term,attr"`
 }
 
+// atomCategories collects an entry's <category> elements, keeping the first
+// maxCategories with a non-blank term.
+type atomCategories []atomCategory
+
+// UnmarshalXML retains categories with a non-blank term up to maxCategories.
+// XML decoding errors are returned; blank or excess categories are ignored.
+func (c *atomCategories) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var cat atomCategory
+	if err := d.DecodeElement(&cat, &start); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cat.Term) != "" && len(*c) < maxCategories {
+		*c = append(*c, cat)
+	}
+	return nil
+}
+
 type atomLink struct {
 	Href string `xml:"href,attr"`
 	Rel  string `xml:"rel,attr"`
 	Type string `xml:"type,attr"`
+}
+
+// isAlternate reports whether l is an article link: Atom defaults an unmarked
+// link's rel to "alternate".
+func (l atomLink) isAlternate() bool {
+	return l.Rel == "" || l.Rel == "alternate"
+}
+
+// isImageEnclosure reports whether l is an image enclosure with a non-blank
+// href.
+func (l atomLink) isImageEnclosure() bool {
+	return l.Rel == "enclosure" && strings.HasPrefix(l.Type, "image/") && strings.TrimSpace(l.Href) != ""
+}
+
+// atomLinks collects an entry's <link> elements but retains only the three
+// that primaryLink and enclosureImage can select: the first link overall, the
+// first alternate link, and the first image enclosure. Entries rarely carry
+// more than a handful of links, but nothing else bounds them, and the retained
+// subset yields exactly the same selection as the full list.
+type atomLinks []atomLink
+
+// UnmarshalXML retains a link only if it is the first, the first alternate, or
+// the first image enclosure. XML decoding errors are returned; other links are
+// ignored.
+func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var l atomLink
+	if err := d.DecodeElement(&l, &start); err != nil {
+		return err
+	}
+	hasAlternate, hasEnclosure := false, false
+	for _, kept := range *c {
+		hasAlternate = hasAlternate || kept.isAlternate()
+		hasEnclosure = hasEnclosure || kept.isImageEnclosure()
+	}
+	if len(*c) == 0 || (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure()) {
+		*c = append(*c, l)
+	}
+	return nil
 }
 
 // primaryLink returns the entry's main article link: the "alternate" rel,
@@ -754,7 +909,7 @@ type atomLink struct {
 // an unmarked link's rel to "alternate").
 func primaryLink(links []atomLink) string {
 	for _, l := range links {
-		if l.Rel == "" || l.Rel == "alternate" {
+		if l.isAlternate() {
 			return l.Href
 		}
 	}
@@ -768,10 +923,8 @@ func primaryLink(links []atomLink) string {
 // (<link rel="enclosure" type="image/..">).
 func enclosureImage(links []atomLink) string {
 	for _, l := range links {
-		if l.Rel == "enclosure" && strings.HasPrefix(l.Type, "image/") {
-			if href := strings.TrimSpace(l.Href); href != "" {
-				return href
-			}
+		if l.isImageEnclosure() {
+			return strings.TrimSpace(l.Href)
 		}
 	}
 	return ""
@@ -781,7 +934,7 @@ type atomFeed struct {
 	// Title is a slice of nsText so a feed-level <media:title> or
 	// <itunes:title> can't override Atom's own <title>; see atomText.
 	Title   nsTexts     `xml:"title"`
-	Entries []atomEntry `xml:"entry"`
+	Entries atomEntries `xml:"entry"`
 	// Base is the feed-level xml:base, used to resolve an entry's relative
 	// link/enclosure hrefs when the entry doesn't set its own.
 	Base string `xml:"base,attr"`
@@ -975,9 +1128,12 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			published, _ = parseTime(item.Updated)
 		}
 
-		base := strings.TrimSpace(item.Base)
-		if base == "" {
-			base = feedBase
+		// An entry's xml:base is itself resolved against the feed's (RFC 3986
+		// section 5.1.2), so a relative entry base such as "posts/" extends the
+		// feed base instead of replacing it and leaving relative links relative.
+		base := feedBase
+		if entryBase := strings.TrimSpace(item.Base); entryBase != "" {
+			base = resolveAtomURL(feedBase, entryBase)
 		}
 
 		link := resolveAtomURL(base, primaryLink(item.Links))

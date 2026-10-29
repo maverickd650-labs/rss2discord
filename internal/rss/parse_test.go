@@ -30,6 +30,12 @@ const (
 	descShort      = "short"
 	summaryShort   = "Short"
 	bodyFull       = "Full body"
+
+	caseNoLinks = "no links"
+	altURL      = "http://alt"
+	firstURL    = "http://first"
+	formatAtom  = "atom"
+	formatRDF   = "rdf"
 )
 
 func TestParseTime(t *testing.T) {
@@ -84,16 +90,16 @@ func TestPrimaryLink(t *testing.T) {
 		links []atomLink
 		want  string
 	}{
-		{name: "no links", links: nil, want: ""},
+		{name: caseNoLinks, links: nil, want: ""},
 		{
 			name:  "explicit alternate preferred over enclosure",
-			links: []atomLink{{Href: encURL, Rel: relEnclosure}, {Href: "http://alt", Rel: relAlternate}},
-			want:  "http://alt",
+			links: []atomLink{{Href: encURL, Rel: relEnclosure}, {Href: altURL, Rel: relAlternate}},
+			want:  altURL,
 		},
 		{
 			name:  "unmarked rel treated as alternate",
-			links: []atomLink{{Href: "http://first"}},
-			want:  "http://first",
+			links: []atomLink{{Href: firstURL}},
+			want:  firstURL,
 		},
 		{
 			name:  "falls back to first when no alternate",
@@ -117,7 +123,7 @@ func TestEnclosureImage(t *testing.T) {
 		links []atomLink
 		want  string
 	}{
-		{name: "no links", links: nil, want: ""},
+		{name: caseNoLinks, links: nil, want: ""},
 		{
 			name:  "image enclosure matched",
 			links: []atomLink{{Href: picJPEGURL, Rel: relEnclosure, Type: imageJPEG}},
@@ -583,9 +589,9 @@ func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
 // error for every supported format, instead of a partial or empty result.
 func TestParseFeed_MalformedBodyAfterValidRoot(t *testing.T) {
 	for name, doc := range map[string]string{
-		"rss":  `<rss><channel><item><title>x</item></channel></rss>`,
-		"atom": `<feed><entry><title>x</entry></feed>`,
-		"rdf":  `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
+		"rss":      `<rss><channel><item><title>x</item></channel></rss>`,
+		formatAtom: `<feed><entry><title>x</entry></feed>`,
+		formatRDF:  `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			entries, _, err := parseFeed([]byte(doc))
@@ -827,6 +833,17 @@ func TestNSTextsBoundsRetainedCandidates(t *testing.T) {
 	}
 	if got := pickText(cands); got != "Real" {
 		t.Fatalf("pickText = %q, want %q", got, "Real")
+	}
+	// The RSS 1.0 candidate arrived after the fallback cap filled, but the
+	// cap only applies to non-preferred namespaces, so it must still be kept.
+	var retainedRDF bool
+	for _, c := range cands {
+		if c.XMLName.Space == rss10Namespace && c.Text == "RDF" {
+			retainedRDF = true
+		}
+	}
+	if !retainedRDF {
+		t.Fatalf("RSS 1.0 candidate was dropped although the fallback cap is full: %+v", cands)
 	}
 }
 
@@ -1152,7 +1169,7 @@ func TestParseFeed_FeedTitle(t *testing.T) {
 			want: "Media Title",
 		},
 		{
-			name: "atom",
+			name: formatAtom,
 			doc: `<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>` +
 				`<entry><id>1</id><title>Entry</title></entry></feed>`,
 			want: "Atom Feed",
@@ -1170,7 +1187,7 @@ func TestParseFeed_FeedTitle(t *testing.T) {
 			want: "Atom Feed",
 		},
 		{
-			name: "rdf",
+			name: formatRDF,
 			doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">` +
 				`<channel><title>RDF Feed</title><link>http://example.com</link></channel>` +
 				`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
@@ -1344,5 +1361,266 @@ func TestParseFeed_AtomXHTMLMalformedSummaryAndContent(t *testing.T) {
 				t.Fatalf("malformed %s: entries=%v title=%q err=%v", element, entries, title, err)
 			}
 		})
+	}
+}
+
+// TestParseFeed_BoundsEntryCount asserts a document with more than
+// maxFeedEntries items/entries decodes exactly maxFeedEntries of them, that
+// they are the first ones in document order, and that Seq still reflects the
+// document position.
+func TestParseFeed_BoundsEntryCount(t *testing.T) {
+	const total = maxFeedEntries + 50
+	build := func(open, el, closing string) []byte {
+		var b strings.Builder
+		b.WriteString(open)
+		for i := range total {
+			fmt.Fprintf(&b, el, i, i)
+		}
+		b.WriteString(closing)
+		return []byte(b.String())
+	}
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "rss 2.0",
+			data: build(`<rss><channel><title>F</title>`, `<item><guid>id-%d</guid><title>T%d</title></item>`, `</channel></rss>`),
+		},
+		{
+			name: "rss 1.0",
+			data: build(`<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/"><channel><title>F</title></channel>`,
+				`<item><link>id-%d</link><title>T%d</title></item>`, `</rdf:RDF>`),
+		},
+		{
+			name: formatAtom,
+			data: build(`<feed xmlns="http://www.w3.org/2005/Atom"><title>F</title>`, `<entry><id>id-%d</id><title>T%d</title></entry>`, `</feed>`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries, feedTitle, err := parseFeed(tt.data)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(entries) != maxFeedEntries {
+				t.Fatalf("got %d entries, want %d", len(entries), maxFeedEntries)
+			}
+			for i, e := range entries {
+				if want := fmt.Sprintf("id-%d", i); e.ID != want || e.Seq != i {
+					t.Fatalf("entries[%d] = {ID: %q, Seq: %d}, want {ID: %q, Seq: %d}", i, e.ID, e.Seq, want, i)
+				}
+			}
+			if feedTitle != "F" {
+				t.Fatalf("feed title = %q, want %q", feedTitle, "F")
+			}
+		})
+	}
+}
+
+// TestParseFeed_EntryCountBoundDoesNotMaskLaterErrors asserts elements past the
+// cap are skipped rather than ignored: malformed XML after them is still an
+// error, as it is for a document under the cap.
+func TestParseFeed_EntryCountBoundDoesNotMaskLaterErrors(t *testing.T) {
+	data := `<rss><channel>` + strings.Repeat(`<item><title>T</title></item>`, maxFeedEntries+1) +
+		`<item><title>broken</item></channel></rss>`
+	if _, _, err := parseFeed([]byte(data)); err == nil {
+		t.Fatal("expected a decoding error for malformed XML past the entry cap")
+	}
+}
+
+// TestParseFeed_RSSBoundsPerItemSlices asserts an item padded with thousands of
+// <media:content> and <category> elements retains a bounded number of each,
+// without changing the image or categories that are selected.
+func TestParseFeed_RSSBoundsPerItemSlices(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<rss xmlns:media="http://search.yahoo.com/mrss/"><channel><item><title>T</title>`)
+	// Unusable media:content (wrong medium, blank url) ahead of the first
+	// usable image, then more images that must be ignored.
+	b.WriteString(strings.Repeat(`<media:content url="http://v.mp4" medium="video"/>`, 3000))
+	b.WriteString(`<media:content url="  " medium="image"/>`)
+	b.WriteString(`<media:content url=" http://first.png " type="image/png"/>`)
+	b.WriteString(strings.Repeat(`<media:content url="http://later.png" medium="image"/>`, 3000))
+	b.WriteString(strings.Repeat(`<category>  </category>`, 3000))
+	for i := range 3 * maxCategories {
+		fmt.Fprintf(&b, `<category> c%d </category>`, i)
+	}
+	b.WriteString(`</item></channel></rss>`)
+	data := []byte(b.String())
+
+	var env rssEnvelope
+	if err := unmarshalXML(data, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	item := env.Channel.Items[0]
+	if len(item.MediaContent) != 1 {
+		t.Fatalf("retained %d media:content elements, want 1", len(item.MediaContent))
+	}
+	if len(item.Categories) != maxCategories {
+		t.Fatalf("retained %d categories, want %d", len(item.Categories), maxCategories)
+	}
+
+	entries, _, err := parseFeed(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := entries[0].Image; got != "http://first.png" {
+		t.Fatalf("image = %q, want %q", got, "http://first.png")
+	}
+	want := make([]string, maxCategories)
+	for i := range want {
+		want[i] = fmt.Sprintf("c%d", i)
+	}
+	if !slicesEqual(entries[0].Categories, want) {
+		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
+	}
+}
+
+func TestParseFeed_AtomBoundsCategories(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>1</id>`)
+	b.WriteString(strings.Repeat(`<category term=" "/>`, 3000))
+	for i := range 3 * maxCategories {
+		fmt.Fprintf(&b, `<category term=" c%d "/>`, i)
+	}
+	b.WriteString(`</entry></feed>`)
+
+	entries, _, err := parseFeed([]byte(b.String()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := make([]string, maxCategories)
+	for i := range want {
+		want[i] = fmt.Sprintf("c%d", i)
+	}
+	if !slicesEqual(entries[0].Categories, want) {
+		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
+	}
+}
+
+// TestAtomLinksBoundedSelectionMatchesFull decodes the same <link> list twice,
+// once into the bounded atomLinks and once into a plain []atomLink, and asserts
+// primaryLink and enclosureImage select identically while the bounded form
+// retains only a handful of links.
+func TestAtomLinksBoundedSelectionMatchesFull(t *testing.T) {
+	const noise = 3000
+	related := strings.Repeat(`<link rel="related" href="http://related" type="text/html"/>`, noise)
+	cases := []struct {
+		name          string
+		links         string
+		wantPrimary   string
+		wantEnclosure string
+	}{
+		{name: caseNoLinks, links: "", wantPrimary: "", wantEnclosure: ""},
+		{
+			name:        "unmarked link first",
+			links:       `<link href="http://first"/>` + related + `<link rel="alternate" href="http://alt"/>`,
+			wantPrimary: firstURL,
+		},
+		{
+			name:        "alternate after many non-alternates",
+			links:       related + `<link rel="alternate" href="http://alt"/><link rel="alternate" href="http://alt2"/>`,
+			wantPrimary: altURL,
+		},
+		{
+			name:        "no alternate falls back to the first link overall",
+			links:       `<link rel="self" href="http://self"/>` + related,
+			wantPrimary: "http://self",
+		},
+		{
+			name:        "first alternate wins even with a blank href",
+			links:       related + `<link rel="alternate" href=""/><link rel="alternate" href="http://alt"/>`,
+			wantPrimary: "",
+		},
+		{
+			name: "image enclosure after many links, blank and non-image ones skipped",
+			links: related + `<link rel="enclosure" type="application/pdf" href="http://doc.pdf"/>` +
+				`<link rel="enclosure" type="image/png" href="  "/>` +
+				`<link rel="enclosure" type="image/png" href=" http://img1.png "/>` + related +
+				`<link rel="enclosure" type="image/png" href="http://img2.png"/>` +
+				`<link rel="alternate" href="http://alt"/>`,
+			wantPrimary:   altURL,
+			wantEnclosure: "http://img1.png",
+		},
+		{
+			name:          "image enclosure doubles as the first link",
+			links:         `<link rel="enclosure" type="image/jpeg" href="http://img.jpg"/>` + related,
+			wantPrimary:   "http://img.jpg",
+			wantEnclosure: "http://img.jpg",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := []byte(`<entry>` + tc.links + `</entry>`)
+
+			var bounded atomEntry
+			if err := xml.Unmarshal(doc, &bounded); err != nil {
+				t.Fatalf("unmarshal bounded: %v", err)
+			}
+			var full struct {
+				Links []atomLink `xml:"link"`
+			}
+			if err := xml.Unmarshal(doc, &full); err != nil {
+				t.Fatalf("unmarshal full: %v", err)
+			}
+
+			if got, want := primaryLink(bounded.Links), primaryLink(full.Links); got != want {
+				t.Fatalf("primaryLink = %q, full list gives %q", got, want)
+			}
+			if got, want := enclosureImage(bounded.Links), enclosureImage(full.Links); got != want {
+				t.Fatalf("enclosureImage = %q, full list gives %q", got, want)
+			}
+			if got := primaryLink(bounded.Links); got != tc.wantPrimary {
+				t.Fatalf("primaryLink = %q, want %q", got, tc.wantPrimary)
+			}
+			if got := enclosureImage(bounded.Links); got != tc.wantEnclosure {
+				t.Fatalf("enclosureImage = %q, want %q", got, tc.wantEnclosure)
+			}
+			if len(bounded.Links) > 3 {
+				t.Fatalf("retained %d links, want at most 3", len(bounded.Links))
+			}
+		})
+	}
+}
+
+func TestParseFeed_AtomEntryXMLBaseComposesWithFeedBase(t *testing.T) {
+	data := []byte(`<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:base="https://example.com/blog/">
+<entry xml:base="posts/2026/">
+<id>1</id>
+<title>Relative entry base</title>
+<link rel="alternate" href="article-1"/>
+<link rel="enclosure" type="image/jpeg" href="img/1.jpg"/>
+</entry>
+<entry xml:base="/news/">
+<id>2</id>
+<title>Root-relative entry base</title>
+<link rel="alternate" href="article-2"/>
+</entry>
+<entry xml:base="https://other.example.com/x/">
+<id>3</id>
+<title>Absolute entry base still overrides</title>
+<link rel="alternate" href="article-3"/>
+</entry>
+</feed>`)
+
+	entries, _, err := parseFeed(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+	if want := "https://example.com/blog/posts/2026/article-1"; entries[0].Link != want {
+		t.Fatalf("link = %q, want %q", entries[0].Link, want)
+	}
+	if want := "https://example.com/blog/posts/2026/img/1.jpg"; entries[0].Image != want {
+		t.Fatalf("image = %q, want %q", entries[0].Image, want)
+	}
+	if want := "https://example.com/news/article-2"; entries[1].Link != want {
+		t.Fatalf("link = %q, want %q", entries[1].Link, want)
+	}
+	if want := "https://other.example.com/x/article-3"; entries[2].Link != want {
+		t.Fatalf("link = %q, want %q", entries[2].Link, want)
 	}
 }
