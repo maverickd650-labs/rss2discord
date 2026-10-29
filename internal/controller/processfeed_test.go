@@ -815,6 +815,9 @@ func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 	})
 }
 
+// initializationUnitNS namespaces the metric series the initialization tests create.
+const initializationUnitNS = "initialization-unit"
+
 func TestProcessFeed_Initialization(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -828,7 +831,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 		{name: "fetch failure", fetchErr: errors.New("fetch failed"), wantSent: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ns, name := "initialization-unit", tc.name
+			ns, name := initializationUnitNS, tc.name
 			defer deleteFeedGroupMetrics(ns, name)
 			discordServer := NewMockDiscordServer()
 			defer discordServer.Close()
@@ -854,7 +857,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 // After an empty first fetch with catchUpLimit 0, everything that shows up
 // later is new, so none of it may be trimmed by the catch-up cap.
 func TestProcessFeed_CatchUpLimitZeroDeliversAllAfterEmptyFirstSync(t *testing.T) {
-	ns, name := "initialization-unit", "all-after-empty"
+	ns, name := initializationUnitNS, "all-after-empty"
 	defer deleteFeedGroupMetrics(ns, name)
 	discordServer := NewMockDiscordServer()
 	defer discordServer.Close()
@@ -1020,7 +1023,7 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 // initialized: once the config is fixed, catchUpLimit 0 still skips the
 // backlog instead of delivering all of it.
 func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
-	ns, name := "initialization-unit", "config-error-first-sync"
+	ns, name := initializationUnitNS, "config-error-first-sync"
 	defer deleteFeedGroupMetrics(ns, name)
 	discordServer := NewMockDiscordServer()
 	defer discordServer.Close()
@@ -1033,8 +1036,8 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	r := &FeedGroupReconciler{}
 
 	entries := []rss.Entry{
-		{ID: "https://example.com/a", Title: "a", Link: "https://example.com/a", Seq: 2},
-		{ID: "https://example.com/b", Title: "b", Link: "https://example.com/b", Seq: 1},
+		{ID: "https://example.com/first", Title: "first", Link: "https://example.com/first", Seq: 2},
+		{ID: "https://example.com/second", Title: "second", Link: "https://example.com/second", Seq: 1},
 	}
 	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
 	if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
