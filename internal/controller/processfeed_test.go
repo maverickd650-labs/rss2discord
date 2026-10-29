@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -1197,6 +1198,123 @@ func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
 	processTwice(t, fg, feed, []rss.Entry{guid, link}, link.Title)
 }
 
+// A GUID-less link is a new entry, not a rotation, when the only thing it
+// shares a stripped form with is an already-sent GUID that has since left
+// the feed: neither the GUID's dedup key nor its watermark may stand in for it.
+func TestProcessFeed_LinkAfterGUIDWithSameBaseIsDelivered(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "link-after-guid", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	guid := guidEntry(legacyURLPrefix+"after-guid/post", 0)
+	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
+	link := linkEntry(legacyURLPrefix+"after-guid/post#v2", 1)
+	processTwice(t, fg, feed, []rss.Entry{link}, link.Title)
+}
+
+// The replay cap must hold across later polls too: a colliding group larger
+// than LastSent's retention cap must not leak historical entries once
+// pruning evicts what the migration recorded about them.
+func TestProcessFeed_LegacyReplayCapSurvivesPruning(t *testing.T) {
+	for _, limit := range []int32{0, defaultCatchUpLimit} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, fmt.Sprintf("replay-pruning-%d", limit), "{{.Title}}")
+			fg.Spec.CatchUpLimit = new(limit)
+			entries := make([]rss.Entry, 0, maxLastSentPerFeed+10)
+			for i := range maxLastSentPerFeed + 10 {
+				entries = append(entries, linkEntry(fmt.Sprintf("%spruning/changelog#v%d", legacyURLPrefix, i), i))
+			}
+			fs.Initialized = true
+			fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+			fs.LastSent[legacyKey(entries[0])] = legacySentAt
+			want := make([]string, 0, limit)
+			for _, entry := range entries[len(entries)-int(limit):] {
+				want = append(want, entry.Title)
+			}
+			processTwice(t, fg, feed, entries, want...)
+		})
+	}
+}
+
+// The replay cap also holds when delivery is interrupted: a failed send
+// leaves the watermark where the migration put it, past every entry the cap
+// excluded, so the retries still deliver only the newest catchUpLimit. A new
+// entry dated among the replayed ones is delivered too.
+func TestProcessFeed_LegacyReplayCapSurvivesFailedSends(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "replay-failed-sends", "{{.Title}}")
+	entries := make([]rss.Entry, 0, maxLastSentPerFeed+11)
+	for i := range maxLastSentPerFeed + 10 {
+		entries = append(entries, linkEntry(fmt.Sprintf("%sfailed/changelog#v%d", legacyURLPrefix, i), i))
+	}
+	// Dated among the replayed entries; it is new and must not be skipped.
+	fresh := guidEntry("replay-failed-fresh", 0)
+	fresh.Published = entries[len(entries)-3].Published.Add(time.Millisecond)
+	entries = append(entries, fresh)
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+	fs.LastSent[legacyKey(entries[0])] = legacySentAt
+
+	server := NewMockDiscordServer()
+	defer server.Close()
+	client := server.DiscordClientBuilder()(server.URL())
+	server.FailNextRequests(2, http.StatusInternalServerError)
+	for range 4 {
+		fetch := rss.FetchResult{Entries: slices.Clone(entries)}
+		(&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+	}
+	want := make([]string, 0, defaultCatchUpLimit+1)
+	for _, entry := range entries[len(entries)-1-defaultCatchUpLimit : len(entries)-3] {
+		want = append(want, entry.Title)
+	}
+	want = append(want, fresh.Title, entries[len(entries)-3].Title, entries[len(entries)-2].Title)
+	if got := sentContents(t, server); !slices.Equal(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+}
+
+// Capping the replay moves the watermark past already-sent entries along
+// with the skipped colliding ones, but never past an unsent entry outside
+// the group: that entry is new, and colliding entries dated after it are
+// delivered with it even beyond the cap.
+func TestProcessFeed_LegacyReplayStopsAtNewEntry(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "replay-stops-at-new", "{{.Title}}")
+	fg.Spec.CatchUpLimit = new(int32(2))
+	sibling := func(i int) rss.Entry {
+		return linkEntry(fmt.Sprintf("%sstops/changelog#v%d", legacyURLPrefix, i), i)
+	}
+	sentGUID := guidEntry("replay-stops-sent", 2)
+	fresh := guidEntry("replay-stops-fresh", 4)
+	entries := []rss.Entry{sibling(0), sibling(1), sentGUID, sibling(3), fresh, sibling(5), sibling(6), sibling(7)}
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+	fs.LastSent[legacyKey(entries[0])] = legacySentAt
+	fs.LastSent[legacyKey(sentGUID)] = legacySentAt
+	processTwice(t, fg, feed, entries, fresh.Title, entries[5].Title, entries[6].Title, entries[7].Title)
+}
+
+// A watermark that kept a fragment or ref, and so came from a link, falls back
+// to the link's stripped form only when it is unique in the fetch; with no such
+// entry it reads as scrolled out.
+func TestWatermarkIndex_LinkFallback(t *testing.T) {
+	rotated := linkEntry(legacyURLPrefix+"index/post?ref=b", 0)
+	sibling := linkEntry(legacyURLPrefix+"index/post?ref=c", 1)
+	other := linkEntry(legacyURLPrefix+"index/other", 2)
+	watermark := normalizeLinkIdentity(legacyURLPrefix + "index/post?ref=a")
+	for _, tc := range []struct {
+		name    string
+		entries []rss.Entry
+		want    int
+	}{
+		{name: "unique rotation", entries: []rss.Entry{other, rotated}, want: 1},
+		{name: "shared stripped form", entries: []rss.Entry{rotated, sibling}, want: -1},
+		{name: "no match", entries: []rss.Entry{other}, want: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := watermarkIndex(tc.entries, watermark, countStripped(tc.entries)); got != tc.want {
+				t.Fatalf("watermarkIndex = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // Legacy keys in LastSent and a legacy watermark, stored under the old
 // fragment- and ref-stripped identities, still count after the upgrade:
 // nothing already delivered is resent, the new entry is, and the status is
@@ -1235,10 +1353,13 @@ func TestProcessFeed_LegacyKeysPresent(t *testing.T) {
 					t.Fatalf("no current key for %q: %v", entry.ID, fs.LastSent)
 				}
 			}
-			// A unique link's legacy key is its stripped key, so it stays.
+			// A unique link's legacy key becomes its stripped key.
 			for _, entry := range sent[1:] {
-				if _, ok := fs.LastSent[legacyKey(entry)]; !ok {
-					t.Fatalf("stripped key for %q was dropped", entry.ID)
+				if _, ok := fs.LastSent[legacyKey(entry)]; ok {
+					t.Fatalf("legacy key for %q was kept", entry.ID)
+				}
+				if _, ok := fs.LastSent[strippedKey(legacyEntryIdentity(entry))]; !ok {
+					t.Fatalf("no stripped key for %q", entry.ID)
 				}
 			}
 		})
@@ -1246,18 +1367,20 @@ func TestProcessFeed_LegacyKeysPresent(t *testing.T) {
 }
 
 // A legacy LastSent key whose entry is missing from the fetch that migrates
-// the status can't be translated then, but it is that link's stripped key,
-// so when the entry comes back after the upgrade it is still not resent.
-func TestProcessFeed_LegacyKeyForAbsentEntryStillDedups(t *testing.T) {
+// the status can't be translated: a legacy key can't say whether it was a
+// link's or a GUID's with the same URL, and reading it as the link's could
+// drop a GUID for good. So if that entry comes back after the watermark it is
+// replayed, once, rather than risk losing an entry.
+func TestProcessFeed_LegacyKeyForAbsentEntryReplaysOnce(t *testing.T) {
 	fg, feed, fs := newLegacyFeedGroup(t, "absent-legacy-key", "{{.Title}}")
-	away := linkEntry(legacyURLPrefix+"absent/post-1?ref=rss", 0)
+	away := linkEntry(legacyURLPrefix+"absent/post-1?ref=rss", 2)
 	present := linkEntry(legacyURLPrefix+"absent/post-2?ref=rss", 1)
 	fs.Initialized = true
 	fs.LastSeenEntry = legacyEntryIdentity(present)
 	fs.LastSent[legacyKey(away)] = legacySentAt
 	fs.LastSent[legacyKey(present)] = legacySentAt
 	processTwice(t, fg, feed, []rss.Entry{present})
-	processTwice(t, fg, feed, []rss.Entry{away, present})
+	processTwice(t, fg, feed, []rss.Entry{away, present}, away.Title)
 }
 
 // The upgrade bug an earlier identity change hit: a legacy watermark followed

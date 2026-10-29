@@ -216,13 +216,13 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 }
 
 // migrate translates fs's legacy identities using entries, sorted
-// oldest-to-newest; see migrateLegacyIdentities for replayLimit and now. It
-// is a no-op for a current status.
-func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry, replayLimit int, now string) {
+// oldest-to-newest; see migrateLegacyIdentities for replayLimit. It is a
+// no-op for a current status.
+func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry, replayLimit int) {
 	if !s.legacy {
 		return
 	}
-	migrateLegacyIdentities(fs, entries, s.emptyWatermark, replayLimit, now)
+	migrateLegacyIdentities(fs, entries, s.emptyWatermark, replayLimit)
 	s.migrated = true
 }
 
@@ -244,13 +244,14 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 // oldest of them and their shared dedup key is dropped, so the newer ones are
 // replayed instead of skipped -- under the legacy scheme at most one of them
 // was ever delivered. That replay is a backlog, so only the newest
-// replayLimit of them after the watermark are left to send; older ones are
-// recorded in LastSent as handled at now, so a feed whose entries all
-// collided can't post its whole history on upgrade. emptyWatermark says an absent LastSeenEntry stands for a
+// replayLimit of them after the watermark are left to send: the watermark
+// moves past the older ones, so a feed whose entries all collided can't post
+// its whole history on upgrade. It never moves past an unsent entry outside
+// the group, so colliding entries dated after such a (new) entry are sent. emptyWatermark says an absent LastSeenEntry stands for a
 // legacy empty identity rather than no watermark at all. Legacy values that
 // match no entry are left as they are: a watermark that matches nothing
 // falls back to the catch-up cap either way.
-func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool, replayLimit int, now string) {
+func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool, replayLimit int) {
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
@@ -289,11 +290,10 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			continue
 		}
 		if sharing[legacy[i]] == 1 {
-			// A unique link's legacy key is its stripped key (see
-			// recordSent), so it stays alongside the current one.
 			fs.LastSent[hashIdentity(current[i])] = sentAt
 			if entries[i].IDSource == rss.IDFromLink {
-				continue
+				// A link's legacy identity is its stripped form; see recordSent.
+				fs.LastSent[strippedKey(legacy[i])] = sentAt
 			}
 		}
 		delete(fs.LastSent, legacyKey)
@@ -303,15 +303,35 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 	if watermark < 0 {
 		return
 	}
-	var replay []string
+	sent := func(i int) bool {
+		_, ok := fs.LastSent[hashIdentity(current[i])]
+		return ok
+	}
+	replay := 0
 	for i := watermark + 1; i < len(entries); i++ {
-		key := hashIdentity(current[i])
-		if _, sent := fs.LastSent[key]; colliding[legacy[i]] && !sent {
-			replay = append(replay, key)
+		if colliding[legacy[i]] && !sent(i) {
+			replay++
 		}
 	}
-	for _, key := range replay[:max(len(replay)-replayLimit, 0)] {
-		fs.LastSent[key] = now
+	// Skip the oldest of them by moving the watermark past them, which
+	// LastSent's pruning can't undo. It also moves past entries already
+	// sent, but stops at the first other unsent entry: that one is new, and
+	// so are any colliding entries dated after it.
+	skip := replay - replayLimit
+	moved := watermark
+	for i := watermark + 1; i < len(entries) && skip > 0; i++ {
+		switch {
+		case sent(i):
+		case colliding[legacy[i]]:
+			skip--
+		default:
+			skip = 0
+			continue
+		}
+		moved = i
+	}
+	if moved > watermark {
+		fs.LastSeenEntry = clampWatermark(current[moved])
 	}
 }
 
@@ -365,6 +385,16 @@ func strippedLinkIdentity(entry rss.Entry) string {
 	return normalizeIdentity(entry.ID)
 }
 
+// strippedKeyPrefix keeps the LastSent keys recordSent writes for stripped
+// link identities apart from entry keys: a GUID-identified entry whose ID is
+// exactly a link's stripped form must not be mistaken for that link.
+const strippedKeyPrefix = "stripped:"
+
+// strippedKey is the LastSent key for a stripped link identity.
+func strippedKey(stripped string) string {
+	return hashIdentity(strippedKeyPrefix + stripped)
+}
+
 // strippedCounts counts how many of one fetch's entries each identity could
 // stand for: an entry's strippedLinkIdentity, and its own identity when that
 // differs. The stripped form only stands in for an entry when no other entry
@@ -400,18 +430,21 @@ func (c strippedCounts) unique(entry rss.Entry) string {
 
 // watermarkIndex returns the index in entries of the entry watermark (a
 // LastSeenEntry value) stands for, or -1: the first entry whose identity
-// matches it exactly, else the entry whose unique stripped identity matches
-// the watermark's.
+// matches it exactly, else, for a watermark that kept a fragment or ref and
+// so came from a link, the entry whose unique stripped identity matches the
+// watermark's. A GUID's identity never keeps either, so a link can't take
+// over the watermark of a GUID that has left the feed.
 func watermarkIndex(entries []rss.Entry, watermark string, counts strippedCounts) int {
 	for i, entry := range entries {
 		if clampWatermark(entryIdentity(entry)) == watermark {
 			return i
 		}
 	}
-	if watermark == "" {
+	stripped := normalizeIdentity(watermark)
+	if stripped == watermark {
 		return -1
 	}
-	stripped := clampWatermark(normalizeIdentity(watermark))
+	stripped = clampWatermark(stripped)
 	for i, entry := range entries {
 		if unique := counts.unique(entry); unique != "" && clampWatermark(unique) == stripped {
 			return i
@@ -427,7 +460,7 @@ func entrySent(lastSent map[string]string, entry rss.Entry, counts strippedCount
 		return true
 	}
 	if unique := counts.unique(entry); unique != "" {
-		_, ok := lastSent[hashIdentity(unique)]
+		_, ok := lastSent[strippedKey(unique)]
 		return ok
 	}
 	return false
@@ -439,7 +472,7 @@ func entrySent(lastSent map[string]string, entry rss.Entry, counts strippedCount
 func recordSent(lastSent map[string]string, entry rss.Entry, counts strippedCounts, now string) {
 	lastSent[computeEntryKey(entry)] = now
 	if unique := counts.unique(entry); unique != "" {
-		lastSent[hashIdentity(unique)] = now
+		lastSent[strippedKey(unique)] = now
 	}
 }
 
