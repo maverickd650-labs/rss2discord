@@ -212,6 +212,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: rssUrl
       type:
         scalar: string
+    - name: stateVersion
+      type:
+        scalar: numeric
 - name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.Filter
   map:
     fields:

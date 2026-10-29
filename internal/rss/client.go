@@ -35,7 +35,10 @@ const defaultTimeout = 15 * time.Second
 const userAgent = "rss2discord-operator (+https://github.com/maverickd650/rss2discord-operator)"
 
 type Entry struct {
-	ID          string
+	ID string
+	// IDSource is the element ID was taken from: GUID, link, title, or
+	// (for an entry with none of those) ContentID.
+	IDSource    IDSource
 	Title       string
 	Link        string
 	Description string
@@ -898,7 +901,8 @@ func parseRDF(data []byte) ([]Entry, string, error) {
 }
 
 // rssItemsToEntries converts RSS 2.0 or RSS 1.0 items in document order, recording
-// each item's index in Seq. Identity falls back from GUID to link to title.
+// each item's index in Seq. Identity falls back from GUID to link to title to
+// ContentID.
 // Invalid or missing dates become zero
 // times after trying pubDate and then dc:date.
 func rssItemsToEntries(items []rssItem) []Entry {
@@ -914,12 +918,12 @@ func rssItemsToEntries(items []rssItem) []Entry {
 			published, _ = parseTime(item.DCDate)
 		}
 
-		id := pickText(item.GUID)
+		id, idSource := pickText(item.GUID), IDFromGUID
 		if id == "" {
-			id = link
+			id, idSource = link, IDFromLink
 		}
 		if id == "" {
-			id = title
+			id, idSource = title, IDFromTitle
 		}
 
 		author := pickText(item.Author)
@@ -932,8 +936,9 @@ func rssItemsToEntries(items []rssItem) []Entry {
 			description = item.MediaGroup.description()
 		}
 
-		entries = append(entries, Entry{
+		entries = append(entries, withContentID(Entry{
 			ID:          id,
+			IDSource:    idSource,
 			Title:       title,
 			Link:        link,
 			Description: description,
@@ -943,7 +948,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 			Categories:  trimCategories(item.Categories),
 			Published:   published,
 			Seq:         i,
-		})
+		}))
 	}
 
 	return entries
@@ -951,7 +956,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 
 // parseAtom returns entries in document order and the feed title, or nil entries
 // and an empty title on an XML decoding error. Identity falls back from ID to
-// resolved link to title. XHTML
+// resolved link to title to ContentID. XHTML
 // text constructs retain their inner markup. Description falls back from summary
 // to content to the Media RSS group description. Invalid or missing dates become
 // zero times after trying published and then updated.
@@ -977,12 +982,12 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		link := resolveAtomURL(base, primaryLink(item.Links))
 
-		id := strings.TrimSpace(item.ID)
+		id, idSource := strings.TrimSpace(item.ID), IDFromGUID
 		if id == "" {
-			id = strings.TrimSpace(link)
+			id, idSource = strings.TrimSpace(link), IDFromLink
 		}
 		if id == "" {
-			id = atomText(item.Title)
+			id, idSource = atomText(item.Title), IDFromTitle
 		}
 
 		// Content is exposed even when it doubles as Description (no
@@ -1009,8 +1014,9 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			categoryTerms[i] = c.Term
 		}
 
-		entries = append(entries, Entry{
+		entries = append(entries, withContentID(Entry{
 			ID:          id,
+			IDSource:    idSource,
 			Title:       atomText(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,
@@ -1020,7 +1026,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			Categories:  trimCategories(categoryTerms),
 			Published:   published,
 			Seq:         i,
-		})
+		}))
 	}
 
 	return entries, atomText(feed.Title), nil

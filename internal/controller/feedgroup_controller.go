@@ -273,6 +273,11 @@ func (r *FeedGroupReconciler) processFeed(
 	log := logf.FromContext(ctx)
 	fs := feedStatusFor(feedGroup, feed.RSSUrl)
 
+	// Settles what a status written before stateVersion 1 still needs from
+	// the legacy reading below; see legacyState.
+	legacy := readLegacyState(fs)
+	defer legacy.finish(fs)
+
 	if fetchErr != nil {
 		// LastChecked deliberately doesn't advance here: it tracks the last
 		// *successful* check, so a feed stuck failing shows an aging
@@ -347,7 +352,11 @@ func (r *FeedGroupReconciler) processFeed(
 		// quiet feed now costs one status write per poll interval instead of
 		// zero.
 		markFetchSucceeded()
-		fs.Initialized = true
+		// A 304 repeats a fetch an ambiguous legacy status can't account
+		// for, so it settles nothing.
+		if !legacy.ambiguous {
+			fs.Initialized = true
+		}
 		persistValidators()
 		fs.LastError = ""
 		fs.RetryCount = 0
@@ -364,8 +373,10 @@ func (r *FeedGroupReconciler) processFeed(
 		entries[i].FeedTitle = fetchResult.FeedTitle
 	}
 	if len(entries) == 0 {
-		// Nothing to send, so it's always safe to persist.
+		// Nothing to send, so it's always safe to persist. An empty feed
+		// also settles an ambiguous legacy status: anything after it is new.
 		fs.Initialized = true
+		legacy.settled = true
 		persistValidators()
 		fs.LastError = ""
 		fs.RetryCount = 0
@@ -404,6 +415,7 @@ func (r *FeedGroupReconciler) processFeed(
 	}
 
 	fs.Initialized = true
+	legacy.settled = true
 
 	// Sort oldest-to-newest so the catch-up window (limitCatchUp keeps the
 	// tail) and the watermark (sendNewEntries advances LastSeenEntry to the
@@ -420,6 +432,8 @@ func (r *FeedGroupReconciler) processFeed(
 		}
 		return cmp.Compare(b.Seq, a.Seq)
 	})
+
+	legacy.migrate(fs, entries)
 
 	lastSeenID := fs.LastSeenEntry
 	hasSeenID := lastSeenID != ""
@@ -444,8 +458,14 @@ func (r *FeedGroupReconciler) processFeed(
 			// sync, so all of it is delivered rather than capped as a backlog.
 			// A watermark that merely scrolled out of the feed's window is
 			// not a first sync, so it falls through to limitCatchUp's default
-			// cap rather than silently dropping new entries.
-			if !wasInitialized {
+			// cap rather than silently dropping new entries. An ambiguous
+			// legacy status is capped the same way (see legacyState).
+			switch {
+			case legacy.ambiguous:
+				log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
+					"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
+				entries = limitCatchUp(entries, defaultCatchUpLimit)
+			case !wasInitialized:
 				skipBacklog(feedGroup, fs, entries)
 				entries = nil
 			}

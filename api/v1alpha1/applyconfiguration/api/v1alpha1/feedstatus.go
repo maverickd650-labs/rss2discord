@@ -54,6 +54,14 @@ type FeedStatusApplyConfiguration struct {
 	// filter or template error stops processing, and reads as false on
 	// statuses written before this field existed.
 	Initialized *bool `json:"initialized,omitempty"`
+	// stateVersion is the format of this feed's lastSeenEntry and lastSent
+	// identities. It is absent (0) on statuses written by controllers before
+	// v1, whose identities dropped a link's fragment and ref query parameter
+	// and were empty for entries with no GUID, link or title; the controller
+	// translates those on the next fetch that returns entries and then sets
+	// it to 1. It also tells a status from before initialized existed apart
+	// from one whose first fetch hit a configuration error.
+	StateVersion *int32 `json:"stateVersion,omitempty"`
 	// lastSeenEntry is the last seen entry identifier (GUID or Link) for
 	// this feed. Used to fetch only new entries after restarts. Identifiers
 	// longer than the field limit are stored as "sha256:<hex digest>".
@@ -125,6 +133,14 @@ func (b *FeedStatusApplyConfiguration) WithLastChecked(value string) *FeedStatus
 // If called multiple times, the Initialized field is set to the value of the last call.
 func (b *FeedStatusApplyConfiguration) WithInitialized(value bool) *FeedStatusApplyConfiguration {
 	b.Initialized = &value
+	return b
+}
+
+// WithStateVersion sets the StateVersion field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the StateVersion field is set to the value of the last call.
+func (b *FeedStatusApplyConfiguration) WithStateVersion(value int32) *FeedStatusApplyConfiguration {
+	b.StateVersion = &value
 	return b
 }
 
