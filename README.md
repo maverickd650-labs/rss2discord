@@ -126,7 +126,7 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | `embed` | `*Embed` | optional | Default embed config for all feeds in the group |
 | `username` | `string` | optional | Overrides the webhook's display name. Rejected at `kubectl apply` time (CEL validation) if it contains "clyde" or "discord", or is over 80 characters — Discord's own webhook API rejects these |
 | `avatarURL` | `string` | optional | Overrides the webhook's avatar. Must start with `http://` or `https://` |
-| `catchUpLimit` | `int` | `5` | Caps how many entries are sent when a feed has no usable watermark: on its first sync, or when its recorded last-seen entry has scrolled out of the feed (0–100). A normal fetch that finds the watermark is never capped. Set `0` to send no backlog: the first non-empty sync records the newest entry and only later entries are delivered. A feed that was empty on its first sync then delivers everything that appears later, uncapped; a watermark that later scrolls out falls back to the default cap of 5. Omitting the field keeps `5`. Only statuses written by an older release can be ambiguous: an explicit `0` on a feed that was empty at upgrade skips its first entries once |
+| `catchUpLimit` | `int` | `5` | Caps how many entries are sent when a feed has no usable watermark: on its first sync, or when its recorded last-seen entry has scrolled out of the feed (0–100). A normal fetch that finds the watermark is never capped. Set `0` to send no backlog: the first non-empty sync records the newest entry and only later entries are delivered. A feed that was empty on its first sync then delivers everything that appears later, uncapped; a watermark that later scrolls out falls back to the default cap of 5. Omitting the field keeps `5`. A feed status written by an older release that was checked but never recorded a watermark can't tell an empty feed from a held-back backlog, so with `0` its first non-empty sync after upgrading is capped at 5, as older releases did, instead of skipping or sending everything. |
 | `feeds` | `[]Feed` | required | RSS feeds to monitor |
 
 ### Feed
@@ -300,6 +300,24 @@ helm history rss2discord-operator -n rss2discord-operator-system
 helm rollback rss2discord-operator -n rss2discord-operator-system
 helm uninstall rss2discord-operator -n rss2discord-operator-system
 ```
+
+### Upgrades and rollbacks
+
+Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. A release that adds the field migrates an older feed status in place on that feed's next fetch with entries:
+
+- **Feeds whose entries have GUIDs** keep identical state, so nothing is resent or skipped. A feed that never recorded a watermark follows the `catchUpLimit` row above.
+- **Feeds without GUIDs** have their old watermark and sent-entry keys resolved against that fetch:
+  - If the old watermark is in the fetch, delivery resumes right after it. An entry after it that the old state can't account for is replayed rather than skipped, so expect at most an occasional duplicate. That includes an entry missing from that fetch that later comes back after the watermark.
+  - If the old watermark has already scrolled out of the feed, the upgrade behaves as older releases did: only the newest `catchUpLimit` entries are sent (5 when it is 0), and older ones the old state can't account for are skipped.
+  - Older releases wrongly merged entries whose links differed only by fragment or `ref`, or that had no GUID, link or title, and delivered at most one entry of each such group. The upgrade replays only the newest `catchUpLimit` of a group, and the rest stay skipped, as they would have without the upgrade. The cap never skips past an undelivered entry outside such a group, because that entry is new, so merged entries dated after it are delivered too, even beyond `catchUpLimit`.
+
+Rolling back to a release without `stateVersion` is safe, but feeds without GUIDs may post a few duplicates:
+
+- **Entries with a GUID** are identified the same way by every release, so they are not resent.
+- **Entries without a GUID whose link has a `#fragment` or `?ref=` parameter** are identified by the older release without them. It doesn't recognise the newer watermark or keys for these entries, so on its first fetch it resends up to `catchUpLimit` of the newest ones (5 when `catchUpLimit` is 0, as older releases treat it). It also goes back to treating links that differ only by fragment or `ref` as one entry.
+- **Entries with no GUID, link or title** all look the same to an older release, so at most one of them is resent.
+
+Every status write by the older release drops `stateVersion`, so upgrading again migrates the status a second time. Older releases write status with the same server-side-apply field owner, which releases the field, and the older CRD schema no longer has it. Keys written by either release stay valid, so upgrading again doesn't resend entries that either release already delivered, beyond the bounded replays described above. Only the elected leader reconciles, so during a rolling update the two releases hand over rather than writing status concurrently.
 
 ## Observability
 

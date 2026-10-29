@@ -1340,8 +1340,12 @@ func TestParseFeed_AtomXHTMLNamespaceAndFallbacks(t *testing.T) {
 				t.Fatalf("parseFeed: %d entries, err=%v", len(entries), err)
 			}
 			e := entries[0]
-			if e.Title != tc.wantTitle || e.Description != tc.wantDescription || e.Content != tc.wantContent || e.ID != tc.wantID {
-				t.Fatalf("entry = %+v; want title=%q description=%q content=%q id=%q", e, tc.wantTitle, tc.wantDescription, tc.wantContent, tc.wantID)
+			wantID := tc.wantID
+			if wantID == "" {
+				wantID = ContentID(e) // no id, link or title
+			}
+			if e.Title != tc.wantTitle || e.Description != tc.wantDescription || e.Content != tc.wantContent || e.ID != wantID {
+				t.Fatalf("entry = %+v; want title=%q description=%q content=%q id=%q", e, tc.wantTitle, tc.wantDescription, tc.wantContent, wantID)
 			}
 		})
 	}

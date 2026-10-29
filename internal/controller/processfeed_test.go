@@ -20,7 +20,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1055,5 +1057,555 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	}
 	if fs := feedStatusFor(fg, feed.RSSUrl); !fs.Initialized || fs.LastSeenEntry == "" {
 		t.Fatalf("after fix initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+	}
+}
+
+// legacyStateNS namespaces the metric series the stateVersion migration tests create.
+const legacyStateNS = "legacy-state"
+
+// legacySentAt is the send time recorded for entries a legacy controller delivered.
+const legacySentAt = "2025-12-30T00:00:00Z"
+
+// legacyURLPrefix keeps the entry URLs of the migration tests unique in the package.
+const legacyURLPrefix = "https://legacy-state.example.test/"
+
+// linkEntry is an entry whose ID the parser took from its link, i the
+// oldest-to-newest position that dates it.
+func linkEntry(link string, i int) rss.Entry {
+	return rss.Entry{ID: link, IDSource: rss.IDFromLink, Link: link, Title: link, Published: time.Unix(int64(1000+i), 0)}
+}
+
+// contentEntry is an entry with no GUID, link or title, as the parser
+// returns it.
+func contentEntry(description string, i int) rss.Entry {
+	entry := rss.Entry{Description: description, Published: time.Unix(int64(1000+i), 0)}
+	entry.ID, entry.IDSource = rss.ContentID(entry), rss.IDFromContent
+	return entry
+}
+
+// guidEntry is an entry with a GUID, i the oldest-to-newest position that dates it.
+func guidEntry(id string, i int) rss.Entry {
+	return rss.Entry{ID: id, Title: id, Published: time.Unix(int64(1000+i), 0)}
+}
+
+// legacyKey is the LastSent key a controller before stateVersion 1 stored for entry.
+func legacyKey(entry rss.Entry) string {
+	return hashIdentity(legacyEntryIdentity(entry))
+}
+
+// newLegacyFeedGroup returns a FeedGroup whose feed status was written by a
+// controller before stateVersion 1 and has already been checked.
+func newLegacyFeedGroup(t *testing.T, name, format string) (*v1alpha1.FeedGroup, v1alpha1.FeedSpec, *v1alpha1.FeedStatus) {
+	t.Helper()
+	fg, feed := newMetricsFeedGroup(legacyStateNS, name, format)
+	t.Cleanup(func() { deleteFeedGroupMetrics(fg.Namespace, fg.Name) })
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs.LastChecked = "2025-12-29T00:00:00Z"
+	return fg, feed, fs
+}
+
+// sentContents returns the content of each message the mock Discord server received.
+func sentContents(t *testing.T, server *MockDiscordServer) []string {
+	t.Helper()
+	bodies := server.Bodies()
+	contents := make([]string, 0, len(bodies))
+	for _, body := range bodies {
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		contents = append(contents, payload.Content)
+	}
+	return contents
+}
+
+// processTwice runs processFeed on entries twice and fails unless the first
+// run sent exactly want and the second run sent nothing more.
+func processTwice(t *testing.T, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, entries []rss.Entry, want ...string) {
+	t.Helper()
+	server := NewMockDiscordServer()
+	defer server.Close()
+	client := server.DiscordClientBuilder()(server.URL())
+	for range 2 {
+		// processFeed sorts entries in place, so hand each run its own copy.
+		fetch := rss.FetchResult{Entries: slices.Clone(entries)}
+		(&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+	}
+	if got := sentContents(t, server); !slices.Equal(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+	if fs := feedStatusFor(fg, feed.RSSUrl); fs.StateVersion != currentStateVersion {
+		t.Fatalf("stateVersion=%d, want %d", fs.StateVersion, currentStateVersion)
+	}
+}
+
+// Links that differ only by fragment or ref are distinct entries when they
+// have no GUID, so neither is skipped as a duplicate of the other.
+func TestProcessFeed_LinkFragmentAndRefAreDistinctIdentities(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "fragment-and-ref", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	entries := []rss.Entry{
+		linkEntry(legacyURLPrefix+"changelog#v1.2", 0),
+		linkEntry(legacyURLPrefix+"changelog#v1.3", 1),
+		linkEntry(legacyURLPrefix+"release?ref=v1.0", 2),
+		linkEntry(legacyURLPrefix+"release?ref=v1.1&utm_source=feed", 3),
+	}
+	processTwice(t, fg, feed, entries,
+		entries[0].Title, entries[1].Title, entries[2].Title, entries[3].Title)
+	// A GUID that is a URL keeps the legacy normalization: no churn for it.
+	if entryIdentity(guidEntry(legacyURLPrefix+"a#x", 0)) != legacyURLPrefix+"a" {
+		t.Fatal("GUID identity no longer drops the fragment")
+	}
+}
+
+// A feed that rotates the ref parameter or fragment on its GUID-less links
+// between fetches (share tracking, CDN rewrites) must not repost unchanged
+// entries, nor lose the watermark: both fall back to the link without them
+// when no other entry shares it. A genuinely new entry is still delivered.
+func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "rotating-target", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	titled := func(link, title string, i int) rss.Entry {
+		entry := linkEntry(legacyURLPrefix+link, i)
+		entry.Title = title
+		return entry
+	}
+	first := []rss.Entry{titled("rotate/post-1?ref=a", "one", 0), titled("rotate/post-2#c1", "two", 1)}
+	processTwice(t, fg, feed, first, "one", "two")
+
+	rotated := []rss.Entry{
+		titled("rotate/post-1?ref=b", "one", 0),
+		titled("rotate/post-2#c2", "two", 1),
+		titled("rotate/post-3?ref=b", "three", 2),
+	}
+	processTwice(t, fg, feed, rotated, "three")
+	if fs := feedStatusFor(fg, feed.RSSUrl); fs.LastSeenEntry != entryIdentity(rotated[2]) {
+		t.Fatalf("watermark=%q, want %q", fs.LastSeenEntry, entryIdentity(rotated[2]))
+	}
+}
+
+// A GUID-less link whose stripped form is another entry's GUID is a
+// different entry, not a rotation of it, so it is delivered even though the
+// GUID was already sent.
+func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "stripped-to-guid", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	guid := guidEntry(legacyURLPrefix+"guid-collide/post", 0)
+	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
+	link := linkEntry(legacyURLPrefix+"guid-collide/post#v2", 1)
+	processTwice(t, fg, feed, []rss.Entry{guid, link}, link.Title)
+}
+
+// A GUID-less link is a new entry, not a rotation, when the only thing it
+// shares a stripped form with is an already-sent GUID that has since left
+// the feed: neither the GUID's dedup key nor its watermark may stand in for it.
+func TestProcessFeed_LinkAfterGUIDWithSameBaseIsDelivered(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "link-after-guid", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	guid := guidEntry(legacyURLPrefix+"after-guid/post", 0)
+	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
+	link := linkEntry(legacyURLPrefix+"after-guid/post#v2", 1)
+	processTwice(t, fg, feed, []rss.Entry{link}, link.Title)
+}
+
+// The replay cap must hold across later polls too: a colliding group larger
+// than LastSent's retention cap must not leak historical entries once
+// pruning evicts what the migration recorded about them.
+func TestProcessFeed_LegacyReplayCapSurvivesPruning(t *testing.T) {
+	for _, limit := range []int32{0, defaultCatchUpLimit} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, fmt.Sprintf("replay-pruning-%d", limit), "{{.Title}}")
+			fg.Spec.CatchUpLimit = new(limit)
+			entries := make([]rss.Entry, 0, maxLastSentPerFeed+10)
+			for i := range maxLastSentPerFeed + 10 {
+				entries = append(entries, linkEntry(fmt.Sprintf("%spruning/changelog#v%d", legacyURLPrefix, i), i))
+			}
+			fs.Initialized = true
+			fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+			fs.LastSent[legacyKey(entries[0])] = legacySentAt
+			want := make([]string, 0, limit)
+			for _, entry := range entries[len(entries)-int(limit):] {
+				want = append(want, entry.Title)
+			}
+			processTwice(t, fg, feed, entries, want...)
+		})
+	}
+}
+
+// The replay cap also holds when delivery is interrupted: a failed send
+// leaves the watermark where the migration put it, past every entry the cap
+// excluded, so the retries still deliver only the newest catchUpLimit. A new
+// entry dated among the replayed ones is delivered too.
+func TestProcessFeed_LegacyReplayCapSurvivesFailedSends(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "replay-failed-sends", "{{.Title}}")
+	entries := make([]rss.Entry, 0, maxLastSentPerFeed+11)
+	for i := range maxLastSentPerFeed + 10 {
+		entries = append(entries, linkEntry(fmt.Sprintf("%sfailed/changelog#v%d", legacyURLPrefix, i), i))
+	}
+	// Dated among the replayed entries; it is new and must not be skipped.
+	fresh := guidEntry("replay-failed-fresh", 0)
+	fresh.Published = entries[len(entries)-3].Published.Add(time.Millisecond)
+	entries = append(entries, fresh)
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+	fs.LastSent[legacyKey(entries[0])] = legacySentAt
+
+	server := NewMockDiscordServer()
+	defer server.Close()
+	client := server.DiscordClientBuilder()(server.URL())
+	server.FailNextRequests(2, http.StatusInternalServerError)
+	for range 4 {
+		fetch := rss.FetchResult{Entries: slices.Clone(entries)}
+		(&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+	}
+	want := make([]string, 0, defaultCatchUpLimit+1)
+	for _, entry := range entries[len(entries)-1-defaultCatchUpLimit : len(entries)-3] {
+		want = append(want, entry.Title)
+	}
+	want = append(want, fresh.Title, entries[len(entries)-3].Title, entries[len(entries)-2].Title)
+	if got := sentContents(t, server); !slices.Equal(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+}
+
+// Capping the replay moves the watermark past already-sent entries along
+// with the skipped colliding ones, but never past an unsent entry outside
+// the group: that entry is new, and colliding entries dated after it are
+// delivered with it even beyond the cap.
+func TestProcessFeed_LegacyReplayStopsAtNewEntry(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "replay-stops-at-new", "{{.Title}}")
+	fg.Spec.CatchUpLimit = new(int32(2))
+	sibling := func(i int) rss.Entry {
+		return linkEntry(fmt.Sprintf("%sstops/changelog#v%d", legacyURLPrefix, i), i)
+	}
+	sentGUID := guidEntry("replay-stops-sent", 2)
+	fresh := guidEntry("replay-stops-fresh", 4)
+	entries := []rss.Entry{sibling(0), sibling(1), sentGUID, sibling(3), fresh, sibling(5), sibling(6), sibling(7)}
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+	fs.LastSent[legacyKey(entries[0])] = legacySentAt
+	fs.LastSent[legacyKey(sentGUID)] = legacySentAt
+	processTwice(t, fg, feed, entries, fresh.Title, entries[5].Title, entries[6].Title, entries[7].Title)
+}
+
+// A watermark that kept a fragment or ref, and so came from a link, falls back
+// to the link's stripped form only when it is unique in the fetch; with no such
+// entry it reads as scrolled out.
+func TestWatermarkIndex_LinkFallback(t *testing.T) {
+	rotated := linkEntry(legacyURLPrefix+"index/post?ref=b", 0)
+	sibling := linkEntry(legacyURLPrefix+"index/post?ref=c", 1)
+	other := linkEntry(legacyURLPrefix+"index/other", 2)
+	watermark := normalizeLinkIdentity(legacyURLPrefix + "index/post?ref=a")
+	for _, tc := range []struct {
+		name    string
+		entries []rss.Entry
+		want    int
+	}{
+		{name: "unique rotation", entries: []rss.Entry{other, rotated}, want: 1},
+		{name: "shared stripped form", entries: []rss.Entry{rotated, sibling}, want: -1},
+		{name: "no match", entries: []rss.Entry{other}, want: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := watermarkIndex(tc.entries, watermark, countStripped(tc.entries)); got != tc.want {
+				t.Fatalf("watermarkIndex = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// Legacy keys in LastSent and a legacy watermark, stored under the old
+// fragment- and ref-stripped identities, still count after the upgrade:
+// nothing already delivered is resent, the new entry is, and the status is
+// rewritten in the current scheme.
+func TestProcessFeed_LegacyKeysPresent(t *testing.T) {
+	sent := []rss.Entry{
+		guidEntry("guid-0", 0),
+		linkEntry(legacyURLPrefix+"keys/post-1?ref=rss", 1),
+		linkEntry(legacyURLPrefix+"keys/post-2#top", 2),
+	}
+	fresh := linkEntry(legacyURLPrefix+"keys/post-3?ref=rss", 3)
+	entries := append(slices.Clone(sent), fresh)
+
+	for _, tc := range []struct {
+		name      string
+		watermark string
+	}{
+		{name: "watermark in window", watermark: legacyEntryIdentity(sent[2])},
+		// With the watermark gone only the LastSent keys stop the
+		// catch-up from resending the delivered entries.
+		{name: "watermark scrolled out", watermark: legacyURLPrefix + "keys/gone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, "keys-"+tc.name, "{{.Title}}")
+			fs.LastSeenEntry = tc.watermark
+			for _, entry := range sent {
+				fs.LastSent[legacyKey(entry)] = legacySentAt
+			}
+			processTwice(t, fg, feed, entries, fresh.Title)
+
+			if fs.LastSeenEntry != entryIdentity(fresh) {
+				t.Fatalf("watermark=%q, want %q", fs.LastSeenEntry, entryIdentity(fresh))
+			}
+			for _, entry := range sent {
+				if _, ok := fs.LastSent[computeEntryKey(entry)]; !ok {
+					t.Fatalf("no current key for %q: %v", entry.ID, fs.LastSent)
+				}
+			}
+			// A unique link's legacy key becomes its stripped key.
+			for _, entry := range sent[1:] {
+				if _, ok := fs.LastSent[legacyKey(entry)]; ok {
+					t.Fatalf("legacy key for %q was kept", entry.ID)
+				}
+				if _, ok := fs.LastSent[strippedKey(legacyEntryIdentity(entry))]; !ok {
+					t.Fatalf("no stripped key for %q", entry.ID)
+				}
+			}
+		})
+	}
+}
+
+// A legacy LastSent key whose entry is missing from the fetch that migrates
+// the status can't be translated: a legacy key can't say whether it was a
+// link's or a GUID's with the same URL, and reading it as the link's could
+// drop a GUID for good. So if that entry comes back after the watermark it is
+// replayed, once, rather than risk losing an entry.
+func TestProcessFeed_LegacyKeyForAbsentEntryReplaysOnce(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "absent-legacy-key", "{{.Title}}")
+	away := linkEntry(legacyURLPrefix+"absent/post-1?ref=rss", 2)
+	present := linkEntry(legacyURLPrefix+"absent/post-2?ref=rss", 1)
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(present)
+	fs.LastSent[legacyKey(away)] = legacySentAt
+	fs.LastSent[legacyKey(present)] = legacySentAt
+	processTwice(t, fg, feed, []rss.Entry{present})
+	processTwice(t, fg, feed, []rss.Entry{away, present}, away.Title)
+}
+
+// The upgrade bug an earlier identity change hit: a legacy watermark followed
+// by more than defaultCatchUpLimit new entries must still resume after the
+// watermark, delivering all of them, instead of reading as scrolled out and
+// capping the catch-up (which dropped the oldest new entry for good).
+func TestProcessFeed_LegacyWatermarkFollowedByMoreThanCatchUpLimit(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "watermark-then-many", "{{.Title}}")
+	watermark := linkEntry(legacyURLPrefix+"many/w?ref=rss", 0)
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(watermark)
+	fs.LastSent[legacyKey(watermark)] = legacySentAt
+
+	entries := []rss.Entry{watermark}
+	var want []string
+	for i := 1; i <= defaultCatchUpLimit+2; i++ {
+		entry := linkEntry(fmt.Sprintf("%smany/post-%d?ref=rss", legacyURLPrefix, i), i)
+		entries = append(entries, entry)
+		want = append(want, entry.Title)
+	}
+	processTwice(t, fg, feed, entries, want...)
+}
+
+// Under the legacy scheme links differing only by fragment shared one
+// identity, so a watermark or key for it can't say which entry it meant.
+// Instead of guessing, the watermark resolves to the oldest of them and the
+// newer ones are replayed: at most one of them was ever delivered.
+func TestProcessFeed_LegacyCollidingIdentitiesReplay(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "colliding", "{{.Title}}")
+	entries := []rss.Entry{
+		linkEntry(legacyURLPrefix+"collide/changelog#v1.1", 0),
+		linkEntry(legacyURLPrefix+"collide/changelog#v1.2", 1),
+		linkEntry(legacyURLPrefix+"collide/changelog#v1.3", 2),
+	}
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+	fs.LastSent[legacyKey(entries[0])] = legacySentAt
+	processTwice(t, fg, feed, entries, entries[1].Title, entries[2].Title)
+	if _, ok := fs.LastSent[legacyKey(entries[0])]; ok {
+		t.Fatal("ambiguous legacy key was kept")
+	}
+}
+
+// The replay of colliding legacy entries is a backlog like any other, so it
+// is capped at catchUpLimit: a GUID-less changelog whose entries all shared
+// one legacy identity must not post every one of them on upgrade. An entry
+// outside the colliding group is new and is still delivered.
+func TestProcessFeed_LegacyCollidingReplayIsCapped(t *testing.T) {
+	for _, limit := range []int32{defaultCatchUpLimit, 2, 0} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, fmt.Sprintf("colliding-capped-%d", limit), "{{.Title}}")
+			fg.Spec.CatchUpLimit = new(limit)
+			entries := make([]rss.Entry, 0, 3*defaultCatchUpLimit+1)
+			for i := range 3 * defaultCatchUpLimit {
+				entries = append(entries, linkEntry(fmt.Sprintf("%scapped/changelog#v%d", legacyURLPrefix, i), i))
+			}
+			unrelated := linkEntry(legacyURLPrefix+"capped/unrelated", len(entries))
+			entries = append(entries, unrelated)
+			fs.Initialized = true
+			fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+			fs.LastSent[legacyKey(entries[0])] = legacySentAt
+
+			siblings := entries[1 : len(entries)-1]
+			want := make([]string, 0, int(limit)+1)
+			for _, entry := range siblings[len(siblings)-int(limit):] {
+				want = append(want, entry.Title)
+			}
+			want = append(want, unrelated.Title)
+			processTwice(t, fg, feed, entries, want...)
+		})
+	}
+}
+
+// Entries with no GUID, link or title get a non-empty identity, so a
+// catchUpLimit 0 first sync stores a real watermark and the next fetch sends
+// only what is new instead of the whole backlog.
+func TestProcessFeed_EmptyIdentityEntriesKeepWatermark(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "empty-identity", "{{.Description}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	fg.Spec.CatchUpLimit = new(int32(0))
+	backlog := []rss.Entry{contentEntry("old-1", 0), contentEntry("old-2", 1)}
+	// Entries built without an ID get the same identity the parser assigns.
+	unparsed := rss.Entry{Description: "old-2", Published: backlog[1].Published}
+	if entryIdentity(unparsed) != entryIdentity(backlog[1]) {
+		t.Fatal("entryIdentity and the parser disagree on an empty identity")
+	}
+
+	processTwice(t, fg, feed, backlog)
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.LastSeenEntry == "" || !entriesContainID(backlog, fs.LastSeenEntry) {
+		t.Fatalf("backlog skip stored watermark %q", fs.LastSeenEntry)
+	}
+	fresh := contentEntry("new", 2)
+	processTwice(t, fg, feed, append(slices.Clone(backlog), fresh), "new")
+}
+
+// LastSent keys that legacy controllers stored as hashIdentity("") for entries
+// with no GUID, link or title: one such entry is unambiguous and is not resent;
+// several can't be told apart, so the newer ones are replayed. A backlog skip
+// that stored the empty watermark resumes after the entry it stood for, and
+// with that entry gone is capped instead of sending everything.
+func TestProcessFeed_LegacyEmptyIdentityKeys(t *testing.T) {
+	skipped := func(fs *v1alpha1.FeedStatus) {
+		fs.Initialized = true
+		fs.Conditions = []metav1.Condition{{Type: v1alpha1.FeedConditionTypeDelivered, Status: metav1.ConditionTrue,
+			Reason: reasonBacklogSkipped, LastTransitionTime: metav1.Unix(0, 0)}}
+	}
+	many := make([]rss.Entry, 0, 2*defaultCatchUpLimit)
+	for i := range 2 * defaultCatchUpLimit {
+		many = append(many, guidEntry(fmt.Sprintf("empty-many-%d", i), i+1))
+	}
+	tail := func(entries []rss.Entry, n int) []string {
+		titles := make([]string, 0, n)
+		for _, entry := range entries[len(entries)-n:] {
+			titles = append(titles, entry.Title)
+		}
+		return titles
+	}
+
+	for _, tc := range []struct {
+		name    string
+		limit   int32
+		setup   func(*v1alpha1.FeedStatus)
+		entries []rss.Entry
+		want    []string
+	}{
+		{
+			name:  "single sent entry",
+			limit: defaultCatchUpLimit,
+			setup: func(fs *v1alpha1.FeedStatus) {
+				fs.Initialized = true
+				fs.LastSent[hashIdentity("")] = legacySentAt
+			},
+			entries: []rss.Entry{contentEntry("sent", 0), guidEntry("empty-next", 1)},
+			want:    []string{"empty-next"},
+		},
+		{
+			name:  "several entries replay the newer",
+			limit: defaultCatchUpLimit,
+			setup: func(fs *v1alpha1.FeedStatus) {
+				fs.Initialized = true
+				fs.LastSent[hashIdentity("")] = legacySentAt
+			},
+			entries: []rss.Entry{contentEntry("first", 0), contentEntry("second", 1)},
+			want:    []string{"second"},
+		},
+		{
+			name:    "skipped backlog resumes after its entry",
+			setup:   skipped,
+			entries: append([]rss.Entry{contentEntry("skipped", 0)}, many...),
+			want:    tail(many, len(many)),
+		},
+		{
+			name:    "skipped backlog entry gone is capped",
+			setup:   skipped,
+			entries: many,
+			want:    tail(many, defaultCatchUpLimit),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, "empty-keys-"+tc.name, "{{.Title}}{{.Description}}")
+			fg.Spec.CatchUpLimit = new(tc.limit)
+			tc.setup(fs)
+			processTwice(t, fg, feed, tc.entries, tc.want...)
+			if _, ok := fs.LastSent[hashIdentity("")]; ok {
+				t.Fatal("legacy empty-identity key was kept")
+			}
+		})
+	}
+}
+
+// A status saved before initialized existed, by a controller that set
+// LastChecked on every successful fetch: with catchUpLimit 0, no watermark
+// and Initialized false it can't say whether the feed was empty or a config
+// error held back its backlog, so the first fetch with entries is capped at
+// defaultCatchUpLimit -- what those controllers delivered -- rather than
+// skipped entirely or sent in full. A status this controller wrote in the
+// same shape is a real first sync and still skips the backlog.
+func TestProcessFeed_LegacyEmptyFeedStatus(t *testing.T) {
+	entries := make([]rss.Entry, 0, 2*defaultCatchUpLimit)
+	for i := range 2 * defaultCatchUpLimit {
+		entries = append(entries, guidEntry(fmt.Sprintf("legacy-empty-%d", i), i))
+	}
+	newest := func(n int) []string {
+		titles := make([]string, 0, n)
+		for _, entry := range entries[len(entries)-n:] {
+			titles = append(titles, entry.Title)
+		}
+		return titles
+	}
+
+	for _, tc := range []struct {
+		name string
+		// before runs one processFeed call ahead of the fetch with entries.
+		before       *rss.FetchResult
+		stateVersion int32
+		badConfig    bool
+		want         []string
+	}{
+		{name: "legacy status is capped", want: newest(defaultCatchUpLimit)},
+		{name: "not modified settles nothing", before: &rss.FetchResult{NotModified: true}, want: newest(defaultCatchUpLimit)},
+		{name: "config error settles nothing", before: &rss.FetchResult{Entries: entries[:1]}, badConfig: true,
+			want: newest(defaultCatchUpLimit)},
+		{name: "empty fetch settles it as empty", before: &rss.FetchResult{}, want: newest(len(entries))},
+		{name: "current status skips the backlog", stateVersion: currentStateVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, "empty-feed-"+tc.name, "{{.Title}}")
+			fg.Spec.CatchUpLimit = new(int32(0))
+			fs.StateVersion = tc.stateVersion
+			if tc.before != nil {
+				broken := feed
+				if tc.badConfig {
+					broken.Filter = &v1alpha1.Filter{Regex: "("}
+				}
+				(&FeedGroupReconciler{}).processFeed(t.Context(), fg, broken, *tc.before, nil, nil, testReconcileTime)
+				if wantLegacy := tc.badConfig || tc.before.NotModified; wantLegacy != (fs.StateVersion == 0) ||
+					wantLegacy == fs.Initialized {
+					t.Fatalf("after first fetch stateVersion=%d initialized=%t", fs.StateVersion, fs.Initialized)
+				}
+			}
+			processTwice(t, fg, feed, entries, tc.want...)
+			if !fs.Initialized || fs.LastSeenEntry != entries[len(entries)-1].ID {
+				t.Fatalf("initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+			}
+		})
 	}
 }

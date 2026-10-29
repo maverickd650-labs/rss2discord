@@ -589,6 +589,18 @@ spec:
                       maxLength: 2048
                       minLength: 1
                       type: string
+                    stateVersion:
+                      description: |-
+                        stateVersion is the format of this feed's lastSeenEntry and lastSent
+                        identities. It is absent (0) on statuses written by older controllers,
+                        whose identities dropped a link's fragment and ref query parameter and
+                        were empty for entries with no GUID, link or title; the controller
+                        translates those on the next fetch that returns entries and then sets
+                        it to 1. It also tells a status from before initialized existed apart
+                        from one whose first fetch hit a configuration error.
+                      format: int32
+                      minimum: 0
+                      type: integer
                   required:
                   - rssUrl
                   type: object
