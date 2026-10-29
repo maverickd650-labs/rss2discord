@@ -1624,3 +1624,56 @@ func TestParseFeed_AtomEntryXMLBaseComposesWithFeedBase(t *testing.T) {
 		t.Fatalf("link = %q, want %q", entries[2].Link, want)
 	}
 }
+
+// atomDocNS wraps entry in an Atom feed whose default namespace is ns and which
+// declares the foreign "ext" prefix.
+func atomDocNS(ns, entry string) []byte {
+	return []byte(`<?xml version="1.0"?><feed xmlns="` + ns + `" xmlns:ext="urn:ext"><entry><title>T</title>` + entry + `</entry></feed>`)
+}
+
+func TestParseFeed_AtomForeignNamespaceCannotDisplaceIDOrLinks(t *testing.T) {
+	const (
+		idReal   = "urn:real"
+		idFake   = "urn:fake"
+		linkReal = "http://example.com/real"
+		linkFake = "http://example.com/fake"
+		imgReal  = "http://example.com/real.png"
+		imgFake  = "http://example.com/fake.png"
+		atomOld  = "http://purl.org/atom/ns#"
+	)
+	for _, tc := range []struct {
+		name, ns, entry, wantID, wantLink, wantImage string
+	}{
+		{name: "foreign id after real", ns: atomNamespace, entry: "<id>" + idReal + "</id><ext:id>" + idFake + "</ext:id>", wantID: idReal},
+		{name: "foreign id before real", ns: atomNamespace, entry: "<ext:id>" + idFake + "</ext:id><id>" + idReal + "</id>", wantID: idReal},
+		{name: "foreign id alone is a last resort", ns: atomNamespace, entry: "<ext:id>" + idFake + "</ext:id>", wantID: idFake},
+		{name: "lookalike default namespace keeps its id and link", ns: atomOld, entry: "<id>" + idReal + "</id><link href=\"" + linkReal + "\"/>", wantID: idReal, wantLink: linkReal},
+		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/><link rel=\"alternate\" href=\"" + linkReal + "\"/>", wantLink: linkReal},
+		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + linkReal + "\"/><ext:link rel=\"alternate\" href=\"" + linkFake + "\"/>", wantLink: linkReal},
+		{name: "foreign link alone is a last resort", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/>", wantLink: linkFake},
+		{
+			name: "foreign image enclosure first",
+			ns:   atomNamespace,
+			entry: "<ext:link rel=\"enclosure\" type=\"image/png\" href=\"" + imgFake + "\"/>" +
+				"<link rel=\"enclosure\" type=\"image/png\" href=\"" + imgReal + "\"/>",
+			wantImage: imgReal,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, _, err := parseFeed(atomDocNS(tc.ns, tc.entry))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+			}
+			e := entries[0]
+			if tc.wantID != "" && e.ID != tc.wantID {
+				t.Errorf("ID = %q, want %q", e.ID, tc.wantID)
+			}
+			if tc.wantLink != "" && e.Link != tc.wantLink {
+				t.Errorf("Link = %q, want %q", e.Link, tc.wantLink)
+			}
+			if tc.wantImage != "" && e.Image != tc.wantImage {
+				t.Errorf("Image = %q, want %q", e.Image, tc.wantImage)
+			}
+		})
+	}
+}

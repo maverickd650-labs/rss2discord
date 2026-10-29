@@ -301,7 +301,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr, intervalErr er
 			Type:               v1alpha1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             "WebhookUnresolved",
-			Message:            webhookErr.Error(),
+			Message:            clampText(webhookErr.Error(), maxConditionMessageBytes),
 			ObservedGeneration: feedGroup.Generation,
 		})
 		return

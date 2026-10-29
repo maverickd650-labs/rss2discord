@@ -804,7 +804,7 @@ func (c *atomEntries) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 }
 
 type atomEntry struct {
-	ID    string    `xml:"id"`
+	ID    atomID    `xml:"id"`
 	Links atomLinks `xml:"link"`
 	// Title, Summary and Content are nsTexts: Content because a direct
 	// <media:content> on the entry shares its local name (see atomText), and
@@ -861,9 +861,13 @@ func (c *atomCategories) UnmarshalXML(d *xml.Decoder, start xml.StartElement) er
 }
 
 type atomLink struct {
-	Href string `xml:"href,attr"`
-	Rel  string `xml:"rel,attr"`
-	Type string `xml:"type,attr"`
+	// XMLName records the namespace the <link> was declared in, so a
+	// foreign-namespace <ext:link> can't displace Atom's own; see
+	// namespaceRank.
+	XMLName xml.Name
+	Href    string `xml:"href,attr"`
+	Rel     string `xml:"rel,attr"`
+	Type    string `xml:"type,attr"`
 }
 
 // isAlternate reports whether l is an article link: Atom defaults an unmarked
@@ -878,36 +882,105 @@ func (l atomLink) isImageEnclosure() bool {
 	return l.Rel == "enclosure" && strings.HasPrefix(l.Type, "image/") && strings.TrimSpace(l.Href) != ""
 }
 
+// namespaceRank orders the namespaces an Atom <id> or <link> may be declared
+// in: Atom's own, then none, then anything else. encoding/xml matches a struct
+// tag by local name in any namespace, so a foreign <ext:id> or <ext:link> would
+// otherwise displace Atom's own. Foreign namespaces stay a last resort rather
+// than being dropped, so a feed using a lookalike default namespace (Atom 0.3)
+// keeps working.
+func namespaceRank(space string) int {
+	switch space {
+	case atomNamespace:
+		return 0
+	case "":
+		return 1
+	}
+	return 2
+}
+
+// atomID is an entry's <id>. It keeps the best-ranked non-blank value (see
+// namespaceRank), and the last one among equals, as a plain string field would.
+type atomID struct {
+	value string
+	rank  int
+	set   bool
+}
+
+// UnmarshalXML keeps the value unless one from a better-ranked namespace is
+// already held. XML decoding errors are returned; blank values are ignored.
+func (a *atomID) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var v string
+	if err := d.DecodeElement(&v, &start); err != nil {
+		return err
+	}
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	if r := namespaceRank(start.Name.Space); !a.set || r <= a.rank {
+		a.value, a.rank, a.set = v, r, true
+	}
+	return nil
+}
+
 // atomLinks collects an entry's <link> elements but retains only the three
-// that primaryLink and enclosureImage can select: the first link overall, the
-// first alternate link, and the first image enclosure. Entries rarely carry
-// more than a handful of links, but nothing else bounds them, and the retained
-// subset yields exactly the same selection as the full list.
+// per namespace class (Atom/none versus foreign) that primaryLink and
+// enclosureImage can select: the first link, the first alternate link, and the
+// first image enclosure. Entries rarely carry more than a handful of links,
+// but nothing else bounds them, and the retained subset yields exactly the same
+// selection as the full list.
 type atomLinks []atomLink
 
+// foreign reports whether l was declared outside Atom's namespace and the
+// empty one.
+func (l atomLink) foreign() bool {
+	return namespaceRank(l.XMLName.Space) == 2
+}
+
 // UnmarshalXML retains a link only if it is the first, the first alternate, or
-// the first image enclosure. XML decoding errors are returned; other links are
-// ignored.
+// the first image enclosure of its namespace class. XML decoding errors are
+// returned; other links are ignored.
 func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var l atomLink
 	if err := d.DecodeElement(&l, &start); err != nil {
 		return err
 	}
-	hasAlternate, hasEnclosure := false, false
+	// The slots are per class so a foreign link arriving first can't use up
+	// the slot a native one needs.
+	any, hasAlternate, hasEnclosure := false, false, false
 	for _, kept := range *c {
+		if kept.foreign() != l.foreign() {
+			continue
+		}
+		any = true
 		hasAlternate = hasAlternate || kept.isAlternate()
 		hasEnclosure = hasEnclosure || kept.isImageEnclosure()
 	}
-	if len(*c) == 0 || (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure()) {
+	if !any || (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure()) {
 		*c = append(*c, l)
 	}
 	return nil
+}
+
+// nativeLinks returns the links declared in Atom's namespace or none, or all of
+// links if every one is foreign (a lookalike default namespace).
+func nativeLinks(links []atomLink) []atomLink {
+	var native []atomLink
+	for _, l := range links {
+		if !l.foreign() {
+			native = append(native, l)
+		}
+	}
+	if len(native) == 0 {
+		return links
+	}
+	return native
 }
 
 // primaryLink returns the entry's main article link: the "alternate" rel,
 // or the first link if none is explicitly marked alternate (Atom defaults
 // an unmarked link's rel to "alternate").
 func primaryLink(links []atomLink) string {
+	links = nativeLinks(links)
 	for _, l := range links {
 		if l.isAlternate() {
 			return l.Href
@@ -922,7 +995,7 @@ func primaryLink(links []atomLink) string {
 // enclosureImage returns an Atom entry's image enclosure link, if any
 // (<link rel="enclosure" type="image/..">).
 func enclosureImage(links []atomLink) string {
-	for _, l := range links {
+	for _, l := range nativeLinks(links) {
 		if l.isImageEnclosure() {
 			return strings.TrimSpace(l.Href)
 		}
@@ -1138,7 +1211,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		link := resolveAtomURL(base, primaryLink(item.Links))
 
-		id, idSource := strings.TrimSpace(item.ID), IDFromGUID
+		id, idSource := strings.TrimSpace(item.ID.value), IDFromGUID
 		if id == "" {
 			id, idSource = strings.TrimSpace(link), IDFromLink
 		}

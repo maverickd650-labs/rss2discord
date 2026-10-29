@@ -76,13 +76,17 @@ func pruneExpired(m map[string]time.Time, now time.Time) {
 }
 
 // cooldown records that webhookURL must not be sent to again until
-// retryAfter has elapsed.
+// retryAfter has elapsed. It never shortens an existing cooldown: concurrent
+// 429s for one webhook can carry different Retry-After values, and a later,
+// shorter one must not release the webhook early.
 func (l *RateLimiter) cooldown(webhookURL string, retryAfter time.Duration) {
 	key := webhookKey(webhookURL)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.cooldowns[key] = time.Now().Add(retryAfter)
+	if until := time.Now().Add(retryAfter); until.After(l.cooldowns[key]) {
+		l.cooldowns[key] = until
+	}
 }
 
 // pace records that webhookURL's rate-limit bucket is empty until d from now,

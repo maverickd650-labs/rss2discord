@@ -107,3 +107,19 @@ func TestWebhookKey_HashesRatherThanStoringRawURL(t *testing.T) {
 		t.Fatalf("expected a 64-char hex-encoded SHA-256 digest, got %d chars: %q", len(got), got)
 	}
 }
+
+func TestRateLimiter_CooldownNeverShortens(t *testing.T) {
+	l := NewRateLimiter()
+
+	l.cooldown(testWebhookURL, time.Minute)
+	l.cooldown(testWebhookURL, time.Second)
+
+	if remaining, cooling := l.reserve(testWebhookURL); !cooling || remaining <= 30*time.Second {
+		t.Fatalf("a shorter later cooldown must not release the webhook early: remaining=%v cooling=%v", remaining, cooling)
+	}
+
+	l.cooldown(testWebhookURL, time.Hour)
+	if remaining, _ := l.reserve(testWebhookURL); remaining <= 30*time.Minute {
+		t.Fatalf("a longer later cooldown must extend it, remaining=%v", remaining)
+	}
+}
