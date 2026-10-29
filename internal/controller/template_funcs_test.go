@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 
+	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -184,14 +186,29 @@ func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 		"template invocation":   `{{template "x"}}`,
 		"define":                `{{define "x"}}y{{end}}z`,
 		"recursive define blow": `{{define "a"}}{{template "a"}}{{template "a"}}{{end}}{{template "a"}}`,
+		"same-name recursion":   `{{define "t"}}{{template "t"}}{{end}}`,
+		"root assignment":       `{{$ = .Title}}`,
+		"if declaration":        `{{if $x := .Title}}{{$x}}{{end}}`,
+		"if assignment":         `{{if $ = .Title}}yes{{end}}`,
+		"nested with":           `{{if .Title}}{{if .Author}}{{with .Link}}{{.}}{{end}}{{end}}{{end}}`,
+		"with inside else":      `{{if .Title}}yes{{else}}{{with .Author}}{{.}}{{end}}{{end}}`,
+		"range in else if":      `{{if .Title}}yes{{else if .Author}}{{range 2}}no{{end}}{{end}}`,
+		"template inside else":  `{{if .Title}}yes{{else}}{{template "missing" .}}{{end}}`,
+		"empty definition":      `{{define "unused"}}{{end}}safe`,
+		"block definition":      `{{block "part" .}}safe{{end}}`,
+		"println":               `{{println .Title}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := compileTemplate("t", format, ""); err == nil || !strings.Contains(err.Error(), "not supported") {
+			// A syntax error must not masquerade as rejection by the safety check.
+			if _, err := template.New("t").Funcs(templateFuncs).Parse(format); err != nil {
+				t.Fatalf("invalid test template: %v", err)
+			}
+			if tmpl, err := compileTemplate("t", format, ""); tmpl != nil || err == nil || !strings.Contains(err.Error(), "not supported") {
 				t.Fatalf("expected a 'not supported' error, got %v", err)
 			}
 		})
 	}
-	// if/with/else and helpers must keep working.
+	// if/else and helpers must keep working.
 	tmpl, err := compileTemplate("t", `{{if .Title}}{{.Title}}{{else}}none{{end}}{{if .Author}}/{{.Author}}{{end}}`, "")
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +216,143 @@ func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 	got, _, err := renderTemplate(tmpl, rss.Entry{Title: "a", Author: "b"}, maxDiscordMessageLength)
 	if err != nil || got != "a/b" {
 		t.Fatalf("got %q, err=%v", got, err)
+	}
+}
+
+func TestCompileTemplate_RejectsGrowthBuiltinsInNestedPipelines(t *testing.T) {
+	for _, action := range []string{
+		`print .Title`, `println .Title`, `printf "%s" .Title`,
+		`html .Title`, `js .Title`, `urlquery .Title`, `call .Title`,
+	} {
+		for name, wrapper := range map[string]string{
+			"nested argument": `{{.Title | default (%s)}}`,
+			"if predicate":    `{{if eq (%s) "unused"}}yes{{end}}`,
+			"chain operand":   `{{(%s).Title}}`,
+		} {
+			t.Run(action+"/"+name, func(t *testing.T) {
+				format := fmt.Sprintf(wrapper, action)
+				if _, err := template.New("nested").Funcs(templateFuncs).Parse(format); err != nil {
+					t.Fatalf("invalid test template: %v", err)
+				}
+				tmpl, err := compileTemplate("nested", format, "")
+				if tmpl != nil || err == nil || !strings.Contains(err.Error(), "not supported") {
+					t.Fatalf("unsafe nested action compiled: template=%v, err=%v", tmpl, err)
+				}
+			})
+		}
+	}
+}
+
+func TestCompileTemplate_FallbackRestrictions(t *testing.T) {
+	for _, fallback := range []string{
+		`{{range 2}}x{{end}}`, `{{with .Title}}{{.}}{{end}}`,
+		`{{$ = .Title}}`, `{{printf "%s" .Title}}`,
+		`{{define "unused"}}x{{end}}`, `{{template "missing"}}`,
+	} {
+		t.Run(fallback, func(t *testing.T) {
+			tmpl, err := compileTemplate("fallback", " \t\n", fallback)
+			if tmpl != nil || err == nil || !strings.Contains(err.Error(), "not supported") {
+				t.Fatalf("unsafe fallback compiled: template=%v, err=%v", tmpl, err)
+			}
+		})
+	}
+}
+
+func TestCompileTemplate_SupportedConstructs(t *testing.T) {
+	for _, tc := range []struct {
+		name, format, fallback, want string
+		entry                        rss.Entry
+	}{
+		{name: "if true", format: `{{if .Title}}{{$.Title | upper}}{{end}}`, entry: rss.Entry{Title: "title"}, want: "TITLE"},
+		{name: "if false without else", format: `{{if .Title}}unused{{end}}`},
+		{name: "else if", format: `{{if .Title}}title{{else if .Author}}{{.Author}}{{else}}none{{end}}`, entry: rss.Entry{Author: "author"}, want: "author"},
+		{name: "else", format: `{{if .Title}}title{{else if .Author}}author{{else}}none{{end}}`, want: "none"},
+		{name: "nested helpers", format: `{{if eq (lower .Author) "alice"}}{{.Author | upper | truncate 3}}{{end}}`, entry: rss.Entry{Author: "Alice"}, want: "AL…"},
+		{name: "root field in parentheses", format: `{{($.Title) | lower}}`, entry: rss.Entry{Title: "TITLE"}, want: "title"},
+		{name: "literal restricted words", format: `range define template with printf {{"print"}}`, want: "range define template with printf print"},
+		{name: "comment only", format: `{{/* {{range 100000000000}}{{end}} */}}`},
+		{name: "empty template"},
+		{name: "safe fallback", format: " \t\n", fallback: `{{if .Title}}{{.Title}}{{else}}none{{end}}`, want: "none"},
+		{name: "unused unsafe fallback", format: `{{.Title}}`, fallback: `{{range 2}}{{end}}`, entry: rss.Entry{Title: "safe"}, want: "safe"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, err := compileTemplate("supported", tc.format, tc.fallback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, overflow, err := renderTemplate(tmpl, tc.entry, maxDiscordMessageLength)
+			if err != nil || got != tc.want || overflow != 0 {
+				t.Fatalf("render = %q, overflow=%d, err=%v; want %q without overflow", got, overflow, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderTemplate_OutputByteBoundaries(t *testing.T) {
+	const limit = 1 << 20
+	for _, tc := range []struct {
+		name, format, author, want string
+		wantOverflow               int
+		wantError                  bool
+	}{
+		{name: "one byte below", format: `{{.Author}}`, author: strings.Repeat("x", limit-1), want: "xxxxxxx…", wantOverflow: limit - 1 - 8},
+		{name: "exactly one MiB", format: `{{.Author}}`, author: strings.Repeat("x", limit), want: "xxxxxxx…", wantOverflow: limit - 8},
+		{name: "one byte above", format: `{{.Author}}`, author: strings.Repeat("x", limit+1), wantError: true},
+		{name: "cumulative exact limit", format: `{{.Author}}{{.Author}}`, author: strings.Repeat("x", limit/2), want: "xxxxxxx…", wantOverflow: limit - 8},
+		{name: "literal crosses cumulative limit", format: `{{.Author}}{{.Author}}x`, author: strings.Repeat("x", limit/2), wantError: true},
+		{name: "multibyte exact limit", format: `{{.Author}}`, author: strings.Repeat("é", limit/2), want: "ééééééé…", wantOverflow: limit/2 - 8},
+		{name: "bytes exceed limit but runes do not", format: `{{.Author}}x`, author: strings.Repeat("é", limit/2), wantError: true},
+		{name: "oversized literal", format: strings.Repeat("x", limit+1), wantError: true},
+		{name: "unexecuted text does not count", format: `{{if false}}` + strings.Repeat("x", limit+1) + `{{end}}ok`, want: "ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, err := compileTemplate("limit", tc.format, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The byte cap applies before Discord's much smaller rune limit.
+			got, overflow, err := renderTemplate(tmpl, rss.Entry{Author: tc.author}, 8)
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "template output exceeds") || got != "" || overflow != 0 {
+					t.Fatalf("render returned %d bytes, overflow=%d, err=%v; want output-limit error and no partial output", len(got), overflow, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want || overflow != tc.wantOverflow {
+				t.Fatalf("render = %q, overflow=%d, err=%v; want %q, overflow=%d", got, overflow, err, tc.want, tc.wantOverflow)
+			}
+		})
+	}
+}
+
+func TestBuildDiscordMessage_OutputLimitAppliesToEveryTemplate(t *testing.T) {
+	safe, err := compileTemplate("safe", "safe", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized, err := compileTemplate("oversized", `{{.Author}}`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                         string
+		embed                        *v1alpha1.EmbedSpec
+		content, description, thread *template.Template
+	}{
+		{name: "message", content: oversized},
+		{name: "embed description", embed: &v1alpha1.EmbedSpec{Enabled: true}, description: oversized},
+		{name: "forum thread name", content: safe, thread: oversized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := rss.Entry{Author: strings.Repeat("x", (1<<20)+1)}
+			msg, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, tc.embed, tc.content, tc.description, tc.thread, &v1alpha1.FeedSpec{}, entry)
+			if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
+				t.Fatalf("expected output-limit error, got %v", err)
+			}
+			if msg.Content != "" || msg.Embed != nil || msg.ThreadName != "" {
+				t.Fatalf("render failure returned a partial message: %+v", msg)
+			}
+		})
 	}
 }
 
@@ -221,13 +375,42 @@ func TestRenderTemplate_LinkSchemeFiltered(t *testing.T) {
 		t.Fatal(err)
 	}
 	for link, want := range map[string]string{
-		"https://example.com/b": "[https://example.com/b]",
-		"javascript:alert(1)":   "[]",
-		"data:text/html,x":      "[]",
+		"https://example.com/b":         "[https://example.com/b]",
+		"javascript:alert(1)":           "[]",
+		"data:text/html,x":              "[]",
+		"http://example.com/a?q=1#part": "[http://example.com/a?q=1#part]",
+		"HTTPS://example.com/a":         "[HTTPS://example.com/a]",
+		"JaVaScRiPt:alert(1)":           "[]",
+		"file:///etc/passwd":            "[]",
+		"ftp://example.com/a":           "[]",
+		"mailto:alice@example.com":      "[]",
+		"/relative/path":                "[]",
+		"//example.com/a":               "[]",
+		"https://example.com/%zz":       "[]",
+		"https://example.com/\npath":    "[]",
+		" https://example.com/a":        "[]",
+		"":                              "[]",
 	} {
-		got, _, err := renderTemplate(tmpl, rss.Entry{Link: link}, maxDiscordMessageLength)
-		if err != nil || got != want {
-			t.Fatalf("link %q rendered %q (err=%v), want %q", link, got, err, want)
-		}
+		t.Run(link, func(t *testing.T) {
+			got, overflow, err := renderTemplate(tmpl, rss.Entry{Link: link}, maxDiscordMessageLength)
+			if err != nil || got != want || overflow != 0 {
+				t.Fatalf("link %q rendered %q, overflow=%d, err=%v; want %q without overflow", link, got, overflow, err, want)
+			}
+		})
+	}
+}
+
+func TestRenderTemplate_FilteredLinkIsEmptyInConditionalsAndHelpers(t *testing.T) {
+	tmpl, err := compileTemplate("link", `{{if .Link}}linked{{else}}unlinked{{end}}/{{$.Link | default "none"}}`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []string{"javascript:alert(1)", "data:text/html,x", "//example.com/a"} {
+		t.Run(link, func(t *testing.T) {
+			got, overflow, err := renderTemplate(tmpl, rss.Entry{Link: link}, maxDiscordMessageLength)
+			if err != nil || got != "unlinked/none" || overflow != 0 {
+				t.Fatalf("filtered link rendered %q, overflow=%d, err=%v; want unlinked/none without overflow", got, overflow, err)
+			}
+		})
 	}
 }
