@@ -211,7 +211,7 @@ func TestRenderTemplate_LinkSchemeFiltered(t *testing.T) {
 		t.Fatal(err)
 	}
 	for link, want := range map[string]string{
-		"https://example.com/a": "[https://example.com/a]",
+		"https://example.com/b": "[https://example.com/b]",
 		"javascript:alert(1)":   "[]",
 		"data:text/html,x":      "[]",
 	} {

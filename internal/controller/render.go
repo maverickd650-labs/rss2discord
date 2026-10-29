@@ -105,7 +105,7 @@ func rejectUnboundedConstructs(tmpl *template.Template) error {
 	if tmpl.Tree == nil {
 		return nil
 	}
-	return checkNodes(tmpl.Tree.Root)
+	return checkNodes(tmpl.Root)
 }
 
 func checkNodes(node parse.Node) error {
