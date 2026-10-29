@@ -289,7 +289,12 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			continue
 		}
 		if sharing[legacy[i]] == 1 {
+			// A unique link's legacy key is its stripped key (see
+			// recordSent), so it stays alongside the current one.
 			fs.LastSent[hashIdentity(current[i])] = sentAt
+			if entries[i].IDSource == rss.IDFromLink {
+				continue
+			}
 		}
 		delete(fs.LastSent, legacyKey)
 	}
@@ -347,13 +352,93 @@ func pruneLastSent(sent map[string]string, max int) {
 	}
 }
 
-// entriesContainID reports whether id matches any entry's identity after
-// clampWatermark, as stored in LastSeenEntry.
-func entriesContainID(entries []rss.Entry, id string) bool {
+// strippedLinkIdentity is a link-derived entry's identity without the
+// fragment and ref parameter that entryIdentity keeps, or "" for an entry
+// whose ID didn't come from its link. Some feeds rotate those between
+// fetches (share-tracking plugins, CDN rewrites) on an otherwise unchanged
+// article, so dedup and the watermark fall back to this form; see
+// strippedCounts.
+func strippedLinkIdentity(entry rss.Entry) string {
+	if entry.IDSource != rss.IDFromLink || entry.ID == "" {
+		return ""
+	}
+	return normalizeIdentity(entry.ID)
+}
+
+// strippedCounts counts one fetch's entries by strippedLinkIdentity. The
+// stripped form only stands in for an entry when no other entry in the fetch
+// shares it: entries that differ only by fragment or ref (a changelog's #v1.2
+// and #v1.3) are told apart by their full identities alone, while an entry
+// whose ref merely rotated still matches what was recorded for it.
+type strippedCounts map[string]int
+
+// countStripped indexes entries for watermarkIndex, entrySent and recordSent.
+func countStripped(entries []rss.Entry) strippedCounts {
+	counts := make(strippedCounts)
 	for _, entry := range entries {
-		if clampWatermark(entryIdentity(entry)) == id {
-			return true
+		if stripped := strippedLinkIdentity(entry); stripped != "" {
+			counts[stripped]++
 		}
 	}
+	return counts
+}
+
+// unique returns entry's stripped identity when no other entry in the fetch
+// shares it, else "".
+func (c strippedCounts) unique(entry rss.Entry) string {
+	if stripped := strippedLinkIdentity(entry); stripped != "" && c[stripped] == 1 {
+		return stripped
+	}
+	return ""
+}
+
+// watermarkIndex returns the index in entries of the entry watermark (a
+// LastSeenEntry value) stands for, or -1: the first entry whose identity
+// matches it exactly, else the entry whose unique stripped identity matches
+// the watermark's.
+func watermarkIndex(entries []rss.Entry, watermark string, counts strippedCounts) int {
+	for i, entry := range entries {
+		if clampWatermark(entryIdentity(entry)) == watermark {
+			return i
+		}
+	}
+	if watermark == "" {
+		return -1
+	}
+	stripped := clampWatermark(normalizeIdentity(watermark))
+	for i, entry := range entries {
+		if unique := counts.unique(entry); unique != "" && clampWatermark(unique) == stripped {
+			return i
+		}
+	}
+	return -1
+}
+
+// entrySent reports whether lastSent records entry: under its own key, or
+// under its unique stripped identity's.
+func entrySent(lastSent map[string]string, entry rss.Entry, counts strippedCounts) bool {
+	if _, ok := lastSent[computeEntryKey(entry)]; ok {
+		return true
+	}
+	if unique := counts.unique(entry); unique != "" {
+		_, ok := lastSent[hashIdentity(unique)]
+		return ok
+	}
 	return false
+}
+
+// recordSent records entry in lastSent at now under its own key and, when it
+// is unique in the fetch, its stripped identity's too, so a later rotation of
+// its fragment or ref still finds it.
+func recordSent(lastSent map[string]string, entry rss.Entry, counts strippedCounts, now string) {
+	lastSent[computeEntryKey(entry)] = now
+	if unique := counts.unique(entry); unique != "" {
+		lastSent[hashIdentity(unique)] = now
+	}
+}
+
+// entriesContainID reports whether id, as stored in LastSeenEntry, stands for
+// any of entries; see watermarkIndex.
+func entriesContainID(entries []rss.Entry, id string) bool {
+	return watermarkIndex(entries, id, countStripped(entries)) >= 0
 }

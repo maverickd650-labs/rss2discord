@@ -1159,6 +1159,32 @@ func TestProcessFeed_LinkFragmentAndRefAreDistinctIdentities(t *testing.T) {
 	}
 }
 
+// A feed that rotates the ref parameter or fragment on its GUID-less links
+// between fetches (share tracking, CDN rewrites) must not repost unchanged
+// entries, nor lose the watermark: both fall back to the link without them
+// when no other entry shares it. A genuinely new entry is still delivered.
+func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "rotating-target", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	titled := func(link, title string, i int) rss.Entry {
+		entry := linkEntry(legacyURLPrefix+link, i)
+		entry.Title = title
+		return entry
+	}
+	first := []rss.Entry{titled("rotate/post-1?ref=a", "one", 0), titled("rotate/post-2#c1", "two", 1)}
+	processTwice(t, fg, feed, first, "one", "two")
+
+	rotated := []rss.Entry{
+		titled("rotate/post-1?ref=b", "one", 0),
+		titled("rotate/post-2#c2", "two", 1),
+		titled("rotate/post-3?ref=b", "three", 2),
+	}
+	processTwice(t, fg, feed, rotated, "three")
+	if fs := feedStatusFor(fg, feed.RSSUrl); fs.LastSeenEntry != entryIdentity(rotated[2]) {
+		t.Fatalf("watermark=%q, want %q", fs.LastSeenEntry, entryIdentity(rotated[2]))
+	}
+}
+
 // Legacy keys in LastSent and a legacy watermark, stored under the old
 // fragment- and ref-stripped identities, still count after the upgrade:
 // nothing already delivered is resent, the new entry is, and the status is
@@ -1197,9 +1223,10 @@ func TestProcessFeed_LegacyKeysPresent(t *testing.T) {
 					t.Fatalf("no current key for %q: %v", entry.ID, fs.LastSent)
 				}
 			}
+			// A unique link's legacy key is its stripped key, so it stays.
 			for _, entry := range sent[1:] {
-				if _, ok := fs.LastSent[legacyKey(entry)]; ok {
-					t.Fatalf("legacy key for %q was kept", entry.ID)
+				if _, ok := fs.LastSent[legacyKey(entry)]; !ok {
+					t.Fatalf("stripped key for %q was dropped", entry.ID)
 				}
 			}
 		})

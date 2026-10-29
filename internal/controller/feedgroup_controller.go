@@ -439,9 +439,12 @@ func (r *FeedGroupReconciler) processFeed(
 	}
 	legacy.migrate(fs, entries, catchUpLimit, now)
 
+	// Counted over the whole fetch, before any catch-up trim below, so an
+	// entry's stripped identity is only unique if it is across the feed.
+	counts := countStripped(entries)
 	lastSeenID := fs.LastSeenEntry
 	hasSeenID := lastSeenID != ""
-	if hasSeenID && !entriesContainID(entries, lastSeenID) {
+	if hasSeenID && watermarkIndex(entries, lastSeenID, counts) < 0 {
 		// The stored ID has scrolled out of the feed's window (or the feed
 		// changed how it identifies this entry between fetches), so the
 		// forward-scan below would never match it and would silently treat
@@ -484,7 +487,7 @@ func (r *FeedGroupReconciler) processFeed(
 		threadName:  threadNameTmpl,
 		filter:      filterRegex,
 	}
-	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, hasSeenID, lastSeenID,
+	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, counts, hasSeenID, lastSeenID,
 		discordClient, now)
 
 	pruneLastSent(fs.LastSent, maxLastSentPerFeed)
@@ -529,6 +532,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 	fs *v1alpha1.FeedStatus,
 	renderer *feedRenderer,
 	entries []rss.Entry,
+	counts strippedCounts,
 	hasSeenID bool,
 	lastSeenID string,
 	discordClient *discord.Client,
@@ -536,19 +540,14 @@ func (r *FeedGroupReconciler) sendNewEntries(
 ) (wantRetry bool, rateLimitRetryAfter time.Duration, pending bool) {
 	log := logf.FromContext(ctx)
 	feed := renderer.feed
-	foundLastSeen := !hasSeenID
+	resumeAt := 0
+	if hasSeenID {
+		resumeAt = watermarkIndex(entries, lastSeenID, counts) + 1
+	}
 
-	for _, entry := range entries {
-		if hasSeenID && !foundLastSeen {
-			if clampWatermark(entryIdentity(entry)) == lastSeenID {
-				foundLastSeen = true
-			}
-			continue
-		}
-
+	for _, entry := range entries[resumeAt:] {
 		identity := entryIdentity(entry)
-		entryKey := hashIdentity(identity)
-		if _, alreadySent := fs.LastSent[entryKey]; alreadySent {
+		if entrySent(fs.LastSent, entry, counts) {
 			continue
 		}
 
@@ -583,7 +582,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				// block every newer entry behind it forever. Drop it and carry
 				// on. If no entry renders, the templates themselves are broken
 				// and skipping would just drain the feed, so keep holding.
-				r.skipEntry(ctx, feedGroup, fs, *feed, entry, identity, entryKey, "RenderFailed", err, now)
+				r.skipEntry(ctx, feedGroup, fs, *feed, entry, counts, "RenderFailed", err, now)
 				continue
 			}
 			if fs.RetryCount < maxRetries {
@@ -669,7 +668,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			break
 		}
 
-		fs.LastSent[entryKey] = now
+		recordSent(fs.LastSent, entry, counts, now)
 		fs.LastSeenEntry = clampWatermark(identity)
 		fs.LastError = ""
 		fs.RetryCount = 0
@@ -708,13 +707,15 @@ func (r *FeedGroupReconciler) skipEntry(
 	fs *v1alpha1.FeedStatus,
 	feed v1alpha1.FeedSpec,
 	entry rss.Entry,
-	identity, entryKey, reason string,
+	counts strippedCounts,
+	reason string,
 	cause error,
 	now string,
 ) {
+	identity := entryIdentity(entry)
 	logf.FromContext(ctx).Error(cause, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", identity)
 
-	fs.LastSent[entryKey] = now
+	recordSent(fs.LastSent, entry, counts, now)
 	fs.LastSeenEntry = clampWatermark(identity)
 	fs.LastError = ""
 	fs.RetryCount = 0
