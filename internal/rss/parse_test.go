@@ -30,6 +30,11 @@ const (
 	descShort      = "short"
 	summaryShort   = "Short"
 	bodyFull       = "Full body"
+
+	caseNoLinks = "no links"
+	altURL      = "http://alt"
+	firstURL    = "http://first"
+	formatAtom  = "atom"
 )
 
 func TestParseTime(t *testing.T) {
@@ -84,16 +89,16 @@ func TestPrimaryLink(t *testing.T) {
 		links []atomLink
 		want  string
 	}{
-		{name: "no links", links: nil, want: ""},
+		{name: caseNoLinks, links: nil, want: ""},
 		{
 			name:  "explicit alternate preferred over enclosure",
-			links: []atomLink{{Href: encURL, Rel: relEnclosure}, {Href: "http://alt", Rel: relAlternate}},
-			want:  "http://alt",
+			links: []atomLink{{Href: encURL, Rel: relEnclosure}, {Href: altURL, Rel: relAlternate}},
+			want:  altURL,
 		},
 		{
 			name:  "unmarked rel treated as alternate",
-			links: []atomLink{{Href: "http://first"}},
-			want:  "http://first",
+			links: []atomLink{{Href: firstURL}},
+			want:  firstURL,
 		},
 		{
 			name:  "falls back to first when no alternate",
@@ -117,7 +122,7 @@ func TestEnclosureImage(t *testing.T) {
 		links []atomLink
 		want  string
 	}{
-		{name: "no links", links: nil, want: ""},
+		{name: caseNoLinks, links: nil, want: ""},
 		{
 			name:  "image enclosure matched",
 			links: []atomLink{{Href: picJPEGURL, Rel: relEnclosure, Type: imageJPEG}},
@@ -583,9 +588,9 @@ func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
 // error for every supported format, instead of a partial or empty result.
 func TestParseFeed_MalformedBodyAfterValidRoot(t *testing.T) {
 	for name, doc := range map[string]string{
-		"rss":  `<rss><channel><item><title>x</item></channel></rss>`,
-		"atom": `<feed><entry><title>x</entry></feed>`,
-		"rdf":  `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
+		"rss":      `<rss><channel><item><title>x</item></channel></rss>`,
+		formatAtom: `<feed><entry><title>x</entry></feed>`,
+		"rdf":      `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			entries, _, err := parseFeed([]byte(doc))
@@ -1163,7 +1168,7 @@ func TestParseFeed_FeedTitle(t *testing.T) {
 			want: "Media Title",
 		},
 		{
-			name: "atom",
+			name: formatAtom,
 			doc: `<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>` +
 				`<entry><id>1</id><title>Entry</title></entry></feed>`,
 			want: "Atom Feed",
@@ -1383,7 +1388,7 @@ func TestParseFeed_BoundsEntryCount(t *testing.T) {
 				`<item><link>id-%d</link><title>T%d</title></item>`, `</rdf:RDF>`),
 		},
 		{
-			name: "atom",
+			name: formatAtom,
 			data: build(`<feed xmlns="http://www.w3.org/2005/Atom"><title>F</title>`, `<entry><id>id-%d</id><title>T%d</title></entry>`, `</feed>`),
 		},
 	}
@@ -1501,16 +1506,16 @@ func TestAtomLinksBoundedSelectionMatchesFull(t *testing.T) {
 		wantPrimary   string
 		wantEnclosure string
 	}{
-		{name: "no links", links: "", wantPrimary: "", wantEnclosure: ""},
+		{name: caseNoLinks, links: "", wantPrimary: "", wantEnclosure: ""},
 		{
 			name:        "unmarked link first",
 			links:       `<link href="http://first"/>` + related + `<link rel="alternate" href="http://alt"/>`,
-			wantPrimary: "http://first",
+			wantPrimary: firstURL,
 		},
 		{
 			name:        "alternate after many non-alternates",
 			links:       related + `<link rel="alternate" href="http://alt"/><link rel="alternate" href="http://alt2"/>`,
-			wantPrimary: "http://alt",
+			wantPrimary: altURL,
 		},
 		{
 			name:        "no alternate falls back to the first link overall",
@@ -1529,7 +1534,7 @@ func TestAtomLinksBoundedSelectionMatchesFull(t *testing.T) {
 				`<link rel="enclosure" type="image/png" href=" http://img1.png "/>` + related +
 				`<link rel="enclosure" type="image/png" href="http://img2.png"/>` +
 				`<link rel="alternate" href="http://alt"/>`,
-			wantPrimary:   "http://alt",
+			wantPrimary:   altURL,
 			wantEnclosure: "http://img1.png",
 		},
 		{
