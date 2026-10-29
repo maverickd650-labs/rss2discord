@@ -127,7 +127,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 		{
 			name:    "render error",
 			prepare: func(_ *MockDiscordServer, feed *v1alpha1.FeedSpec) { feed.Format = "{{.Title.Nope}}" },
-			fix:     func(feed *v1alpha1.FeedSpec) { feed.Format = "{{.Title}}" },
+			fix:     func(feed *v1alpha1.FeedSpec) { feed.Format = "" },
 		},
 		{
 			name:    "config error",
@@ -150,7 +150,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			fs.Initialized = true
 			fs.StateVersion = currentStateVersion
 			fs.LastSeenEntry = entryIdentity(sentBefore)
-			fs.LastSent[computeEntryKey(sentBefore)] = "2025-12-31T00:00:00Z"
+			fs.LastSent[computeEntryKey(sentBefore)] = testReconcileTime
 			fs.ETag = validatorsOld
 			fs.LastModified = "Wed, 31 Dec 2025 00:00:00 GMT"
 
