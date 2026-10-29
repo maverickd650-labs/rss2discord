@@ -35,6 +35,7 @@ const (
 	altURL      = "http://alt"
 	firstURL    = "http://first"
 	formatAtom  = "atom"
+	formatRDF   = "rdf"
 )
 
 func TestParseTime(t *testing.T) {
@@ -590,7 +591,7 @@ func TestParseFeed_MalformedBodyAfterValidRoot(t *testing.T) {
 	for name, doc := range map[string]string{
 		"rss":      `<rss><channel><item><title>x</item></channel></rss>`,
 		formatAtom: `<feed><entry><title>x</entry></feed>`,
-		"rdf":      `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
+		formatRDF:  `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>x</item></rdf:RDF>`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			entries, _, err := parseFeed([]byte(doc))
@@ -1186,7 +1187,7 @@ func TestParseFeed_FeedTitle(t *testing.T) {
 			want: "Atom Feed",
 		},
 		{
-			name: "rdf",
+			name: formatRDF,
 			doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">` +
 				`<channel><title>RDF Feed</title><link>http://example.com</link></channel>` +
 				`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,

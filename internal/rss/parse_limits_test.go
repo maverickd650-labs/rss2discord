@@ -12,6 +12,14 @@ import (
 // The same retention rules apply to all three document shapes, including RDF's
 // items outside its channel. Metadata follows the items to exercise decoding
 // after the entry limit has been reached.
+// Literals repeated across the limit tests below; constants keep goconst quiet.
+const (
+	hrefArticle     = "article"
+	blogBaseURL     = "https://example.com/blog/"
+	blogPostArticle = "https://example.com/blog/posts/article"
+	postsDir        = "posts/"
+)
+
 var limitTestFormats = []struct {
 	name     string
 	document string
@@ -25,7 +33,7 @@ var limitTestFormats = []struct {
 		category: `<category> %s </category>`,
 	},
 	{
-		name: "rdf",
+		name: formatRDF,
 		document: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:media="http://search.yahoo.com/mrss/">` +
 			`%s<channel><title>After entries</title></channel></rdf:RDF>`,
 		entry:    `<item>%s</item>`,
@@ -95,8 +103,7 @@ func TestParseFeed_EntryLimitRejectsMalformedXML(t *testing.T) {
 				body := strings.Repeat(fmt.Sprintf(format.entry, `<title>Valid</title>`), preceding) +
 					fmt.Sprintf(format.entry, `<extension><title>Unclosed</extension>`)
 				entries, title, err := parseFeed([]byte(fmt.Sprintf(format.document, body)))
-				var syntaxErr *xml.SyntaxError
-				if !errors.As(err, &syntaxErr) {
+				if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
 					t.Fatalf("error = %v, want XML syntax error", err)
 				}
 				if entries != nil || title != "" {
@@ -192,8 +199,8 @@ func TestBoundedFieldsRejectMalformedXML(t *testing.T) {
 				if full {
 					prefix = tc.valid
 				}
-				var syntaxErr *xml.SyntaxError
-				if err := tc.decode([]byte(`<entry>` + prefix + tc.invalid + `</entry>`)); !errors.As(err, &syntaxErr) {
+				err := tc.decode([]byte(`<entry>` + prefix + tc.invalid + `</entry>`))
+				if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
 					t.Fatalf("error = %v, want XML syntax error", err)
 				}
 			})
@@ -254,7 +261,7 @@ func TestAtomLinksRetentionAcrossCandidateOrders(t *testing.T) {
 			if len(item.Links) != wantCount {
 				t.Fatalf("retained %d links, want %d", len(item.Links), wantCount)
 			}
-			if primary, image := primaryLink(item.Links), enclosureImage(item.Links); primary != "article" || image != "first.png" {
+			if primary, image := primaryLink(item.Links), enclosureImage(item.Links); primary != hrefArticle || image != "first.png" {
 				t.Fatalf("primary = %q, image = %q, want article and first.png", primary, image)
 			}
 		})
@@ -303,14 +310,14 @@ func TestParseFeed_AtomNestedBaseURLBoundaries(t *testing.T) {
 		want      string
 	}{
 		{name: "parent segments", feedBase: "https://example.com/blog/2026/", entryBase: "../posts/./", href: "../article?view=1#part", want: "https://example.com/blog/article?view=1#part"},
-		{name: "feed base names a file", feedBase: "https://example.com/blog/feed.xml", entryBase: "posts/", href: "article", want: "https://example.com/blog/posts/article"},
-		{name: "entry base names a file", feedBase: "https://example.com/blog/", entryBase: "posts/index.xml", href: "article", want: "https://example.com/blog/posts/article"},
-		{name: "network relative entry base", feedBase: "https://example.com/blog/", entryBase: "//cdn.example.com/posts/", href: "article", want: "https://cdn.example.com/posts/article"},
-		{name: "trim bases", feedBase: " https://example.com/blog/ ", entryBase: " posts/ ", href: "article", want: "https://example.com/blog/posts/article"},
-		{name: "blank entry base inherits", feedBase: "https://example.com/blog/", entryBase: " ", href: "article", want: "https://example.com/blog/article"},
-		{name: "absolute reference", feedBase: "https://example.com/blog/", entryBase: "posts/", href: "https://other.example.com/article", want: "https://other.example.com/article"},
-		{name: "relative entry base without feed base", entryBase: "posts/", href: "article", want: "/posts/article"},
-		{name: "missing reference stays empty", feedBase: "https://example.com/blog/", entryBase: "posts/"},
+		{name: "feed base names a file", feedBase: "https://example.com/blog/feed.xml", entryBase: postsDir, href: hrefArticle, want: blogPostArticle},
+		{name: "entry base names a file", feedBase: blogBaseURL, entryBase: "posts/index.xml", href: hrefArticle, want: blogPostArticle},
+		{name: "network relative entry base", feedBase: blogBaseURL, entryBase: "//cdn.example.com/posts/", href: hrefArticle, want: "https://cdn.example.com/posts/article"},
+		{name: "trim bases", feedBase: " https://example.com/blog/ ", entryBase: " posts/ ", href: hrefArticle, want: blogPostArticle},
+		{name: "blank entry base inherits", feedBase: blogBaseURL, entryBase: " ", href: hrefArticle, want: "https://example.com/blog/article"},
+		{name: "absolute reference", feedBase: blogBaseURL, entryBase: postsDir, href: "https://other.example.com/article", want: "https://other.example.com/article"},
+		{name: "relative entry base without feed base", entryBase: postsDir, href: hrefArticle, want: "/posts/article"},
+		{name: "missing reference stays empty", feedBase: blogBaseURL, entryBase: postsDir},
 	}
 	for _, tc := range cases {
 		for _, imageSource := range []struct {
