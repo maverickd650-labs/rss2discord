@@ -13,12 +13,15 @@ reviews:
     enabled: true
     drafts: false
 
-  # CodeRabbit excludes **/dist/** by default. dist/chart/ holds hand-tuned Helm
-  # templates, values.yaml, _helpers.tpl and dashboards that must be reviewed,
-  # so it is re-included here (a non-"!" entry overrides a default exclusion);
-  # only the generated parts of dist/ stay excluded.
+  # CodeRabbit excludes "!**/dist/**" and "!**/*.json" by default, which hides
+  # dist/chart/'s hand-tuned templates, values.yaml, _helpers.tpl and
+  # dashboards/*.json. Listing a default's exact pattern without "!" disables
+  # that default without turning path_filters into an allowlist (a broader
+  # include like "dist/chart/**" would instead restrict review to that path).
+  # Exclusions win regardless of order, so the generated parts stay excluded.
   path_filters:
-    - "dist/chart/**"
+    - "**/dist/**"
+    - "**/*.json"
     - "!dist/install.yaml"
     - "!dist/chart/templates/crd/**"
     - "!config/crd/bases/**"
@@ -27,6 +30,7 @@ reviews:
     - "!api/*/applyconfiguration/**"
     - "!PROJECT"
     - "!CHANGELOG.md"  # release-please
+    - "!.release-please-manifest.json"  # release-please
     - "!go.sum"
 
   path_instructions:
@@ -132,6 +136,12 @@ reviews:
     checkov:
       enabled: true
     semgrep:
+      enabled: true
+    trivy:
+      enabled: true
+    osvScanner:
+      enabled: true
+    zizmor:
       enabled: true
 
   # Go test functions drag docstring coverage well below the default threshold
