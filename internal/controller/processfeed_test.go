@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -847,5 +848,31 @@ func TestProcessFeed_Initialization(t *testing.T) {
 				t.Fatalf("sent=%d, want %d", got, tc.wantSent)
 			}
 		})
+	}
+}
+
+// After an empty first fetch with catchUpLimit 0, everything that shows up
+// later is new, so none of it may be trimmed by the catch-up cap.
+func TestProcessFeed_CatchUpLimitZeroDeliversAllAfterEmptyFirstSync(t *testing.T) {
+	ns, name := "initialization-unit", "all-after-empty"
+	defer deleteFeedGroupMetrics(ns, name)
+	discordServer := NewMockDiscordServer()
+	defer discordServer.Close()
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.CatchUpLimit = new(int32(0))
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	r := &FeedGroupReconciler{}
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{}, nil, client, testReconcileTime)
+
+	const total = 2*defaultCatchUpLimit + 1
+	entries := make([]rss.Entry, 0, total)
+	for i := range total {
+		id := fmt.Sprintf("https://example.com/new-%d", i)
+		entries = append(entries, rss.Entry{ID: id, Title: id, Link: id, Seq: total - i})
+	}
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+	if got := discordServer.MessageCount(); got != total {
+		t.Fatalf("sent=%d, want all %d", got, total)
 	}
 }

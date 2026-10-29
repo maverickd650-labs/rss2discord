@@ -2,7 +2,6 @@ package controller
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -420,46 +419,6 @@ func TestEntryIdentity_PreservesNonURLGUIDUnchanged(t *testing.T) {
 	entry := rss.Entry{ID: "tag:example.com,2026:article-123"}
 	if got := entryIdentity(entry); got != entry.ID {
 		t.Fatalf("expected opaque GUID to pass through unchanged, got %q", got)
-	}
-}
-
-func TestEntryIdentity_LinkFallbacks(t *testing.T) {
-	for _, format := range []string{
-		`<rss><channel><item><link>%s</link>%s</item></channel></rss>`,
-		`<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="%s"/>%s</entry></feed>`,
-	} {
-		for _, pair := range [][2]string{
-			{"https://example.com/article#one", "https://example.com/article#two"},
-			{"https://example.com/article?ref=one", "https://example.com/article?ref=two"},
-		} {
-			var entries []rss.Entry
-			for _, link := range pair {
-				// Exercise the parser/controller boundary, including a GUID
-				// that happens to be identical to the link.
-				guid := "<guid>" + link + "</guid>"
-				if strings.HasPrefix(format, "<feed") {
-					guid = "<id>" + link + "</id>"
-				}
-				for _, id := range []string{"", guid} {
-					server := NewMockRSSServer(fmt.Sprintf(format, link, id))
-					result, err := testRSSClient().FetchEntries(t.Context(), server.URL(), rss.CacheValidators{})
-					server.Close()
-					if err != nil || len(result.Entries) != 1 {
-						t.Fatalf("parse: entries=%v err=%v", result.Entries, err)
-					}
-					entries = append(entries, result.Entries[0])
-				}
-			}
-			if computeEntryKey(entries[0]) == computeEntryKey(entries[2]) {
-				t.Errorf("link fallbacks collapsed: %v", pair)
-			}
-			if entriesContainID([]rss.Entry{entries[2]}, entryIdentity(entries[0])) {
-				t.Error("watermark matched a distinct link fallback")
-			}
-			if computeEntryKey(entries[1]) != computeEntryKey(entries[3]) {
-				t.Errorf("GUID normalization changed: %v", pair)
-			}
-		}
 	}
 }
 

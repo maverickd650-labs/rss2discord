@@ -433,6 +433,11 @@ func (r *FeedGroupReconciler) processFeed(
 			// default cap rather than silently dropping new entries.
 			skipBacklog(feedGroup, fs, entries)
 			entries = nil
+		} else if catchUpLimit == 0 && wasInitialized && lastSeenID == "" {
+			// The feed was already fetched while empty (catchUpLimit 0 sets a
+			// watermark on any non-empty first fetch), so everything in it was
+			// published after the first sync: deliver all of it rather than
+			// capping it as if it were a backlog.
 		} else {
 			entries = limitCatchUp(entries, catchUpLimit)
 		}

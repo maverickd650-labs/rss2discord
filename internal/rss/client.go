@@ -35,11 +35,7 @@ const defaultTimeout = 15 * time.Second
 const userAgent = "rss2discord-operator (+https://github.com/maverickd650/rss2discord-operator)"
 
 type Entry struct {
-	ID string
-	// IDFromLink records a link fallback when the feed has no GUID/Atom ID.
-	// Consumers can preserve meaningful URL fragments and ref parameters for
-	// these entries while normalizing GUID-based identities more aggressively.
-	IDFromLink  bool
+	ID          string
 	Title       string
 	Link        string
 	Description string
@@ -902,8 +898,8 @@ func parseRDF(data []byte) ([]Entry, string, error) {
 }
 
 // rssItemsToEntries converts RSS 2.0 or RSS 1.0 items in document order, recording
-// each item's index in Seq. Identity falls back from GUID to link to title, with
-// IDFromLink set only for a link fallback. Invalid or missing dates become zero
+// each item's index in Seq. Identity falls back from GUID to link to title.
+// Invalid or missing dates become zero
 // times after trying pubDate and then dc:date.
 func rssItemsToEntries(items []rssItem) []Entry {
 	entries := make([]Entry, 0, len(items))
@@ -919,7 +915,6 @@ func rssItemsToEntries(items []rssItem) []Entry {
 		}
 
 		id := pickText(item.GUID)
-		idFromLink := id == "" && link != ""
 		if id == "" {
 			id = link
 		}
@@ -939,7 +934,6 @@ func rssItemsToEntries(items []rssItem) []Entry {
 
 		entries = append(entries, Entry{
 			ID:          id,
-			IDFromLink:  idFromLink,
 			Title:       title,
 			Link:        link,
 			Description: description,
@@ -957,7 +951,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 
 // parseAtom returns entries in document order and the feed title, or nil entries
 // and an empty title on an XML decoding error. Identity falls back from ID to
-// resolved link to title, with IDFromLink set only for a link fallback. XHTML
+// resolved link to title. XHTML
 // text constructs retain their inner markup. Description falls back from summary
 // to content to the Media RSS group description. Invalid or missing dates become
 // zero times after trying published and then updated.
@@ -984,7 +978,6 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		link := resolveAtomURL(base, primaryLink(item.Links))
 
 		id := strings.TrimSpace(item.ID)
-		idFromLink := id == "" && strings.TrimSpace(link) != ""
 		if id == "" {
 			id = strings.TrimSpace(link)
 		}
@@ -1018,7 +1011,6 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		entries = append(entries, Entry{
 			ID:          id,
-			IDFromLink:  idFromLink,
 			Title:       atomText(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,

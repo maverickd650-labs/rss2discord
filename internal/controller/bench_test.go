@@ -35,7 +35,7 @@ func BenchmarkNormalizeIdentity(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				normalizeIdentity(id, false)
+				normalizeIdentity(id)
 			}
 		})
 	}
