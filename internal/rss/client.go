@@ -947,9 +947,17 @@ func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	// The slots are per class so a foreign link arriving first can't use up
 	// the slot a native one needs.
 	any, hasAlternate, hasEnclosure := false, false, false
-	for _, kept := range *c {
+	for i, kept := range *c {
 		if kept.foreign() != l.foreign() {
 			continue
+		}
+		// A better-ranked link (Atom's namespace over none) takes over the
+		// slot of a lower-ranked one that arrived first.
+		sameSlot := (l.isAlternate() && kept.isAlternate()) ||
+			(l.isImageEnclosure() && kept.isImageEnclosure())
+		if sameSlot && namespaceRank(l.XMLName.Space) < namespaceRank(kept.XMLName.Space) {
+			(*c)[i] = l
+			return nil
 		}
 		any = true
 		hasAlternate = hasAlternate || kept.isAlternate()
