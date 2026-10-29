@@ -278,3 +278,32 @@ func TestChartServiceAccountNameFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestChartManagerOptionalFlags(t *testing.T) {
+	flags := []string{"--max-concurrent-feedgroup-reconciles=", "--otlp-endpoint=", "--zap-log-level="}
+	for _, tc := range []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{name: "concurrency alone", values: []string{"manager.maxConcurrentReconciles=1"}, want: flags[0] + "1"},
+		{name: "tracing alone", values: []string{"manager.otlpEndpoint=collector:4317"}, want: flags[1] + "collector:4317"},
+		{name: "numeric log verbosity", values: []string{"manager.logLevel=2"}, want: flags[2] + "2"},
+		{name: "explicit empty flags", values: []string{"manager.otlpEndpoint=", "manager.logLevel="}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rendered := renderChartTemplate(t, managerTemplate, tc.values...)
+			if tc.want != "" && !strings.Contains(rendered, "- "+tc.want+"\n") {
+				t.Fatalf("missing argument %q in rendered manager:\n%s", tc.want, rendered)
+			}
+			for _, flag := range flags {
+				if !strings.HasPrefix(tc.want, flag) && strings.Contains(rendered, flag) {
+					t.Errorf("unexpected argument %q with values %v", flag, tc.values)
+				}
+			}
+			if !strings.Contains(rendered, "- --leader-elect\n") {
+				t.Fatal("optional flags displaced the configured manager arguments")
+			}
+		})
+	}
+}

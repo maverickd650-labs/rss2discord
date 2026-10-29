@@ -1,12 +1,75 @@
 package controller
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
+
+func TestTemplateFuncs_StringBoundaries(t *testing.T) {
+	const japaneseText = "日本語"
+	for _, tc := range []struct {
+		name, format, author, want string
+	}{
+		{name: "negative truncate", format: `{{.Author | truncate -1}}`, author: japaneseText},
+		{name: "zero truncate", format: `{{.Author | truncate 0}}`, author: japaneseText},
+		{name: "one rune", format: `{{.Author | truncate 1}}`, author: japaneseText, want: "日"},
+		{name: "ellipsis counts as one rune", format: `{{.Author | truncate 2}}`, author: japaneseText, want: "日…"},
+		{name: "exact rune limit", format: `{{.Author | truncate 3}}`, author: japaneseText, want: japaneseText},
+		{name: "empty truncate", format: `{{.Author | truncate 1}}`},
+		{name: "unicode blank default", format: `{{.Author | default "unknown"}}`, author: "\t\n\u00a0\u2003", want: "unknown"},
+		{name: "default preserves nonblank whitespace", format: `{{.Author | default "unknown"}}`, author: "  Alice  ", want: "  Alice  "},
+		{name: "unicode lower", format: `{{.Author | lower}}`, author: "ÉCOLE 日本語", want: "école 日本語"},
+		{name: "unicode upper", format: `{{.Author | upper}}`, author: "école 日本語", want: "ÉCOLE 日本語"},
+		{name: "unicode trim", format: `{{.Author | trim}}`, author: "\u2003Alice\u00a0", want: "Alice"},
+		{name: "replace all matches", format: `{{.Author | replace "猫" "犬"}}`, author: "猫と猫", want: "犬と犬"},
+		{name: "replace deletes matches", format: `{{.Author | replace "猫" ""}}`, author: "猫と猫", want: "と"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, err := compileTemplate("boundary", tc.format, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, overflow, err := renderTemplate(tmpl, rss.Entry{Author: tc.author}, maxDiscordMessageLength)
+			if err != nil || got != tc.want || overflow != 0 {
+				t.Fatalf("renderTemplate = %q, overflow=%d, err=%v; want %q without overflow", got, overflow, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTemplateFuncs_DiscordTimeStylesAndUndatedValidation(t *testing.T) {
+	for _, style := range []string{"t", "T", "d", "D", "f", "F", "R"} {
+		t.Run(style, func(t *testing.T) {
+			tmpl, err := compileTemplate("timestamp", fmt.Sprintf(`{{.PublishedUnix | discordTime %q}}`, style), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, unix := range []int64{-1, 1714979289} {
+				got, _, err := renderTemplate(tmpl, rss.Entry{Published: time.Unix(unix, 0)}, maxDiscordMessageLength)
+				if want := fmt.Sprintf("<t:%d:%s>", unix, style); err != nil || got != want {
+					t.Fatalf("timestamp = %q, err=%v; want %q", got, err, want)
+				}
+			}
+			if got, _, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength); err != nil || got != "" {
+				t.Fatalf("undated timestamp = %q, err=%v; want empty", got, err)
+			}
+		})
+	}
+	// Style validation must also run for undated entries. Partial output
+	// from a failed template must never become a sendable message.
+	tmpl, err := compileTemplate("invalid-style", `prefix{{.PublishedUnix | discordTime ""}}`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, overflow, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength)
+	if err == nil || !strings.Contains(err.Error(), "discordTime: unknown style") || got != "" || overflow != 0 {
+		t.Fatalf("invalid undated timestamp = %q, overflow=%d, err=%v", got, overflow, err)
+	}
+}
 
 func TestTemplateFuncs_ReplaceSizeLimit(t *testing.T) {
 	for _, tc := range []struct {

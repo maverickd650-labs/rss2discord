@@ -1267,3 +1267,78 @@ func TestParseFeed_AtomXHTMLMalformedIsError(t *testing.T) {
 		t.Fatal("expected an error for malformed xhtml")
 	}
 }
+
+func TestParseFeed_AtomXHTMLNamespaceAndFallbacks(t *testing.T) {
+	const visible = `<x:div><x:p>Visible &amp; safe</x:p></x:div>`
+	for _, tc := range []struct {
+		name, body, wantTitle, wantDescription, wantContent, wantID string
+	}{
+		{
+			name:      "mixed case type with surrounding whitespace",
+			body:      `<title type=" XhTmL ">  ` + visible + `  </title>`,
+			wantTitle: visible, wantID: visible,
+		},
+		{
+			name: "extension titles and summaries after atom fields",
+			body: `<title type="xhtml">` + visible + `</title><media:title>Wrong title</media:title>` +
+				`<summary type="xhtml">` + visible + `</summary><media:summary>Wrong summary</media:summary>`,
+			wantTitle: visible, wantDescription: visible, wantID: visible,
+		},
+		{
+			name: "extension fields before atom fields",
+			body: `<media:title>Wrong title</media:title><media:summary>Wrong summary</media:summary>` +
+				`<title type="xhtml">` + visible + `</title><summary type="xhtml">` + visible + `</summary>`,
+			wantTitle: visible, wantDescription: visible, wantID: visible,
+		},
+		{
+			name: "blank xhtml does not consume same namespace candidate",
+			body: `<title type="xhtml"><x:div/></title><title>Usable title</title>` +
+				`<summary type="xhtml"><x:div><!-- blank --></x:div></summary><summary>Usable summary</summary>`,
+			wantTitle: "Usable title", wantDescription: "Usable summary", wantID: "Usable title",
+		},
+		{
+			name: "empty summary and content fall back to media description",
+			body: `<summary type="xhtml"><x:div>&#160;</x:div></summary>` +
+				`<content type="xhtml"><x:div><x:style>hidden</x:style></x:div></content>` +
+				`<media:group><media:description>Media fallback</media:description></media:group>`,
+			wantDescription: "Media fallback",
+		},
+		{
+			name:            "visible text after hidden script is retained",
+			body:            `<content type="xhtml"><x:div><x:script>hidden</x:script><x:p>Visible</x:p></x:div></content>`,
+			wantDescription: `<x:div><x:script>hidden</x:script><x:p>Visible</x:p></x:div>`,
+			wantContent:     `<x:div><x:script>hidden</x:script><x:p>Visible</x:p></x:div>`,
+		},
+		{
+			name:            "self closing hidden elements do not hide following text",
+			body:            `<summary type="xhtml"><x:div><x:script/><x:style/>Visible</x:div></summary>`,
+			wantDescription: `<x:div><x:script/><x:style/>Visible</x:div>`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="http://www.w3.org/1999/xhtml" ` +
+				`xmlns:media="http://search.yahoo.com/mrss/"><entry>` + tc.body + `</entry></feed>`
+			entries, _, err := parseFeed([]byte(doc))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parseFeed: %d entries, err=%v", len(entries), err)
+			}
+			e := entries[0]
+			if e.Title != tc.wantTitle || e.Description != tc.wantDescription || e.Content != tc.wantContent || e.ID != tc.wantID {
+				t.Fatalf("entry = %+v; want title=%q description=%q content=%q id=%q", e, tc.wantTitle, tc.wantDescription, tc.wantContent, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestParseFeed_AtomXHTMLMalformedSummaryAndContent(t *testing.T) {
+	for _, element := range []string{"summary", "content"} {
+		t.Run(element, func(t *testing.T) {
+			doc := `<feed xmlns="http://www.w3.org/2005/Atom"><entry><` + element +
+				` type="xhtml"><div>unclosed</` + element + `></entry></feed>`
+			entries, title, err := parseFeed([]byte(doc))
+			if err == nil || len(entries) != 0 || title != "" {
+				t.Fatalf("malformed %s: entries=%v title=%q err=%v", element, entries, title, err)
+			}
+		})
+	}
+}

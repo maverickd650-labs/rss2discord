@@ -876,3 +876,142 @@ func TestProcessFeed_CatchUpLimitZeroDeliversAllAfterEmptyFirstSync(t *testing.T
 		t.Fatalf("sent=%d, want all %d", got, total)
 	}
 }
+
+func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
+	const (
+		newestID = "newest"
+		oldestID = "oldest"
+		freshID  = "fresh"
+	)
+	for _, tc := range []struct {
+		name     string
+		dated    bool
+		newestID string
+	}{
+		{name: "publication order", dated: true, newestID: newestID},
+		{name: "undated document order", newestID: newestID},
+		{name: "oversized identity", newestID: "guid-" + strings.Repeat("x", maxStatusTextBytes+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed := newMetricsFeedGroup("backlog-restart", tc.name, "{{.Title}}")
+			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			fg.Generation = 7
+			fg.Spec.CatchUpLimit = new(int32(0))
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs.LastError, fs.RetryCount, fs.BackoffUntil = "old failure", 2, "2031-01-01T00:00:00Z"
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			entries := make([]rss.Entry, 2, 3)
+			entries[0] = rss.Entry{ID: tc.newestID, Title: newestID, Seq: 0}
+			entries[1] = rss.Entry{ID: oldestID, Title: oldestID, Seq: 1}
+			if tc.dated {
+				entries[0].Published = time.Unix(200, 0)
+				entries[1].Published = time.Unix(100, 0)
+				// Publication time takes priority over document position.
+				entries[0].Seq, entries[1].Seq = 1, 0
+			}
+			fetch := rss.FetchResult{Entries: entries, ETag: `"skip-v1"`, LastModified: testReconcileTime}
+			r := &FeedGroupReconciler{}
+			wantRetry, retryAfter := r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if wantRetry || retryAfter != 0 || discordServer.MessageCount() != 0 || len(fs.LastSent) != 0 {
+				t.Fatalf("backlog was sent or retried: retry=%t after=%v sent=%d status=%+v", wantRetry, retryAfter, discordServer.MessageCount(), fs)
+			}
+			assertSkippedBacklogStatus(t, fg, fs, tc.newestID, fetch)
+
+			// Reload status and replace the reconciler before checking the same
+			// feed and then publishing an entry after the saved watermark.
+			fg = fg.DeepCopy()
+			ensureFeedStatuses(fg)
+			r = &FeedGroupReconciler{}
+			r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if discordServer.MessageCount() != 0 {
+				t.Fatal("reloading status caused the backlog to be sent")
+			}
+			for i := range entries {
+				entries[i].Seq++
+			}
+			fresh := rss.Entry{ID: freshID, Title: freshID, Seq: 0}
+			if tc.dated {
+				fresh.Published = time.Unix(300, 0)
+			}
+			fetch.Entries = append(entries, fresh)
+			r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if got := discordServer.Bodies(); len(got) != 1 || !strings.Contains(got[0], `"content":"fresh"`) {
+				t.Fatalf("expected only the fresh entry, got %v", got)
+			}
+			fs = feedStatusFor(fg, feed.RSSUrl)
+			condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+			if fs.LastSeenEntry != freshID || len(fs.LastSent) != 1 || condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason == reasonBacklogSkipped {
+				t.Fatalf("delivery did not advance status: %+v", fs)
+			}
+			r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if discordServer.MessageCount() != 1 {
+				t.Fatal("fresh entry was delivered twice")
+			}
+		})
+	}
+}
+
+func assertSkippedBacklogStatus(t *testing.T, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, newestID string, fetch rss.FetchResult) {
+	t.Helper()
+	if !fs.Initialized || fs.LastChecked != testReconcileTime || fs.LastError != "" || fs.RetryCount != 0 || fs.BackoffUntil != "" ||
+		fs.ETag != fetch.ETag || fs.LastModified != fetch.LastModified || len(fs.LastSeenEntry) > maxStatusTextBytes ||
+		!entriesContainID([]rss.Entry{{ID: newestID}}, fs.LastSeenEntry) {
+		t.Fatalf("unexpected status after skipped backlog: %+v", fs)
+	}
+	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != reasonBacklogSkipped ||
+		condition.ObservedGeneration != fg.Generation || !strings.Contains(condition.Message, "2 existing entries") {
+		t.Fatalf("unexpected backlog condition: %+v", condition)
+	}
+}
+
+func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		limit       *int32
+		lastSeen    string
+		initialized bool
+		wantStart   int
+	}{
+		{name: "omitted limit uses default", wantStart: 4},
+		{name: "positive limit keeps most recent", limit: new(int32(3)), wantStart: 6},
+		{name: "zero with missing watermark uses default cap", limit: new(int32(0)), lastSeen: "scrolled-out", initialized: true, wantStart: 4},
+		{name: "legacy missing watermark uses default cap", limit: new(int32(0)), lastSeen: "scrolled-out", wantStart: 4},
+		{name: "legacy matching watermark resumes", limit: new(int32(0)), lastSeen: "entry-1", wantStart: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, "{{.Title}}")
+			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			fg.Spec.CatchUpLimit = tc.limit
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			entries := make([]rss.Entry, 9)
+			for i := range entries {
+				id := fmt.Sprintf("entry-%d", i)
+				entries[i] = rss.Entry{ID: id, Title: id, Seq: len(entries) - 1 - i}
+			}
+			wantRetry, retryAfter := (&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed,
+				rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+			bodies := discordServer.Bodies()
+			if wantRetry || retryAfter != 0 || len(bodies) != len(entries)-tc.wantStart {
+				t.Fatalf("retry=%t after=%v sent=%d; want %d", wantRetry, retryAfter, len(bodies), len(entries)-tc.wantStart)
+			}
+			for i, body := range bodies {
+				var payload struct {
+					Content string `json:"content"`
+				}
+				if err := json.Unmarshal([]byte(body), &payload); err != nil || payload.Content != fmt.Sprintf("entry-%d", tc.wantStart+i) {
+					t.Fatalf("message %d = %s, err=%v", i, body, err)
+				}
+			}
+			if fs.LastSeenEntry != "entry-8" || !fs.Initialized {
+				t.Fatalf("unexpected final watermark/initialization: %+v", fs)
+			}
+		})
+	}
+}
