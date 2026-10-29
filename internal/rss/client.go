@@ -867,12 +867,10 @@ type looseAtomEntry struct {
 
 // priorAtomEntry reads only what an earlier release chose an entry's
 // identity from, by local name alone as it did. parseAtom compares it with
-// the current choice to fill Entry.PreviousID. XMLName lets the comparison
-// skip an entry-named extension element that atomEntry never sees.
+// the current choice to fill Entry.PreviousID.
 type priorAtomEntry struct {
-	XMLName xml.Name
-	ID      string    `xml:"id"`
-	Links   atomLinks `xml:"link"`
+	ID    string    `xml:"id"`
+	Links atomLinks `xml:"link"`
 }
 
 type atomAuthor struct {
@@ -991,9 +989,11 @@ type looseAtomFeed struct {
 	Base    string                    `xml:"base,attr"`
 }
 
-// priorAtomFeed is atomFeed as earlier releases read it; see priorAtomEntry.
+// priorAtomFeed selects the same entries as atomFeed -- Atom-namespace ones, up
+// to the same cap, so the two lists line up one to one -- but reads each as
+// earlier releases did; see priorAtomEntry.
 type priorAtomFeed struct {
-	Entries entryList[priorAtomEntry] `xml:"entry"`
+	Entries entryList[priorAtomEntry] `xml:"http://www.w3.org/2005/Atom entry"`
 }
 
 // resolveAtomURL resolves ref against base per RFC 3986. Atom commonly
@@ -1197,24 +1197,14 @@ func atomIdentity(guid, link, title string) (string, IDSource) {
 }
 
 // priorAtomEntries reads data the way earlier releases picked identities -- by
-// local name alone -- and returns one entry per Atom-namespace entry, or nil
-// if they can't be lined up with want parsed entries (a bounded list cut off
-// differently, say), in which case no PreviousID is reported.
+// local name alone -- and returns one entry per parsed entry, or nil if the
+// count differs from want, in which case no PreviousID is reported.
 func priorAtomEntries(data []byte, want int) []priorAtomEntry {
 	var feed priorAtomFeed
-	if err := unmarshalXML(data, &feed); err != nil {
+	if err := unmarshalXML(data, &feed); err != nil || len(feed.Entries) != want {
 		return nil
 	}
-	prior := make([]priorAtomEntry, 0, want)
-	for _, e := range feed.Entries {
-		if e.XMLName.Space == atomNamespace {
-			prior = append(prior, e)
-		}
-	}
-	if len(prior) != want {
-		return nil
-	}
-	return prior
+	return feed.Entries
 }
 
 func parseAtom(data []byte) ([]Entry, string, error) {

@@ -1746,3 +1746,24 @@ func TestParseFeed_AtomPreviousIDAlignsWithEntries(t *testing.T) {
 		t.Errorf("second entry ID, PreviousID = %q, %q; want urn:other and none", entries[1].ID, entries[1].PreviousID)
 	}
 }
+
+// An extension element named entry, ahead of more genuine entries than the cap
+// keeps, must not use up the cap in the prior reading: PreviousID is still
+// reported for the entries the parser retains.
+func TestParseFeed_AtomPreviousIDSurvivesTheCapWithForeignEntries(t *testing.T) {
+	var doc strings.Builder
+	doc.WriteString(`<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><ext:entry>` + idEl(nsIDFake) + `</ext:entry>`)
+	doc.WriteString(`<entry>` + idEl(nsIDReal) + nsExtIDFake + `</entry>`)
+	for i := range maxFeedEntries + 5 {
+		doc.WriteString(`<entry>` + idEl(fmt.Sprintf("urn:filler:%d", i)) + `</entry>`)
+	}
+	doc.WriteString(`</feed>`)
+
+	entries, _, err := parseFeed([]byte(doc.String()))
+	if err != nil || len(entries) != maxFeedEntries {
+		t.Fatalf("parse: entries=%d err=%v, want %d entries", len(entries), err, maxFeedEntries)
+	}
+	if entries[0].ID != nsIDReal || entries[0].PreviousID != nsIDFake {
+		t.Fatalf("first entry ID, PreviousID = %q, %q; want %q, %q", entries[0].ID, entries[0].PreviousID, nsIDReal, nsIDFake)
+	}
+}

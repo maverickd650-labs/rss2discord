@@ -192,15 +192,16 @@ func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
 //
 // It is idempotent and does nothing for an entry whose identity did not change,
 // so it runs on every fetch. An old identity that more than one entry shares, or
-// that is another entry's current identity, is left alone: it can't be told
-// which entry it stood for.
+// that is another entry's current identity, is left alone, as is a move onto an
+// identity more than one entry now has: it can't be told which entry the stored
+// value stands for.
 func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 	type move struct{ previous, current rss.Entry }
 	var moves []move
 	shared := make(map[string]int)
-	currentIdentities := make(map[string]bool, len(entries))
+	currentCounts := make(map[string]int, len(entries))
 	for _, entry := range entries {
-		currentIdentities[entryIdentity(entry)] = true
+		currentCounts[entryIdentity(entry)]++
 		if previous, changed := previouslyIdentified(entry); changed {
 			moves = append(moves, move{previous: previous, current: entry})
 			shared[entryIdentity(previous)]++
@@ -209,7 +210,7 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 
 	for _, m := range moves {
 		old, now := entryIdentity(m.previous), entryIdentity(m.current)
-		if old == now || shared[old] > 1 || currentIdentities[old] {
+		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
 			continue
 		}
 		if fs.LastSeenEntry == clampWatermark(old) {

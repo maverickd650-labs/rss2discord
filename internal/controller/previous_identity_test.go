@@ -109,6 +109,17 @@ func TestMigratePreviousIdentities(t *testing.T) {
 			wantSent:  map[string]string{hashIdentity(prevIDOld): prevSentAt},
 		},
 		{
+			name: "two entries moving onto the same new identity are left alone",
+			entries: []rss.Entry{
+				changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID),
+				changedID(prevIDNew, rss.IDFromGUID, prevIDOther, rss.IDFromGUID),
+			},
+			watermark: prevIDOld,
+			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
+			wantMark:  prevIDOld,
+			wantSent:  map[string]string{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
+		},
+		{
 			name:      "no recorded sends is fine",
 			entries:   []rss.Entry{guid()},
 			watermark: prevIDOld,
