@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.14.0](https://github.com/maverickd650/rss2discord-operator/compare/v0.13.1...v0.14.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* implement remaining improvement-plan items (xhtml, CRD validation, template helpers, imageStyle, PTB/Canary webhooks, catchUpLimit 0, chart values, controller split) ([#302](https://github.com/maverickd650/rss2discord-operator/issues/302))
+
+### Features
+
+* expose Content, Image, FeedTitle and PublishedUnix to message templates ([#299](https://github.com/maverickd650/rss2discord-operator/issues/299)) ([7dffae9](https://github.com/maverickd650/rss2discord-operator/commit/7dffae9848d30fcbfb425129e6fc014a5e16266b))
+* implement remaining improvement-plan items (xhtml, CRD validation, template helpers, imageStyle, PTB/Canary webhooks, catchUpLimit 0, chart values, controller split) ([#302](https://github.com/maverickd650/rss2discord-operator/issues/302)) ([0949001](https://github.com/maverickd650/rss2discord-operator/commit/094900144ba9c4520019a0f8ff11e4f1953c5790))
+* **metrics:** per-feed health and freshness gauges with alerts that survive backoff ([#296](https://github.com/maverickd650/rss2discord-operator/issues/296)) ([5d94952](https://github.com/maverickd650/rss2discord-operator/commit/5d949521a1d41a0a1f433e55162fc2c06fdd4083))
+* **rss:** read thumbnails and descriptions from media:group (YouTube feeds) ([#298](https://github.com/maverickd650/rss2discord-operator/issues/298)) ([614625f](https://github.com/maverickd650/rss2discord-operator/commit/614625f9e70180cf97f88fd732e4f91392cdda03))
+
+
+### Bug Fixes
+
+* bound message templates, filter links and cap Retry-After ([#308](https://github.com/maverickd650/rss2discord-operator/issues/308)) ([259393d](https://github.com/maverickd650/rss2discord-operator/commit/259393d62e112eebde4b936d9ad437c1c427745e))
+* **container:** update image gcr.io/distroless/static (d620678 → 18f4cc2) ([#282](https://github.com/maverickd650/rss2discord-operator/issues/282)) ([bfe2944](https://github.com/maverickd650/rss2discord-operator/commit/bfe29443b1ccd16e03763367546ef11f0bd8e1a5))
+* **controller:** classify blocked-address and TLS fetch failures as permanent ([#295](https://github.com/maverickd650/rss2discord-operator/issues/295)) ([e305881](https://github.com/maverickd650/rss2discord-operator/commit/e305881327bc19c08cf7ecb3848ef53c70bb8920))
+* **controller:** omit timestamps for entries without a publish date ([#293](https://github.com/maverickd650/rss2discord-operator/issues/293)) ([9752495](https://github.com/maverickd650/rss2discord-operator/commit/9752495187fbeb381f3c4c71d294a72ef991c65b))
+* **controller:** persist status when interval cannot be parsed ([#300](https://github.com/maverickd650/rss2discord-operator/issues/300)) ([e9f41ea](https://github.com/maverickd650/rss2discord-operator/commit/e9f41eab5d95f118e31b55d5392dd6446904b4ba))
+* **deps:** update dependency kubectl (1.37.1 → 1.37.2) ([#289](https://github.com/maverickd650/rss2discord-operator/issues/289)) ([5fa794f](https://github.com/maverickd650/rss2discord-operator/commit/5fa794f7afa70e57d53a1f00693c9585debd6819))
+* **go:** Update image golang (2669ec9 → 2920bb1) ([#303](https://github.com/maverickd650/rss2discord-operator/issues/303)) ([505f25b](https://github.com/maverickd650/rss2discord-operator/commit/505f25ba8b9cf8ded2c535f98dd3ae2eb3d447d6))
+* **go:** Update image golang (6f1acc8 → b760209) ([#290](https://github.com/maverickd650/rss2discord-operator/issues/290)) ([65c48cf](https://github.com/maverickd650/rss2discord-operator/commit/65c48cfe4de5f4bc097aeff2b8bc8282f046ef5b))
+* **go:** Update image golang (b760209 → 2669ec9) ([#291](https://github.com/maverickd650/rss2discord-operator/issues/291)) ([0626bcb](https://github.com/maverickd650/rss2discord-operator/commit/0626bcb890ca429e77d1b931c585b85c5d17e429))
+* **go:** Update image golang (f20d83a → 6f1acc8) ([#286](https://github.com/maverickd650/rss2discord-operator/issues/286)) ([22d9315](https://github.com/maverickd650/rss2discord-operator/commit/22d9315954ac3cf4cb1bfc2ee2ea09fa4973213a))
+* keep the ambiguous legacy catch-up cap across a failed first send ([#310](https://github.com/maverickd650/rss2discord-operator/issues/310)) ([133972f](https://github.com/maverickd650/rss2discord-operator/commit/133972f6b558b483aea05342a30c5a78780125eb))
+* migrate legacy feed identities and settle pre-initialized statuses ([#305](https://github.com/maverickd650/rss2discord-operator/issues/305)) ([3f46c5c](https://github.com/maverickd650/rss2discord-operator/commit/3f46c5c5594281d1776975b5d2ca2dbbc1657f8b))
+* namespace-aware Atom parsing with identity migration, bounded rate-limit cooldowns, clamped webhook error ([#313](https://github.com/maverickd650/rss2discord-operator/issues/313)) ([fb50353](https://github.com/maverickd650/rss2discord-operator/commit/fb503531101fe4f85bd2fc0ef5f0924055ef4790))
+* **rss:** bound decoded item, link, media and category counts ([#304](https://github.com/maverickd650/rss2discord-operator/issues/304)) ([e45e0a1](https://github.com/maverickd650/rss2discord-operator/commit/e45e0a104aa706dc29fbbb8a430a6182daa67343))
+* **rss:** stop namespaced extension elements overriding core RSS fields ([#297](https://github.com/maverickd650/rss2discord-operator/issues/297)) ([fc49dea](https://github.com/maverickd650/rss2discord-operator/commit/fc49deaa2448a49440d2f2c29b28502042b3fadf))
+* stop the skip probe double-counting overflow; make feedRenderer own its preparation ([#309](https://github.com/maverickd650/rss2discord-operator/issues/309)) ([044a9c4](https://github.com/maverickd650/rss2discord-operator/commit/044a9c46e042bc2cd95027a00f64b2fe5198224a))
+
 ## [0.13.1](https://github.com/maverickd650/rss2discord-operator/compare/v0.13.0...v0.13.1) (2026-10-23)
 
 
