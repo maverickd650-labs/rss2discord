@@ -126,7 +126,7 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | `embed` | `*Embed` | optional | Default embed config for all feeds in the group |
 | `username` | `string` | optional | Overrides the webhook's display name. Rejected at `kubectl apply` time (CEL validation) if it contains "clyde" or "discord", or is over 80 characters — Discord's own webhook API rejects these |
 | `avatarURL` | `string` | optional | Overrides the webhook's avatar. Must start with `http://` or `https://` |
-| `catchUpLimit` | `int` | `5` | How many existing entries to post when a feed is first added (0–100). Set `0` to post none: the first sync records the newest entry and only later entries are delivered. Omitting the field keeps the default of `5`. A feed that was already fetched while empty delivers everything that appears later, whatever the limit. Only statuses written by an older release can be ambiguous: an explicit `0` on a feed that was empty at upgrade skips its first entries once |
+| `catchUpLimit` | `int` | `5` | How many existing entries to post when a feed is first added (0–100). Set `0` to post none: the first sync records the newest entry and only later entries are delivered. Omitting the field keeps the default of `5`. With `0`, a feed that was already fetched while empty delivers everything that appears later; with any positive limit (including the default `5`), later entries are still capped at that limit. Only statuses written by an older release can be ambiguous: an explicit `0` on a feed that was empty at upgrade skips its first entries once |
 | `feeds` | `[]Feed` | required | RSS feeds to monitor |
 
 ### Feed

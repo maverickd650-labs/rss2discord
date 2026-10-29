@@ -71,9 +71,10 @@ type FeedGroupSpecApplyConfiguration struct {
 	// floods the webhook with every existing entry at once. Entries beyond
 	// the limit are treated as already seen and are not sent. Set to 0 to
 	// send no backlog at all: the first sync records the feed's newest entry
-	// and only entries published afterwards are delivered (a feed that was
-	// empty on its first sync delivers everything that appears later).
-	// Omitting the field uses the default of 5.
+	// and only entries published afterwards are delivered; with 0, a feed that
+	// was empty on its first sync delivers everything that appears later,
+	// whereas a positive limit still caps it. Omitting the field uses the
+	// default of 5.
 	CatchUpLimit *int32 `json:"catchUpLimit,omitempty"`
 }
 
