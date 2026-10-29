@@ -55,9 +55,9 @@ type FeedStatusApplyConfiguration struct {
 	// statuses written before this field existed.
 	Initialized *bool `json:"initialized,omitempty"`
 	// stateVersion is the format of this feed's lastSeenEntry and lastSent
-	// identities. It is absent (0) on statuses written by controllers before
-	// v1, whose identities dropped a link's fragment and ref query parameter
-	// and were empty for entries with no GUID, link or title; the controller
+	// identities. It is absent (0) on statuses written by older controllers,
+	// whose identities dropped a link's fragment and ref query parameter and
+	// were empty for entries with no GUID, link or title; the controller
 	// translates those on the next fetch that returns entries and then sets
 	// it to 1. It also tells a status from before initialized existed apart
 	// from one whose first fetch hit a configuration error.
