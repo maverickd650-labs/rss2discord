@@ -1247,6 +1247,36 @@ func TestProcessFeed_LegacyCollidingIdentitiesReplay(t *testing.T) {
 	}
 }
 
+// The replay of colliding legacy entries is a backlog like any other, so it
+// is capped at catchUpLimit: a GUID-less changelog whose entries all shared
+// one legacy identity must not post every one of them on upgrade. An entry
+// outside the colliding group is new and is still delivered.
+func TestProcessFeed_LegacyCollidingReplayIsCapped(t *testing.T) {
+	for _, limit := range []int32{defaultCatchUpLimit, 2, 0} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			fg, feed, fs := newLegacyFeedGroup(t, fmt.Sprintf("colliding-capped-%d", limit), "{{.Title}}")
+			fg.Spec.CatchUpLimit = new(limit)
+			entries := make([]rss.Entry, 0, 3*defaultCatchUpLimit+1)
+			for i := range 3 * defaultCatchUpLimit {
+				entries = append(entries, linkEntry(fmt.Sprintf("%scapped/changelog#v%d", legacyURLPrefix, i), i))
+			}
+			unrelated := linkEntry(legacyURLPrefix+"capped/unrelated", len(entries))
+			entries = append(entries, unrelated)
+			fs.Initialized = true
+			fs.LastSeenEntry = legacyEntryIdentity(entries[0])
+			fs.LastSent[legacyKey(entries[0])] = legacySentAt
+
+			siblings := entries[1 : len(entries)-1]
+			want := make([]string, 0, int(limit)+1)
+			for _, entry := range siblings[len(siblings)-int(limit):] {
+				want = append(want, entry.Title)
+			}
+			want = append(want, unrelated.Title)
+			processTwice(t, fg, feed, entries, want...)
+		})
+	}
+}
+
 // Entries with no GUID, link or title get a non-empty identity, so a
 // catchUpLimit 0 first sync stores a real watermark and the next fetch sends
 // only what is new instead of the whole backlog.

@@ -433,7 +433,11 @@ func (r *FeedGroupReconciler) processFeed(
 		return cmp.Compare(b.Seq, a.Seq)
 	})
 
-	legacy.migrate(fs, entries)
+	catchUpLimit := defaultCatchUpLimit
+	if feedGroup.Spec.CatchUpLimit != nil {
+		catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
+	}
+	legacy.migrate(fs, entries, catchUpLimit, now)
 
 	lastSeenID := fs.LastSeenEntry
 	hasSeenID := lastSeenID != ""
@@ -446,10 +450,6 @@ func (r *FeedGroupReconciler) processFeed(
 		hasSeenID = false
 	}
 	if !hasSeenID {
-		catchUpLimit := defaultCatchUpLimit
-		if feedGroup.Spec.CatchUpLimit != nil {
-			catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
-		}
 		if catchUpLimit == 0 && lastSeenID == "" {
 			// catchUpLimit: 0 with no watermark at all. On a true first sync
 			// (not yet initialized) that means "don't post the backlog":

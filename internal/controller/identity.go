@@ -216,12 +216,13 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 }
 
 // migrate translates fs's legacy identities using entries, sorted
-// oldest-to-newest. It is a no-op for a current status.
-func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
+// oldest-to-newest; see migrateLegacyIdentities for replayLimit and now. It
+// is a no-op for a current status.
+func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry, replayLimit int, now string) {
 	if !s.legacy {
 		return
 	}
-	migrateLegacyIdentities(fs, entries, s.emptyWatermark)
+	migrateLegacyIdentities(fs, entries, s.emptyWatermark, replayLimit, now)
 	s.migrated = true
 }
 
@@ -242,11 +243,14 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 // title). Rather than guess which one was meant, the watermark resolves to the
 // oldest of them and their shared dedup key is dropped, so the newer ones are
 // replayed instead of skipped -- under the legacy scheme at most one of them
-// was ever delivered. emptyWatermark says an absent LastSeenEntry stands for a
+// was ever delivered. That replay is a backlog, so only the newest
+// replayLimit of them after the watermark are left to send; older ones are
+// recorded in LastSent as handled at now, so a feed whose entries all
+// collided can't post its whole history on upgrade. emptyWatermark says an absent LastSeenEntry stands for a
 // legacy empty identity rather than no watermark at all. Legacy values that
 // match no entry are left as they are: a watermark that matches nothing
 // falls back to the catch-up cap either way.
-func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool) {
+func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool, replayLimit int, now string) {
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
@@ -255,12 +259,23 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 		sharing[legacy[i]]++
 	}
 
+	watermark := -1
 	if fs.LastSeenEntry != "" || emptyWatermark {
 		for i := range entries {
 			if clampWatermark(legacy[i]) == fs.LastSeenEntry {
 				fs.LastSeenEntry = clampWatermark(current[i])
+				watermark = i
 				break
 			}
+		}
+	}
+
+	// A legacy identity shared by entries whose identities now differ is one
+	// whose dedup key is dropped below, so its entries replay.
+	colliding := make(map[string]bool)
+	for i := range entries {
+		if sharing[legacy[i]] > 1 && current[i] != legacy[i] {
+			colliding[legacy[i]] = true
 		}
 	}
 
@@ -277,6 +292,21 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			fs.LastSent[hashIdentity(current[i])] = sentAt
 		}
 		delete(fs.LastSent, legacyKey)
+	}
+
+	// With no watermark found, limitCatchUp already caps the whole fetch.
+	if watermark < 0 {
+		return
+	}
+	var replay []string
+	for i := watermark + 1; i < len(entries); i++ {
+		key := hashIdentity(current[i])
+		if _, sent := fs.LastSent[key]; colliding[legacy[i]] && !sent {
+			replay = append(replay, key)
+		}
+	}
+	for _, key := range replay[:max(len(replay)-replayLimit, 0)] {
+		fs.LastSent[key] = now
 	}
 }
 
