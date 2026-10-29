@@ -227,16 +227,20 @@ type FeedGroupSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(f, self.exists_one(g, g.rssUrl == f.rssUrl))",message="each feed's rssUrl must be unique within a FeedGroup"
 	Feeds []FeedSpec `json:"feeds"`
 
-	// catchUpLimit caps how many backlog entries are sent to Discord the
-	// first time a feed is synced (i.e. before it has a recorded
-	// LastSeenEntry). Without this, adding a feed with a long history
-	// floods the webhook with every existing entry at once. Entries beyond
-	// the limit are treated as already seen and are not sent. Set to 0 to
-	// send no backlog at all: the first sync records the feed's newest entry
-	// and only entries published afterwards are delivered; with 0, a feed that
-	// was empty on its first sync delivers everything that appears later,
-	// whereas a positive limit still caps it. Omitting the field uses the
-	// default of 5.
+	// catchUpLimit caps how many entries are sent to Discord when a feed has
+	// no usable watermark: the first time it is synced (no recorded
+	// LastSeenEntry), or when its recorded LastSeenEntry has scrolled out of
+	// the feed's window. A normal fetch that finds the watermark is never
+	// capped. Without this, adding a feed with a long history floods the
+	// webhook with every existing entry at once. Entries beyond the limit are
+	// treated as already seen and are not sent.
+	//
+	// Set to 0 to send no backlog: the first non-empty sync records the feed's
+	// newest entry and only entries published afterwards are delivered. A feed
+	// that was empty on its first sync has no watermark yet, so with 0
+	// everything that appears later is delivered uncapped; if a recorded
+	// watermark later scrolls out of the window, 0 falls back to the default
+	// cap of 5. Omitting the field uses the default of 5.
 	// +default=5
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
