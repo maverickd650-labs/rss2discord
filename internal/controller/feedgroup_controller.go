@@ -129,13 +129,15 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	webhookURL, err := r.resolveWebhookURL(ctx, &feedGroup)
 	if err != nil {
 		log.Error(err, "failed to resolve Discord webhook URL")
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, feedGroup.Spec.RetryInterval, 5*time.Minute, err, true)
+		retry := retryRequeue(&feedGroup.Spec)
+		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retry.interval, retry.fallback, err, retry.jitter)
 	}
 
 	if webhookURL == "" {
 		err = fmt.Errorf("discord webhook URL is empty")
 		log.Error(err, "invalid webhook secret")
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, feedGroup.Spec.RetryInterval, 5*time.Minute, err, true)
+		retry := retryRequeue(&feedGroup.Spec)
+		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retry.interval, retry.fallback, err, retry.jitter)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -149,39 +151,10 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	discordClient := discordBuilder(webhookURL)
 
-	reconcileNow := time.Now().UTC()
-	// An unparsable Interval is reported by requeueWithStatus below; here it
-	// only feeds the due check, so fall back rather than bail out early.
-	pollInterval, _ := parseDurationWithDefault(feedGroup.Spec.Interval, 30*time.Minute)
-	var nextDue time.Duration // soonest a feed skipped as not-yet-due becomes due
-	activeFeeds := make([]v1alpha1.FeedSpec, 0, len(feedGroup.Spec.Feeds))
-	for _, feed := range feedGroup.Spec.Feeds {
-		if feed.RSSUrl == "" || feed.Paused {
-			continue
-		}
-		// Skip feeds that are in permanent-failure backoff. The skip happens
-		// here, before the fetch fan-out, so backed-off feeds emit no metrics
-		// and incur no outbound HTTP calls during their backoff window.
-		fs := feedStatusFor(&feedGroup, feed.RSSUrl)
-		if fs != nil && feedInBackoff(fs.BackoffUntil, reconcileNow) {
-			continue
-		}
-		// Reconciles are also triggered by things other than the interval
-		// timer (operator restart, leader failover, retry cadence driven by a
-		// sibling feed), so don't refetch a healthy feed that was checked
-		// less than one interval ago.
-		if fs != nil && !feedDue(fs, pollInterval, reconcileNow, specChanged) {
-			// Not due yet: make sure the requeue below doesn't sleep past
-			// the moment it will be (e.g. after a restart mid-interval).
-			if last, err := time.Parse(time.RFC3339, fs.LastChecked); err == nil {
-				if until := last.Add(pollInterval).Sub(reconcileNow); nextDue == 0 || until < nextDue {
-					nextDue = until
-				}
-			}
-			continue
-		}
-		activeFeeds = append(activeFeeds, feed)
-	}
+	// An unparsable Interval is reported by requeueWithStatus below; the plan
+	// only uses it for the due check.
+	plan := planFeeds(&feedGroup, time.Now().UTC(), specChanged)
+	activeFeeds := plan.active
 
 	// Feeds are independent network fetches, so fetch them concurrently
 	// rather than paying each feed's fetch timeout sequentially. A semaphore
@@ -232,20 +205,10 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	if discordRetryAfter > 0 {
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, "", discordRetryAfter, nil, false)
-	}
-
-	interval := feedGroup.Spec.Interval
-	fallback := 30 * time.Minute
-	if wantRetry {
-		interval = feedGroup.Spec.RetryInterval
-		fallback = 5 * time.Minute
-	}
-
-	result, err := r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, interval, fallback, nil, true)
-	if err == nil && nextDue > 0 && nextDue < result.RequeueAfter {
-		result.RequeueAfter = max(nextDue, minParsedInterval)
+	decision := plan.requeue(&feedGroup.Spec, wantRetry, discordRetryAfter)
+	result, err := r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, decision.interval, decision.fallback, nil, decision.jitter)
+	if err == nil {
+		result.RequeueAfter = decision.bound(result.RequeueAfter)
 	}
 	return result, err
 }
@@ -714,7 +677,7 @@ func (r *FeedGroupReconciler) skipEntry(
 // first time the cap is reached -- not on every capped retry after, so a feed
 // that keeps failing at the cap doesn't emit an Event every few hours.
 func (r *FeedGroupReconciler) applyPermanentBackoff(feedGroup *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, rssURL, reason string, err error) {
-	base, _ := parseDurationWithDefault(feedGroup.Spec.RetryInterval, 5*time.Minute)
+	base, _ := parseDurationWithDefault(feedGroup.Spec.RetryInterval, fallbackRetryInterval)
 	backoff := permanentBackoffDuration(int(fs.RetryCount), base)
 	if backoff >= maxPermanentBackoff {
 		firstCapped := fs.RetryCount <= 1 ||
