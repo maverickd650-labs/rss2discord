@@ -16,6 +16,8 @@ limitations under the License.
 
 package rss
 
+// Review-only marker (do not merge): full-file CodeRabbit review requested for this file.
+
 import (
 	"crypto/sha256"
 	"encoding/hex"

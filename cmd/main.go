@@ -16,6 +16,8 @@ limitations under the License.
 
 package main
 
+// Review-only marker (do not merge): full-file CodeRabbit review requested for this file.
+
 import (
 	"context"
 	"crypto/tls"

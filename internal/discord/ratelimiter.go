@@ -1,5 +1,7 @@
 package discord
 
+// Review-only marker (do not merge): full-file CodeRabbit review requested for this file.
+
 import (
 	"context"
 	"crypto/sha256"

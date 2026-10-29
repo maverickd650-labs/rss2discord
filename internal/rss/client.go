@@ -1,5 +1,7 @@
 package rss
 
+// Review-only marker (do not merge): full-file CodeRabbit review requested for this file.
+
 import (
 	"bytes"
 	"context"
