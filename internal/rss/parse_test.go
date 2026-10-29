@@ -1747,6 +1747,24 @@ func TestParseFeed_AtomPreviousIDFallsBackToContentID(t *testing.T) {
 	}
 }
 
+// The content hash covers the publication date, which earlier releases also read
+// by local name, so a foreign <ext:updated> that stood in for a missing one is
+// part of the identity to migrate from.
+func TestParseFeed_AtomPreviousIDContentHashUsesPriorDate(t *testing.T) {
+	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><entry>` +
+		`<ext:updated>2024-01-02T03:04:05Z</ext:updated><summary>body</summary></entry></feed>`
+	entries, _, err := parseFeed([]byte(doc))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	e := entries[0]
+	prior := e
+	prior.Published = time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	if e.IDSource != IDFromContent || e.PreviousIDSource != IDFromContent || e.PreviousID != ContentID(prior) || e.PreviousID == e.ID {
+		t.Errorf("ID source %v, PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.IDSource, e.PreviousID, e.PreviousIDSource, ContentID(prior), IDFromContent)
+	}
+}
+
 // TestParseFeed_AtomPreviousIDAlignsWithEntries asserts an extension element
 // named entry, which atomEntry never reads, can't shift PreviousID onto the
 // wrong entry.

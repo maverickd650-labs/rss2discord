@@ -869,8 +869,10 @@ type looseAtomEntry struct {
 // identity from, by local name alone as it did. parseAtom compares it with
 // the current choice to fill Entry.PreviousID.
 type priorAtomEntry struct {
-	ID    string    `xml:"id"`
-	Links atomLinks `xml:"link"`
+	ID        string    `xml:"id"`
+	Updated   string    `xml:"updated"`
+	Published string    `xml:"published"`
+	Links     atomLinks `xml:"link"`
 }
 
 type atomAuthor struct {
@@ -1307,6 +1309,14 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			priorLink := resolveAtomURL(base, primaryLink(item.prior.Links))
 			previous := entry
 			previous.ID, previous.IDSource = atomIdentity(item.prior.ID, priorLink, atomText(item.Title))
+			// A ContentID is also hashed from the date, which earlier releases
+			// read by local name too. (The image needs no such care: an image
+			// enclosure is a link too, so an entry with one never reached a
+			// ContentID.)
+			previous.Published, _ = parseTime(item.prior.Published)
+			if previous.Published.IsZero() {
+				previous.Published, _ = parseTime(item.prior.Updated)
+			}
 			// Both identities get the ContentID fallback before comparing, so
 			// an entry with no id, link or title migrates from or to it too.
 			previous, entry = withContentID(previous), withContentID(entry)
