@@ -1640,6 +1640,7 @@ func TestParseFeed_AtomForeignNamespaceCannotDisplaceIDOrLinks(t *testing.T) {
 		imgReal  = "http://example.com/real.png"
 		imgFake  = "http://example.com/fake.png"
 		atomOld  = "http://purl.org/atom/ns#"
+		elEnd    = "\"/>" // closes a self-closing tag after an href value
 	)
 	for _, tc := range []struct {
 		name, ns, entry, wantID, wantLink, wantImage string
@@ -1647,15 +1648,15 @@ func TestParseFeed_AtomForeignNamespaceCannotDisplaceIDOrLinks(t *testing.T) {
 		{name: "foreign id after real", ns: atomNamespace, entry: "<id>" + idReal + "</id><ext:id>" + idFake + "</ext:id>", wantID: idReal},
 		{name: "foreign id before real", ns: atomNamespace, entry: "<ext:id>" + idFake + "</ext:id><id>" + idReal + "</id>", wantID: idReal},
 		{name: "foreign id alone is a last resort", ns: atomNamespace, entry: "<ext:id>" + idFake + "</ext:id>", wantID: idFake},
-		{name: "lookalike default namespace keeps its id and link", ns: atomOld, entry: "<id>" + idReal + "</id><link href=\"" + linkReal + "\"/>", wantID: idReal, wantLink: linkReal},
-		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/><link rel=\"alternate\" href=\"" + linkReal + "\"/>", wantLink: linkReal},
-		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + linkReal + "\"/><ext:link rel=\"alternate\" href=\"" + linkFake + "\"/>", wantLink: linkReal},
-		{name: "foreign link alone is a last resort", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/>", wantLink: linkFake},
+		{name: "lookalike default namespace keeps its id and link", ns: atomOld, entry: "<id>" + idReal + "</id><link href=\"" + linkReal + elEnd, wantID: idReal, wantLink: linkReal},
+		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/><link rel=\"alternate\" href=\"" + linkReal + elEnd, wantLink: linkReal},
+		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + linkReal + "\"/><ext:link rel=\"alternate\" href=\"" + linkFake + elEnd, wantLink: linkReal},
+		{name: "foreign link alone is a last resort", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + elEnd, wantLink: linkFake},
 		{
 			name: "foreign image enclosure first",
 			ns:   atomNamespace,
-			entry: "<ext:link rel=\"enclosure\" type=\"image/png\" href=\"" + imgFake + "\"/>" +
-				"<link rel=\"enclosure\" type=\"image/png\" href=\"" + imgReal + "\"/>",
+			entry: "<ext:link rel=\"enclosure\" type=\"image/png\" href=\"" + imgFake + elEnd +
+				"<link rel=\"enclosure\" type=\"image/png\" href=\"" + imgReal + elEnd,
 			wantImage: imgReal,
 		},
 	} {
