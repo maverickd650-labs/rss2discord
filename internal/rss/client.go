@@ -1309,14 +1309,19 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			priorLink := resolveAtomURL(base, primaryLink(item.prior.Links))
 			previous := entry
 			previous.ID, previous.IDSource = atomIdentity(item.prior.ID, priorLink, atomText(item.Title))
-			// A ContentID is also hashed from the date, which earlier releases
-			// read by local name too. (The image needs no such care: an image
-			// enclosure is a link too, so an entry with one never reached a
-			// ContentID.)
+			// A ContentID is also hashed from the date and the image, which
+			// earlier releases read by local name too. (A blank alternate link
+			// wins primaryLink, so an entry can reach a ContentID with an image
+			// enclosure.)
 			previous.Published, _ = parseTime(item.prior.Published)
 			if previous.Published.IsZero() {
 				previous.Published, _ = parseTime(item.prior.Updated)
 			}
+			priorImage := enclosureImage(item.prior.Links)
+			if priorImage == "" {
+				priorImage = mediaImage(item.MediaThumbnail, nil, item.MediaGroup)
+			}
+			previous.Image = strings.TrimSpace(resolveAtomURL(base, priorImage))
 			// Both identities get the ContentID fallback before comparing, so
 			// an entry with no id, link or title migrates from or to it too.
 			previous, entry = withContentID(previous), withContentID(entry)

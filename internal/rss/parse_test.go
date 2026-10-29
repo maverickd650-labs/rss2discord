@@ -1747,12 +1747,16 @@ func TestParseFeed_AtomPreviousIDFallsBackToContentID(t *testing.T) {
 	}
 }
 
-// The content hash covers the publication date, which earlier releases also read
-// by local name, so a foreign <ext:updated> that stood in for a missing one is
-// part of the identity to migrate from.
-func TestParseFeed_AtomPreviousIDContentHashUsesPriorDate(t *testing.T) {
+// The content hash covers the publication date and image, which earlier releases
+// also read by local name, so a foreign <ext:updated> or image enclosure that
+// stood in for a missing one is part of the identity to migrate from. The blank
+// alternate link is what leaves the entry with no link identity.
+func TestParseFeed_AtomPreviousIDContentHashUsesPriorDateAndImage(t *testing.T) {
 	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><entry>` +
-		`<ext:updated>2024-01-02T03:04:05Z</ext:updated><summary>body</summary></entry></feed>`
+		`<ext:updated>2024-01-02T03:04:05Z</ext:updated>` +
+		linkEl("ext:link", `rel="alternate" `, "") +
+		linkEl("ext:link", `rel="enclosure" type="image/png" `, nsImgFake) +
+		`<summary>body</summary></entry></feed>`
 	entries, _, err := parseFeed([]byte(doc))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
@@ -1760,6 +1764,7 @@ func TestParseFeed_AtomPreviousIDContentHashUsesPriorDate(t *testing.T) {
 	e := entries[0]
 	prior := e
 	prior.Published = time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	prior.Image = nsImgFake
 	if e.IDSource != IDFromContent || e.PreviousIDSource != IDFromContent || e.PreviousID != ContentID(prior) || e.PreviousID == e.ID {
 		t.Errorf("ID source %v, PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.IDSource, e.PreviousID, e.PreviousIDSource, ContentID(prior), IDFromContent)
 	}
