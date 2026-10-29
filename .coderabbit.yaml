@@ -1,0 +1,151 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit review configuration. Repo invariants below mirror CLAUDE.md and
+# AGENTS.md; keep them in sync when those change.
+---
+language: en-US
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  # CodeRabbit excludes **/dist/** by default. dist/chart/ holds hand-tuned Helm
+  # templates, values.yaml, _helpers.tpl and dashboards that must be reviewed,
+  # so it is re-included here (a non-"!" entry overrides a default exclusion);
+  # only the generated parts of dist/ stay excluded.
+  path_filters:
+    - "dist/chart/**"
+    - "!dist/install.yaml"
+    - "!dist/chart/templates/crd/**"
+    - "!config/crd/bases/**"
+    - "!config/rbac/role.yaml"
+    - "!**/zz_generated.*.go"
+    - "!api/*/applyconfiguration/**"
+    - "!PROJECT"
+    - "!CHANGELOG.md"  # release-please
+    - "!go.sum"
+
+  path_instructions:
+    - path: "**"
+      instructions: >-
+        Never suggest a bare cross-repo reference of the form owner/repo#123 in
+        commit messages, PR text or comments: GitHub autolinks it and pings the
+        other repo. Cite external issues by full URL instead. Generated files
+        (CRDs, role.yaml, zz_generated.*, applyconfiguration, PROJECT) must not
+        be hand-edited; changes come from `mise run manifests generate`. Dev
+        tasks run via `mise run <task>`, not raw go test/golangci-lint.
+    - path: "internal/rss/client.go"
+      instructions: >-
+        SSRF guard, do not weaken or duplicate: newDefaultHTTPClient uses a
+        custom DialContext that resolves the host and rejects any non-public IP
+        via isPublicIP (loopback, link-local, private, unspecified, multicast,
+        CGNAT). Redirects and DNS re-resolution must still dial through it; flag
+        any new http.Client, transport or dialer that bypasses it. Keep the
+        response-size cap. Parser memory must stay bounded per element and per
+        entry against a hostile 10 MiB feed: keep the bounded UnmarshalXML slice
+        types and the maxFeedEntries/maxCategories/maxNSCandidates caps; flag
+        any unbounded []T or string accumulation. Preserve namespace precedence
+        in nsTexts/pickText.
+    - path: "internal/discord/client.go"
+      instructions: >-
+        Only send to HTTPS hosts in AllowedWebhookHosts (Discord domains); never
+        widen it for tests. Keep content sanitization, @everyone/@here
+        suppression, javascript:/data: URI stripping and length clamping on
+        every field. Never log, wrap into errors, or put in Events/metrics the
+        webhook URL or token.
+    - path: "internal/controller/**/*.go"
+      instructions: >-
+        Non-test code: status is written only via server-side apply
+        (applyStatus, Status().Apply) as field owner feedgroup-controller.
+        Per-feed state lives in the Status.Feeds []FeedStatus slice keyed by
+        rssUrl (rebuilt by ensureFeedStatuses, looked up by feedStatusFor),
+        never new parallel maps. Metrics: feedOperationsTotal gets exactly one
+        outcome label; outcomeFetchError/outcomeSendError are only label
+        prefixes, never recorded raw; a new outcome needs Grafana dashboard and
+        PrometheusRule updates. Persistent-failure Events fire only when
+        RetryCount == the retry limit (not >=). Changing entry identity,
+        LastSent keys or watermark semantics needs a lossless migration of
+        existing status. User-supplied templates must have bounded output.
+    - path: "**/*_test.go"
+      instructions: >-
+        Tests reach local httptest servers through the unguarded helpers
+        (testRSSClient(), registering into discord.AllowedWebhookHosts), never
+        by relaxing production SSRF guards. goconst is enabled, so repeated
+        string literals belong in shared constants. lll is excluded under
+        internal/, so do not flag line length there. Docstrings on test
+        functions are not required.
+    - path: "api/**/*_types.go"
+      instructions: >-
+        After changes, `mise run manifests generate` must be run and the
+        generated diff included (TestStatusApplyConfigurationCoversEveryField
+        fails on a stale apply configuration). Optional numeric fields where
+        zero is meaningful must be pointers. Check kubebuilder validation
+        markers (bounds, enums, MaxItems/MaxLength) on every new or changed
+        field.
+    - path: "dist/chart/**"
+      instructions: >-
+        Hand-tuned files that `mise run helm-chart-refresh` preserves (manager,
+        metrics service and ServiceMonitor templates, values.yaml, _helpers.tpl,
+        prometheus-rule/grafana-dashboard templates, dashboards/*.json). Never
+        suggest a raw `kubebuilder edit --plugins=helm/v2-alpha --force`.
+        Dashboard and alert outcome regexes must stay fully anchored and match
+        the controller's outcome labels.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Pin every action to a full commit SHA with a version comment. Use
+        least-privilege permissions (workflow-level `permissions: {}`, grants
+        per job). No pull_request_target with a checkout of untrusted PR code.
+        CI must run the same mise tasks as local development.
+    - path: "config/rbac/**"
+      instructions: >-
+        Least privilege: no wildcard verbs/resources, no cluster-wide grants
+        beyond what the controller needs.
+    - path: "config/manager/**"
+      instructions: >-
+        Keep the hardened securityContext: runAsNonRoot, readOnlyRootFilesystem,
+        allowPrivilegeEscalation false, capabilities drop ALL, seccompProfile
+        RuntimeDefault.
+
+  tools:
+    golangci-lint:
+      enabled: true
+      # CodeRabbit runs stock golangci-lint and cannot load the custom
+      # `logcheck` module plugin from .custom-gcl.yml; CI's `mise run lint`
+      # remains authoritative for that.
+      config_file: ".golangci.yml"
+    gitleaks:
+      enabled: true
+    actionlint:
+      enabled: true
+    hadolint:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    markdownlint:
+      enabled: true
+    checkov:
+      enabled: true
+    semgrep:
+      enabled: true
+
+  # Go test functions drag docstring coverage well below the default threshold
+  # (44% vs 80%), so the check is turned off rather than made noisy.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+
+chat:
+  auto_reply: true
