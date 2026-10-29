@@ -34,6 +34,15 @@ func TestDecodeErrorDetail(t *testing.T) {
 // fiveRunes is reused across the truncateRunes test cases below.
 const fiveRunes = "abcde"
 
+// Retry-After header values shared by the parse and cooldown tables.
+const (
+	retryAfterDay    = "86400"
+	retryAfterHuge   = "1e300"
+	retryAfterPosInf = "+Inf"
+	retryAfterNaN    = "NaN"
+	retryAfterNegInf = "-Inf"
+)
+
 func TestParseRetryAfter(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -46,16 +55,16 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "fractional seconds", value: "0.5", want: 500 * time.Millisecond},
 		{name: "malformed defaults to 1s", value: "soon", want: time.Second},
 		{name: "negative defaults to 1s", value: "-3", want: time.Second},
-		{name: "NaN defaults to 1s", value: "NaN", want: time.Second},
-		{name: "huge is clamped", value: "86400", want: maxRetryAfter},
+		{name: "NaN defaults to 1s", value: retryAfterNaN, want: time.Second},
+		{name: "huge is clamped", value: retryAfterDay, want: maxRetryAfter},
 		{name: "infinity is clamped", value: "Inf", want: maxRetryAfter},
 		{name: "exact one hour cap", value: "3600", want: time.Hour},
 		{name: "fraction below cap", value: "3599.5", want: time.Hour - 500*time.Millisecond},
 		{name: "fraction above cap", value: "3600.5", want: time.Hour},
 		{name: "scientific notation at cap", value: "3.6e3", want: time.Hour},
-		{name: "huge finite float", value: "1e300", want: time.Hour},
-		{name: "positive infinity", value: "+Inf", want: time.Hour},
-		{name: "negative infinity defaults to 1s", value: "-Inf", want: time.Second},
+		{name: "huge finite float", value: retryAfterHuge, want: time.Hour},
+		{name: "positive infinity", value: retryAfterPosInf, want: time.Hour},
+		{name: "negative infinity defaults to 1s", value: retryAfterNegInf, want: time.Second},
 		{name: "padded NaN defaults to 1s", value: " \tNaN\r\n", want: time.Second},
 		{name: "padded delay is clamped", value: " \t86400\r\n", want: time.Hour},
 		{name: "float parse overflow defaults to 1s", value: "1e309", want: time.Second},
@@ -78,11 +87,11 @@ func TestSendMessage_BoundedRetryAfterControlsCooldown(t *testing.T) {
 		name, header string
 		want         time.Duration
 	}{
-		{name: "large finite delay", header: "86400", want: time.Hour},
-		{name: "duration conversion overflow", header: "1e300", want: time.Hour},
-		{name: "infinite delay", header: "+Inf", want: time.Hour},
-		{name: "NaN fallback", header: "NaN", want: time.Second},
-		{name: "negative infinity fallback", header: "-Inf", want: time.Second},
+		{name: "large finite delay", header: retryAfterDay, want: time.Hour},
+		{name: "duration conversion overflow", header: retryAfterHuge, want: time.Hour},
+		{name: "infinite delay", header: retryAfterPosInf, want: time.Hour},
+		{name: "NaN fallback", header: retryAfterNaN, want: time.Second},
+		{name: "negative infinity fallback", header: retryAfterNegInf, want: time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

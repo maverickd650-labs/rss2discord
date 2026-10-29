@@ -167,6 +167,9 @@ func TestTemplateFuncs_UnknownFunctionFailsAtCompile(t *testing.T) {
 	}
 }
 
+// notSupportedErrText is the substring every rejected-template error carries.
+const notSupportedErrText = "not supported"
+
 // authorField is a template that prints only the entry author.
 var authorField = "{{" + ".Author}}"
 
@@ -206,7 +209,7 @@ func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 			if _, err := template.New("t").Funcs(templateFuncs).Parse(format); err != nil {
 				t.Fatalf("invalid test template: %v", err)
 			}
-			if tmpl, err := compileTemplate("t", format, ""); tmpl != nil || err == nil || !strings.Contains(err.Error(), "not supported") {
+			if tmpl, err := compileTemplate("t", format, ""); tmpl != nil || err == nil || !strings.Contains(err.Error(), notSupportedErrText) {
 				t.Fatalf("expected a 'not supported' error, got %v", err)
 			}
 		})
@@ -238,7 +241,7 @@ func TestCompileTemplate_RejectsGrowthBuiltinsInNestedPipelines(t *testing.T) {
 					t.Fatalf("invalid test template: %v", err)
 				}
 				tmpl, err := compileTemplate("nested", format, "")
-				if tmpl != nil || err == nil || !strings.Contains(err.Error(), "not supported") {
+				if tmpl != nil || err == nil || !strings.Contains(err.Error(), notSupportedErrText) {
 					t.Fatalf("unsafe nested action compiled: template=%v, err=%v", tmpl, err)
 				}
 			})
@@ -254,7 +257,7 @@ func TestCompileTemplate_FallbackRestrictions(t *testing.T) {
 	} {
 		t.Run(fallback, func(t *testing.T) {
 			tmpl, err := compileTemplate("fallback", " \t\n", fallback)
-			if tmpl != nil || err == nil || !strings.Contains(err.Error(), "not supported") {
+			if tmpl != nil || err == nil || !strings.Contains(err.Error(), notSupportedErrText) {
 				t.Fatalf("unsafe fallback compiled: template=%v, err=%v", tmpl, err)
 			}
 		})
