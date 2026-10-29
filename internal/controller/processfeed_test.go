@@ -1015,3 +1015,39 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 		})
 	}
 }
+
+// A config error on a non-empty first fetch must not mark the feed
+// initialized: once the config is fixed, catchUpLimit 0 still skips the
+// backlog instead of delivering all of it.
+func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
+	ns, name := "initialization-unit", "config-error-first-sync"
+	defer deleteFeedGroupMetrics(ns, name)
+	discordServer := NewMockDiscordServer()
+	defer discordServer.Close()
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.CatchUpLimit = new(int32(0))
+	feed.Filter = &v1alpha1.Filter{Regex: "("} // does not compile
+	fg.Spec.Feeds[0] = feed
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	r := &FeedGroupReconciler{}
+
+	entries := []rss.Entry{
+		{ID: "https://example.com/a", Title: "a", Link: "https://example.com/a", Seq: 2},
+		{ID: "https://example.com/b", Title: "b", Link: "https://example.com/b", Seq: 1},
+	}
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+	if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
+		t.Fatalf("config error left initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+	}
+
+	feed.Filter = nil
+	fg.Spec.Feeds[0] = feed
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+	if got := discordServer.MessageCount(); got != 0 {
+		t.Fatalf("sent=%d after fixing config, want the backlog skipped", got)
+	}
+	if fs := feedStatusFor(fg, feed.RSSUrl); !fs.Initialized || fs.LastSeenEntry == "" {
+		t.Fatalf("after fix initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+	}
+}

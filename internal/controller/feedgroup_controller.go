@@ -305,8 +305,12 @@ func (r *FeedGroupReconciler) processFeed(
 		return fs.RetryCount < maxRetries, 0
 	}
 
+	// Initialized is set only once the feed's configuration is known to be
+	// usable (below, or on the paths that never reach it): marking it earlier
+	// would let a config error on a non-empty first fetch leave Initialized
+	// true with no watermark, so a fixed config would deliver the whole
+	// backlog despite catchUpLimit 0.
 	wasInitialized := fs.Initialized
-	fs.Initialized = true
 
 	// Persisting the new validators is deferred until the end of this
 	// function (and skipped entirely if anything below needs a retry): if a
@@ -338,6 +342,7 @@ func (r *FeedGroupReconciler) processFeed(
 		// quiet feed now costs one status write per poll interval instead of
 		// zero.
 		markFetchSucceeded()
+		fs.Initialized = true
 		persistValidators()
 		fs.LastError = ""
 		fs.RetryCount = 0
@@ -355,6 +360,7 @@ func (r *FeedGroupReconciler) processFeed(
 	}
 	if len(entries) == 0 {
 		// Nothing to send, so it's always safe to persist.
+		fs.Initialized = true
 		persistValidators()
 		fs.LastError = ""
 		fs.RetryCount = 0
@@ -392,6 +398,8 @@ func (r *FeedGroupReconciler) processFeed(
 		}
 	}
 
+	fs.Initialized = true
+
 	// Sort oldest-to-newest so the catch-up window (limitCatchUp keeps the
 	// tail) and the watermark (sendNewEntries advances LastSeenEntry to the
 	// last entry it sends) both track the *newest* entries. Published is the
@@ -423,21 +431,19 @@ func (r *FeedGroupReconciler) processFeed(
 		if feedGroup.Spec.CatchUpLimit != nil {
 			catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
 		}
-		if catchUpLimit == 0 && !wasInitialized && lastSeenID == "" {
-			// catchUpLimit: 0 on a true first sync (not yet initialized)
-			// means "don't post the backlog": start from the newest entry.
-			// An empty first fetch also initializes the feed, so entries
-			// published afterwards must still be delivered.
+		if catchUpLimit == 0 && lastSeenID == "" {
+			// catchUpLimit: 0 with no watermark at all. On a true first sync
+			// (not yet initialized) that means "don't post the backlog":
+			// start from the newest entry. If the feed was already fetched
+			// while empty, everything in it was published after that first
+			// sync, so all of it is delivered rather than capped as a backlog.
 			// A watermark that merely scrolled out of the feed's window is
-			// not a first sync, so it still falls through to limitCatchUp's
-			// default cap rather than silently dropping new entries.
-			skipBacklog(feedGroup, fs, entries)
-			entries = nil
-		} else if catchUpLimit == 0 && wasInitialized && lastSeenID == "" {
-			// The feed was already fetched while empty (catchUpLimit 0 sets a
-			// watermark on any non-empty first fetch), so everything in it was
-			// published after the first sync: deliver all of it rather than
-			// capping it as if it were a backlog.
+			// not a first sync, so it falls through to limitCatchUp's default
+			// cap rather than silently dropping new entries.
+			if !wasInitialized {
+				skipBacklog(feedGroup, fs, entries)
+				entries = nil
+			}
 		} else {
 			entries = limitCatchUp(entries, catchUpLimit)
 		}
