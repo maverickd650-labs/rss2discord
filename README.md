@@ -301,6 +301,18 @@ helm rollback rss2discord-operator -n rss2discord-operator-system
 helm uninstall rss2discord-operator -n rss2discord-operator-system
 ```
 
+### Upgrades and rollbacks
+
+Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. A release that adds the field migrates an older feed status in place on that feed's next fetch with entries. Feeds whose entries have GUIDs keep identical state, so they are never resent. For feeds without GUIDs, the migration resolves the old watermark and sent-entry keys from that fetch. An entry the old state can't account for is replayed rather than skipped, so expect at most an occasional duplicate, never a lost entry. The replay of entries that older releases wrongly merged is capped at `catchUpLimit`.
+
+Rolling back to a release without `stateVersion` is safe, but feeds without GUIDs may post a few duplicates:
+
+- **Entries with a GUID** are identified the same way by every release, so they are not resent.
+- **Entries without a GUID whose link has a `#fragment` or `?ref=` parameter** are identified by the older release without them. It doesn't recognise the newer watermark or keys for these entries, so on its first fetch it resends up to `catchUpLimit` of the newest ones (5 when `catchUpLimit` is 0, as older releases treat it). It also goes back to treating links that differ only by fragment or `ref` as one entry.
+- **Entries with no GUID, link or title** all look the same to an older release, so at most one of them is resent.
+
+Every status write by the older release drops `stateVersion`, so upgrading again migrates the status a second time. Older releases write status with the same server-side-apply field owner, which releases the field, and the older CRD schema no longer has it. Keys written by either release stay valid, so upgrading again doesn't resend entries that either release already delivered, beyond the bounded replays described above. Only the elected leader reconciles, so during a rolling update the two releases hand over rather than writing status concurrently.
+
 ## Observability
 
 The controller exports these Prometheus metrics, all labeled by `namespace` and `name` (the FeedGroup):
