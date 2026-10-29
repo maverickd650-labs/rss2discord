@@ -1652,6 +1652,7 @@ func TestParseFeed_AtomForeignNamespaceCannotDisplaceIDOrLinks(t *testing.T) {
 		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/><link rel=\"alternate\" href=\"" + linkReal + elEnd, wantLink: linkReal},
 		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + linkReal + "\"/><ext:link rel=\"alternate\" href=\"" + linkFake + elEnd, wantLink: linkReal},
 		{name: "unnamespaced link before an Atom one", ns: atomNamespace, entry: "<link xmlns=\"\" rel=\"alternate\" href=\"" + linkFake + elEnd + "<link rel=\"alternate\" href=\"" + linkReal + elEnd, wantLink: linkReal},
+		{name: "unnamespaced self link before an Atom one", ns: atomNamespace, entry: "<link xmlns=\"\" rel=\"self\" href=\"" + linkFake + elEnd + "<link rel=\"self\" href=\"" + linkReal + elEnd, wantLink: linkReal},
 		{name: "foreign link alone is a last resort", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + elEnd, wantLink: linkFake},
 		{
 			name: "foreign image enclosure first",

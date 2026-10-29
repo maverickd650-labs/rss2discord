@@ -2,6 +2,7 @@ package rss
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -923,9 +925,9 @@ func (a *atomID) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 }
 
 // atomLinks collects an entry's <link> elements but retains only the three
-// per namespace class (Atom/none versus foreign) that primaryLink and
-// enclosureImage can select: the first link, the first alternate link, and the
-// first image enclosure. Entries rarely carry more than a handful of links,
+// per namespace rank (see namespaceRank) that primaryLink and enclosureImage
+// can select: the first link, the first alternate link, and the first image
+// enclosure of that rank. Entries rarely carry more than a handful of links,
 // but nothing else bounds them, and the retained subset yields exactly the same
 // selection as the full list.
 type atomLinks []atomLink
@@ -937,27 +939,20 @@ func (l atomLink) foreign() bool {
 }
 
 // UnmarshalXML retains a link only if it is the first, the first alternate, or
-// the first image enclosure of its namespace class. XML decoding errors are
+// the first image enclosure of its namespace rank. XML decoding errors are
 // returned; other links are ignored.
 func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var l atomLink
 	if err := d.DecodeElement(&l, &start); err != nil {
 		return err
 	}
-	// The slots are per class so a foreign link arriving first can't use up
-	// the slot a native one needs.
+	// The slots are per rank so a lower-ranked link arriving first can't use up
+	// the slot a better-ranked one needs.
+	rank := namespaceRank(l.XMLName.Space)
 	any, hasAlternate, hasEnclosure := false, false, false
-	for i, kept := range *c {
-		if kept.foreign() != l.foreign() {
+	for _, kept := range *c {
+		if namespaceRank(kept.XMLName.Space) != rank {
 			continue
-		}
-		// A better-ranked link (Atom's namespace over none) takes over the
-		// slot of a lower-ranked one that arrived first.
-		sameSlot := (l.isAlternate() && kept.isAlternate()) ||
-			(l.isImageEnclosure() && kept.isImageEnclosure())
-		if sameSlot && namespaceRank(l.XMLName.Space) < namespaceRank(kept.XMLName.Space) {
-			(*c)[i] = l
-			return nil
 		}
 		any = true
 		hasAlternate = hasAlternate || kept.isAlternate()
@@ -969,26 +964,31 @@ func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	return nil
 }
 
-// nativeLinks returns the links declared in Atom's namespace or none, or all of
-// links if every one is foreign (a lookalike default namespace).
-func nativeLinks(links []atomLink) []atomLink {
-	var native []atomLink
+// rankedLinks returns the links declared in Atom's namespace or none, or all of
+// links if every one is foreign (a lookalike default namespace), ordered by
+// namespace rank with document order kept within a rank. Selecting the first
+// match from this list therefore prefers Atom's own links.
+func rankedLinks(links []atomLink) []atomLink {
+	ranked := make([]atomLink, 0, len(links))
 	for _, l := range links {
 		if !l.foreign() {
-			native = append(native, l)
+			ranked = append(ranked, l)
 		}
 	}
-	if len(native) == 0 {
-		return links
+	if len(ranked) == 0 {
+		ranked = append(ranked, links...)
 	}
-	return native
+	slices.SortStableFunc(ranked, func(a, b atomLink) int {
+		return cmp.Compare(namespaceRank(a.XMLName.Space), namespaceRank(b.XMLName.Space))
+	})
+	return ranked
 }
 
 // primaryLink returns the entry's main article link: the "alternate" rel,
 // or the first link if none is explicitly marked alternate (Atom defaults
 // an unmarked link's rel to "alternate").
 func primaryLink(links []atomLink) string {
-	links = nativeLinks(links)
+	links = rankedLinks(links)
 	for _, l := range links {
 		if l.isAlternate() {
 			return l.Href
@@ -1003,7 +1003,7 @@ func primaryLink(links []atomLink) string {
 // enclosureImage returns an Atom entry's image enclosure link, if any
 // (<link rel="enclosure" type="image/..">).
 func enclosureImage(links []atomLink) string {
-	for _, l := range nativeLinks(links) {
+	for _, l := range rankedLinks(links) {
 		if l.isImageEnclosure() {
 			return strings.TrimSpace(l.Href)
 		}
