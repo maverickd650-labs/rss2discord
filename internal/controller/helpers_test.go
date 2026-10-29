@@ -21,6 +21,13 @@ const (
 
 // shortContent is reused across truncation test cases below.
 const shortContent = "short"
+
+// Shared fixtures that several tests below (and fuzz_test.go) repeat.
+const (
+	jsAlertURL        = "javascript:alert(1)"
+	discordRelativeTS = "<t:1714979289:R>"
+	imageFixtureURL   = "https://x/a.png"
+)
 const truncateMe = "truncate me"
 
 // excerptText is reused across the "continue reading" stripHTML test cases
@@ -57,7 +64,7 @@ func TestHTTPURLOrEmpty(t *testing.T) {
 	}{
 		{name: "https kept", input: "https://example.com/a", want: "https://example.com/a"},
 		{name: "http kept", input: "http://example.com/a", want: "http://example.com/a"},
-		{name: "javascript dropped", input: "javascript:alert(1)", want: ""},
+		{name: "javascript dropped", input: jsAlertURL, want: ""},
 		{name: "data dropped", input: "data:text/html,<script>", want: ""},
 		{name: "empty dropped", input: "", want: ""},
 	}
@@ -700,7 +707,7 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 		// A non-UTC zone: the Unix value is zone-independent.
 		published := time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600))
 		got := render(t, "<t:{{.PublishedUnix}}:R>", rss.Entry{Published: published})
-		if want := "<t:1714979289:R>"; got != want {
+		if want := discordRelativeTS; got != want {
 			t.Fatalf("renderTemplate() = %q, want %q", got, want)
 		}
 	})
@@ -714,7 +721,7 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 			t.Fatalf("guarded template rendered %q for an undated entry, want empty", got)
 		}
 		dated := rss.Entry{Published: time.Unix(1714979289, 0)}
-		if got, want := render(t, format, dated), "<t:1714979289:R>"; got != want {
+		if got, want := render(t, format, dated), discordRelativeTS; got != want {
 			t.Fatalf("renderTemplate() = %q, want %q", got, want)
 		}
 	})
@@ -757,6 +764,37 @@ func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
 			}
 			if msg.Embed.Timestamp != tc.want {
 				t.Fatalf("msg.Embed.Timestamp = %q, want %q", msg.Embed.Timestamp, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildDiscordMessage_EmbedImageStyle asserts the entry image goes to the
+// small thumbnail by default and to the large image slot for imageStyle
+// "image", and that non-http(s) image URLs are dropped either way.
+func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
+	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cases := []struct {
+		name, style, image   string
+		wantThumb, wantLarge string
+	}{
+		{name: "default is thumbnail", image: imageFixtureURL, wantThumb: imageFixtureURL},
+		{name: "explicit thumbnail", style: "thumbnail", image: imageFixtureURL, wantThumb: imageFixtureURL},
+		{name: "image style", style: "image", image: imageFixtureURL, wantLarge: imageFixtureURL},
+		{name: "unsafe scheme dropped", style: "image", image: jsAlertURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &v1alpha1.EmbedSpec{Enabled: true, ImageStyle: tc.style}
+			msg, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, spec, nil, descriptionTmpl, nil, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T", Image: tc.image})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if msg.Embed.ThumbnailURL != tc.wantThumb || msg.Embed.ImageURL != tc.wantLarge {
+				t.Fatalf("thumbnail=%q image=%q, want %q / %q", msg.Embed.ThumbnailURL, msg.Embed.ImageURL, tc.wantThumb, tc.wantLarge)
 			}
 		})
 	}
@@ -909,5 +947,32 @@ func TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName(t *testi
 	}
 	if msg.ThreadName != "" {
 		t.Fatalf("expected ThreadName to stay empty when ForumThreadID is set, got %q", msg.ThreadName)
+	}
+}
+
+// URL-looking IDs that don't parse, or parse to a non-http(s) scheme, are
+// returned unchanged rather than normalized.
+func TestNormalizeIdentity_UnparsableOrNonHTTPURLUnchanged(t *testing.T) {
+	for _, id := range []string{"http://[::1", "httpx://example.com/a#frag", "http"} {
+		if got := normalizeIdentity(id); got != id {
+			t.Errorf("normalizeIdentity(%q) = %q, want unchanged", id, got)
+		}
+	}
+}
+
+// A forum thread-name template that fails at execution is a render error,
+// like a failing content template, so the entry goes through retry/skip.
+func TestBuildDiscordMessage_ThreadNameRenderError(t *testing.T) {
+	threadNameTmpl, err := compileTemplate("thread", "{{.DoesNotExist}}", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	contentTmpl, err := compileTemplate("content", "{{.Title}}", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = buildDiscordMessage(&v1alpha1.FeedGroup{}, nil, contentTmpl, nil, threadNameTmpl, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T"})
+	if err == nil {
+		t.Fatal("expected a render error from the thread name template")
 	}
 }

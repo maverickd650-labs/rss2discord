@@ -34,6 +34,10 @@ type EmbedSpecApplyConfiguration struct {
 	// description. Supports the same placeholders as Format. Defaults to
 	// "{{.Description}}".
 	DescriptionFormat *string `json:"descriptionFormat,omitempty"`
+	// imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+	// image beside the description, the default) or "image" (a large image
+	// below the description).
+	ImageStyle *string `json:"imageStyle,omitempty"`
 	// authorName is shown on the embed's author line.
 	AuthorName *string `json:"authorName,omitempty"`
 	// footerText is shown in the embed's footer.
@@ -67,6 +71,14 @@ func (b *EmbedSpecApplyConfiguration) WithColor(value string) *EmbedSpecApplyCon
 // If called multiple times, the DescriptionFormat field is set to the value of the last call.
 func (b *EmbedSpecApplyConfiguration) WithDescriptionFormat(value string) *EmbedSpecApplyConfiguration {
 	b.DescriptionFormat = &value
+	return b
+}
+
+// WithImageStyle sets the ImageStyle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageStyle field is set to the value of the last call.
+func (b *EmbedSpecApplyConfiguration) WithImageStyle(value string) *EmbedSpecApplyConfiguration {
+	b.ImageStyle = &value
 	return b
 }
 

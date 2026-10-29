@@ -4,6 +4,8 @@ See [README.md](README.md) for full documentation. This is just the fastest path
 
 ## 1. Deploy the operator
 
+Requires Kubernetes 1.29+ (the CRD uses CEL validation rules, GA in 1.29) and a Discord webhook URL.
+
 ```bash
 helm install rss2discord-operator ./dist/chart \
   --namespace rss2discord-operator-system \

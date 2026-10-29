@@ -24,6 +24,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "style content dropped", input: `<style>p{color:red}</style>kept`, want: "kept"},
 		{name: "uppercase block tags", input: "<P>one</P><P>two</P>", want: "one\n\ntwo"},
+		{name: "prefixed XHTML paragraphs", input: "<x:div><x:p>First</x:p><x:p>Second</x:p></x:div>", want: "First\n\nSecond"},
+		{name: "prefixed XHTML script and style", input: "<x:script>hidden</x:script><x:style>hidden</x:style><x:p>kept</x:p>", want: "kept"},
 		{name: "self-closing br", input: "x<br/>y", want: "x\ny"},
 		{name: "spaced self-closing br", input: "x<br />y", want: "x\ny"},
 		{name: "unclosed paragraph", input: "<p>open para", want: "open para"},

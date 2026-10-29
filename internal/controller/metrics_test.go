@@ -41,6 +41,8 @@ func newMetricsFeedGroup(namespace, name, format string) (*v1alpha1.FeedGroup, v
 	fg.Namespace = namespace
 	fg.Name = name
 	fg.Spec.Feeds = []v1alpha1.FeedSpec{feed}
+	// Match the API server's default for an omitted catchUpLimit.
+	fg.Spec.CatchUpLimit = new(int32(defaultCatchUpLimit))
 	ensureFeedStatuses(fg)
 	return fg, feed
 }

@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -772,5 +773,287 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 	case <-recorder.Events:
 	default:
 		t.Error("a changed error message should fire a fresh Event")
+	}
+}
+
+// With catchUpLimit 0, only a true first sync skips the
+// backlog. A watermark that scrolled out of the feed's window falls back to
+// the default cap instead, so genuinely new entries aren't silently dropped.
+func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
+	ctx := t.Context()
+
+	run := func(t *testing.T, lastSeen string, limit *int32) (sent int, fs *v1alpha1.FeedStatus) {
+		t.Helper()
+		ns, name := "skip-backlog-unit", "fg-skip-"+lastSeen
+		defer deleteFeedGroupMetrics(ns, name)
+		discordServer := NewMockDiscordServer()
+		defer discordServer.Close()
+
+		fg, feed := newMetricsFeedGroup(ns, name, "")
+		fg.Spec.CatchUpLimit = limit
+		fg.Status.Feeds[0].LastSeenEntry = lastSeen
+		client := discordServer.DiscordClientBuilder()(discordServer.URL())
+		(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
+		return discordServer.MessageCount(), &fg.Status.Feeds[0]
+	}
+
+	t.Run("first sync sends nothing and sets the watermark", func(t *testing.T) {
+		sent, fs := run(t, "", new(int32(0)))
+		if sent != 0 || fs.LastSeenEntry != "https://example.com/article" {
+			t.Fatalf("sent=%d watermark=%q", sent, fs.LastSeenEntry)
+		}
+	})
+	t.Run("scrolled-out watermark still delivers", func(t *testing.T) {
+		if sent, _ := run(t, "gone", new(int32(0))); sent != 1 {
+			t.Fatalf("sent=%d, want 1", sent)
+		}
+	})
+	t.Run("omitted limit delivers the backlog", func(t *testing.T) {
+		if sent, _ := run(t, "", nil); sent != 1 {
+			t.Fatalf("sent=%d, want 1", sent)
+		}
+	})
+}
+
+// initializationUnitNS namespaces the metric series the initialization tests create.
+const initializationUnitNS = "initialization-unit"
+
+func TestProcessFeed_Initialization(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		result      rss.FetchResult
+		fetchErr    error
+		initialized bool
+		wantSent    int
+	}{
+		{name: "empty fetch", initialized: true, wantSent: 1},
+		{name: "not modified", result: rss.FetchResult{NotModified: true}, initialized: true, wantSent: 1},
+		{name: "fetch failure", fetchErr: errors.New("fetch failed"), wantSent: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, name := initializationUnitNS, tc.name
+			defer deleteFeedGroupMetrics(ns, name)
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+
+			fg, feed := newMetricsFeedGroup(ns, name, "")
+			fg.Spec.CatchUpLimit = new(int32(0))
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			r := &FeedGroupReconciler{}
+			r.processFeed(t.Context(), fg, feed, tc.result, tc.fetchErr, client, testReconcileTime)
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			if fs.Initialized != tc.initialized || fs.LastSeenEntry != "" {
+				t.Fatalf("initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+			}
+
+			r.processFeed(t.Context(), fg, feed, oneEntryFetch(), nil, client, testReconcileTime)
+			if got := discordServer.MessageCount(); got != tc.wantSent {
+				t.Fatalf("sent=%d, want %d", got, tc.wantSent)
+			}
+		})
+	}
+}
+
+// After an empty first fetch with catchUpLimit 0, everything that shows up
+// later is new, so none of it may be trimmed by the catch-up cap.
+func TestProcessFeed_CatchUpLimitZeroDeliversAllAfterEmptyFirstSync(t *testing.T) {
+	ns, name := initializationUnitNS, "all-after-empty"
+	defer deleteFeedGroupMetrics(ns, name)
+	discordServer := NewMockDiscordServer()
+	defer discordServer.Close()
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.CatchUpLimit = new(int32(0))
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	r := &FeedGroupReconciler{}
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{}, nil, client, testReconcileTime)
+
+	const total = 2*defaultCatchUpLimit + 1
+	entries := make([]rss.Entry, 0, total)
+	for i := range total {
+		id := fmt.Sprintf("https://example.com/new-%d", i)
+		entries = append(entries, rss.Entry{ID: id, Title: id, Link: id, Seq: total - i})
+	}
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+	if got := discordServer.MessageCount(); got != total {
+		t.Fatalf("sent=%d, want all %d", got, total)
+	}
+}
+
+func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
+	const (
+		newestID = "newest"
+		oldestID = "oldest"
+		freshID  = "fresh"
+	)
+	for _, tc := range []struct {
+		name     string
+		dated    bool
+		newestID string
+	}{
+		{name: "publication order", dated: true, newestID: newestID},
+		{name: "undated document order", newestID: newestID},
+		{name: "oversized identity", newestID: "guid-" + strings.Repeat("x", maxStatusTextBytes+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed := newMetricsFeedGroup("backlog-restart", tc.name, "{{.Title}}")
+			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			fg.Generation = 7
+			fg.Spec.CatchUpLimit = new(int32(0))
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs.LastError, fs.RetryCount, fs.BackoffUntil = "old failure", 2, "2031-01-01T00:00:00Z"
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			entries := make([]rss.Entry, 2, 3)
+			entries[0] = rss.Entry{ID: tc.newestID, Title: newestID, Seq: 0}
+			entries[1] = rss.Entry{ID: oldestID, Title: oldestID, Seq: 1}
+			if tc.dated {
+				entries[0].Published = time.Unix(200, 0)
+				entries[1].Published = time.Unix(100, 0)
+				// Publication time takes priority over document position.
+				entries[0].Seq, entries[1].Seq = 1, 0
+			}
+			fetch := rss.FetchResult{Entries: entries, ETag: `"skip-v1"`, LastModified: testReconcileTime}
+			r := &FeedGroupReconciler{}
+			wantRetry, retryAfter := r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if wantRetry || retryAfter != 0 || discordServer.MessageCount() != 0 || len(fs.LastSent) != 0 {
+				t.Fatalf("backlog was sent or retried: retry=%t after=%v sent=%d status=%+v", wantRetry, retryAfter, discordServer.MessageCount(), fs)
+			}
+			assertSkippedBacklogStatus(t, fg, fs, tc.newestID, fetch)
+
+			// Reload status and replace the reconciler before checking the same
+			// feed and then publishing an entry after the saved watermark.
+			fg = fg.DeepCopy()
+			ensureFeedStatuses(fg)
+			r = &FeedGroupReconciler{}
+			r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if discordServer.MessageCount() != 0 {
+				t.Fatal("reloading status caused the backlog to be sent")
+			}
+			for i := range entries {
+				entries[i].Seq++
+			}
+			fresh := rss.Entry{ID: freshID, Title: freshID, Seq: 0}
+			if tc.dated {
+				fresh.Published = time.Unix(300, 0)
+			}
+			fetch.Entries = append(entries, fresh)
+			r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if got := discordServer.Bodies(); len(got) != 1 || !strings.Contains(got[0], `"content":"fresh"`) {
+				t.Fatalf("expected only the fresh entry, got %v", got)
+			}
+			fs = feedStatusFor(fg, feed.RSSUrl)
+			condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+			if fs.LastSeenEntry != freshID || len(fs.LastSent) != 1 || condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason == reasonBacklogSkipped {
+				t.Fatalf("delivery did not advance status: %+v", fs)
+			}
+			r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			if discordServer.MessageCount() != 1 {
+				t.Fatal("fresh entry was delivered twice")
+			}
+		})
+	}
+}
+
+func assertSkippedBacklogStatus(t *testing.T, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, newestID string, fetch rss.FetchResult) {
+	t.Helper()
+	if !fs.Initialized || fs.LastChecked != testReconcileTime || fs.LastError != "" || fs.RetryCount != 0 || fs.BackoffUntil != "" ||
+		fs.ETag != fetch.ETag || fs.LastModified != fetch.LastModified || len(fs.LastSeenEntry) > maxStatusTextBytes ||
+		!entriesContainID([]rss.Entry{{ID: newestID}}, fs.LastSeenEntry) {
+		t.Fatalf("unexpected status after skipped backlog: %+v", fs)
+	}
+	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != reasonBacklogSkipped ||
+		condition.ObservedGeneration != fg.Generation || !strings.Contains(condition.Message, "2 existing entries") {
+		t.Fatalf("unexpected backlog condition: %+v", condition)
+	}
+}
+
+func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		limit       *int32
+		lastSeen    string
+		initialized bool
+		wantStart   int
+	}{
+		{name: "omitted limit uses default", wantStart: 4},
+		{name: "positive limit keeps most recent", limit: new(int32(3)), wantStart: 6},
+		{name: "zero with missing watermark uses default cap", limit: new(int32(0)), lastSeen: "scrolled-out", initialized: true, wantStart: 4},
+		{name: "legacy missing watermark uses default cap", limit: new(int32(0)), lastSeen: "scrolled-out", wantStart: 4},
+		{name: "legacy matching watermark resumes", limit: new(int32(0)), lastSeen: "entry-1", wantStart: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, "{{.Title}}")
+			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			fg.Spec.CatchUpLimit = tc.limit
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			entries := make([]rss.Entry, 9)
+			for i := range entries {
+				id := fmt.Sprintf("entry-%d", i)
+				entries[i] = rss.Entry{ID: id, Title: id, Seq: len(entries) - 1 - i}
+			}
+			wantRetry, retryAfter := (&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed,
+				rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+			bodies := discordServer.Bodies()
+			if wantRetry || retryAfter != 0 || len(bodies) != len(entries)-tc.wantStart {
+				t.Fatalf("retry=%t after=%v sent=%d; want %d", wantRetry, retryAfter, len(bodies), len(entries)-tc.wantStart)
+			}
+			for i, body := range bodies {
+				var payload struct {
+					Content string `json:"content"`
+				}
+				if err := json.Unmarshal([]byte(body), &payload); err != nil || payload.Content != fmt.Sprintf("entry-%d", tc.wantStart+i) {
+					t.Fatalf("message %d = %s, err=%v", i, body, err)
+				}
+			}
+			if fs.LastSeenEntry != "entry-8" || !fs.Initialized {
+				t.Fatalf("unexpected final watermark/initialization: %+v", fs)
+			}
+		})
+	}
+}
+
+// A config error on a non-empty first fetch must not mark the feed
+// initialized: once the config is fixed, catchUpLimit 0 still skips the
+// backlog instead of delivering all of it.
+// configErrURLPrefix keeps the entry URLs of the config-error test unique in the package.
+const configErrURLPrefix = "https://config-error.example.test/"
+
+func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
+	ns, name := initializationUnitNS, "config-error-first-sync"
+	defer deleteFeedGroupMetrics(ns, name)
+	discordServer := NewMockDiscordServer()
+	defer discordServer.Close()
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.CatchUpLimit = new(int32(0))
+	feed.Filter = &v1alpha1.Filter{Regex: "("} // does not compile
+	fg.Spec.Feeds[0] = feed
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	r := &FeedGroupReconciler{}
+
+	entries := []rss.Entry{
+		{ID: configErrURLPrefix + "newer", Title: "newer", Link: configErrURLPrefix + "newer", Seq: 2},
+		{ID: configErrURLPrefix + "older", Title: "older", Link: configErrURLPrefix + "older", Seq: 1},
+	}
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+	if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
+		t.Fatalf("config error left initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+	}
+
+	feed.Filter = nil
+	fg.Spec.Feeds[0] = feed
+	r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+	if got := discordServer.MessageCount(); got != 0 {
+		t.Fatalf("sent=%d after fixing config, want the backlog skipped", got)
+	}
+	if fs := feedStatusFor(fg, feed.RSSUrl); !fs.Initialized || fs.LastSeenEntry == "" {
+		t.Fatalf("after fix initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 	}
 }

@@ -51,6 +51,7 @@ func TestStatusApplyConfigurationRoundTrip(t *testing.T) {
 		Feeds: []v1alpha1.FeedStatus{{
 			RSSUrl:        "https://example.com/feed.xml",
 			LastChecked:   "2026-01-02T03:04:05Z",
+			Initialized:   true,
 			LastSeenEntry: "https://example.com/post",
 			LastSent:      map[string]string{"abc123": "2026-01-02T03:04:05Z"},
 			LastError:     "feed fetch failed: 404 Not Found",
