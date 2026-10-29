@@ -77,8 +77,8 @@ func TestPlanFeeds(t *testing.T) {
 			name: "healthy feed is not fetched early because a sibling fails",
 			fg: func() *v1alpha1.FeedGroup {
 				failing := healthy("failing", time.Minute)
-				failing.LastError, failing.RetryCount = "boom", 1
-				return scheduleGroup("30m", healthy("healthy", 10*time.Minute), failing)
+				failing.LastError, failing.RetryCount = "upstream error", 1
+				return scheduleGroup(defaultInterval, healthy("healthy", 10*time.Minute), failing)
 			},
 			wantActive:  []string{"failing"},
 			wantNextDue: 20 * time.Minute,
@@ -88,7 +88,7 @@ func TestPlanFeeds(t *testing.T) {
 			fg: func() *v1alpha1.FeedGroup {
 				backed := healthy("backed", 2*time.Hour)
 				backed.LastError, backed.RetryCount, backed.BackoffUntil = "404", 3, stamp(time.Minute)
-				return scheduleGroup("30m", backed, healthy("healthy", 10*time.Minute))
+				return scheduleGroup(defaultInterval, backed, healthy("healthy", 10*time.Minute))
 			},
 			wantActive:  nil,
 			wantNextDue: 20 * time.Minute,
@@ -98,14 +98,14 @@ func TestPlanFeeds(t *testing.T) {
 			fg: func() *v1alpha1.FeedGroup {
 				backed := healthy("backed", 2*time.Hour)
 				backed.LastError, backed.RetryCount, backed.BackoffUntil = "404", 3, stamp(0)
-				return scheduleGroup("30m", backed)
+				return scheduleGroup(defaultInterval, backed)
 			},
 			wantActive: []string{"backed"},
 		},
 		{
 			name: "interval elapsing exactly now is due; one second earlier is not",
 			fg: func() *v1alpha1.FeedGroup {
-				return scheduleGroup("30m", healthy("exact", 30*time.Minute), healthy("early", 30*time.Minute-time.Second))
+				return scheduleGroup(defaultInterval, healthy("exact", 30*time.Minute), healthy("early", 30*time.Minute-time.Second))
 			},
 			wantActive:  []string{"exact"},
 			wantNextDue: time.Second,
@@ -115,7 +115,7 @@ func TestPlanFeeds(t *testing.T) {
 			fg: func() *v1alpha1.FeedGroup {
 				backed := healthy("backed", time.Minute)
 				backed.BackoffUntil = stamp(time.Hour)
-				fg := scheduleGroup("30m", healthy("healthy", time.Minute), backed, healthy("paused", time.Hour))
+				fg := scheduleGroup(defaultInterval, healthy("healthy", time.Minute), backed, healthy("paused", time.Hour))
 				fg.Spec.Feeds[2].Paused = true
 				return fg
 			},
@@ -125,10 +125,10 @@ func TestPlanFeeds(t *testing.T) {
 		{
 			name: "malformed timestamps are recoverable",
 			fg: func() *v1alpha1.FeedGroup {
-				badCheck := v1alpha1.FeedStatus{RSSUrl: "badcheck", LastChecked: "garbage"}
+				badCheck := v1alpha1.FeedStatus{RSSUrl: "badcheck", LastChecked: "bad-last-checked"}
 				badBackoff := healthy("badbackoff", 2*time.Hour)
-				badBackoff.BackoffUntil = "garbage"
-				return scheduleGroup("30m", badCheck, badBackoff)
+				badBackoff.BackoffUntil = "bad-backoff-until"
+				return scheduleGroup(defaultInterval, badCheck, badBackoff)
 			},
 			wantActive: []string{"badcheck", "badbackoff"},
 		},
@@ -142,7 +142,7 @@ func TestPlanFeeds(t *testing.T) {
 		{
 			name: "soonest of several not-yet-due feeds wins",
 			fg: func() *v1alpha1.FeedGroup {
-				return scheduleGroup("30m", healthy("a", 5*time.Minute), healthy("b", 25*time.Minute), healthy("c", 10*time.Minute))
+				return scheduleGroup(defaultInterval, healthy("a", 5*time.Minute), healthy("b", 25*time.Minute), healthy("c", 10*time.Minute))
 			},
 			wantNextDue: 5 * time.Minute,
 		},
@@ -161,7 +161,7 @@ func TestPlanFeeds(t *testing.T) {
 }
 
 func TestPlanFeeds_PausedAndEmptyURLNeverContributeWakeTime(t *testing.T) {
-	fg := scheduleGroup("30m", v1alpha1.FeedStatus{RSSUrl: "paused", LastChecked: stamp(-time.Minute)})
+	fg := scheduleGroup(defaultInterval, v1alpha1.FeedStatus{RSSUrl: "paused", LastChecked: stamp(-time.Minute)})
 	fg.Spec.Feeds[0].Paused = true
 	fg.Spec.Feeds = append(fg.Spec.Feeds, v1alpha1.FeedSpec{})
 	if got := planFeeds(fg, scheduleNow, false); len(got.active) != 0 || got.nextDue != 0 {
@@ -231,8 +231,8 @@ func TestBackoffAddsNoWakeTime(t *testing.T) {
 		RSSUrl: "backed", LastChecked: stamp(-time.Hour), LastError: "404", RetryCount: 1,
 		BackoffUntil: stamp(10 * time.Minute),
 	}
-	plan := planFeeds(scheduleGroup("30m", backed), scheduleNow, false)
-	d := plan.requeue(&v1alpha1.FeedGroupSpec{Interval: "30m", RetryInterval: "5m"}, false, 0)
+	plan := planFeeds(scheduleGroup(defaultInterval, backed), scheduleNow, false)
+	d := plan.requeue(&v1alpha1.FeedGroupSpec{Interval: defaultInterval, RetryInterval: "5m"}, false, 0)
 	if len(plan.active) != 0 || d.bound(30*time.Minute) != 30*time.Minute {
 		t.Fatalf("active=%v wait=%v, want no fetch and the full 30m Interval", activeURLs(plan), d.bound(30*time.Minute))
 	}

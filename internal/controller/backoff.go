@@ -160,13 +160,13 @@ func (p feedPlan) requeue(spec *v1alpha1.FeedGroupSpec, wantRetry bool, rateLimi
 	return requeueDecision{interval: spec.Interval, fallback: fallbackInterval, jitter: true, nextDue: p.nextDue}
 }
 
-// bound shortens wait to the soonest not-yet-due feed, never below
-// minParsedInterval. A wait already shorter than nextDue is left alone.
-func (d requeueDecision) bound(wait time.Duration) time.Duration {
-	if d.nextDue > 0 && d.nextDue < wait {
+// bound shortens delay to the soonest not-yet-due feed, never below
+// minParsedInterval. A delay already shorter than nextDue is left alone.
+func (d requeueDecision) bound(delay time.Duration) time.Duration {
+	if d.nextDue > 0 && d.nextDue < delay {
 		return max(d.nextDue, minParsedInterval)
 	}
-	return wait
+	return delay
 }
 
 // maxRetryCount returns the configured retry limit, with a minimum of one.
