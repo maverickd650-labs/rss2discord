@@ -365,10 +365,12 @@ func strippedLinkIdentity(entry rss.Entry) string {
 	return normalizeIdentity(entry.ID)
 }
 
-// strippedCounts counts one fetch's entries by strippedLinkIdentity. The
-// stripped form only stands in for an entry when no other entry in the fetch
-// shares it: entries that differ only by fragment or ref (a changelog's #v1.2
-// and #v1.3) are told apart by their full identities alone, while an entry
+// strippedCounts counts how many of one fetch's entries each identity could
+// stand for: an entry's strippedLinkIdentity, and its own identity when that
+// differs. The stripped form only stands in for an entry when no other entry
+// in the fetch shares it: entries that differ only by fragment or ref (a
+// changelog's #v1.2 and #v1.3), or a link whose stripped form is another
+// entry's GUID, are told apart by their full identities alone, while an entry
 // whose ref merely rotated still matches what was recorded for it.
 type strippedCounts map[string]int
 
@@ -376,8 +378,12 @@ type strippedCounts map[string]int
 func countStripped(entries []rss.Entry) strippedCounts {
 	counts := make(strippedCounts)
 	for _, entry := range entries {
-		if stripped := strippedLinkIdentity(entry); stripped != "" {
+		stripped := strippedLinkIdentity(entry)
+		if stripped != "" {
 			counts[stripped]++
+		}
+		if identity := entryIdentity(entry); identity != stripped {
+			counts[identity]++
 		}
 	}
 	return counts

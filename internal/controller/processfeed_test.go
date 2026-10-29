@@ -1185,6 +1185,18 @@ func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
 	}
 }
 
+// A GUID-less link whose stripped form is another entry's GUID is a
+// different entry, not a rotation of it, so it is delivered even though the
+// GUID was already sent.
+func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
+	fg, feed := newMetricsFeedGroup(legacyStateNS, "stripped-to-guid", "{{.Title}}")
+	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	guid := guidEntry(legacyURLPrefix+"guid-collide/post", 0)
+	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
+	link := linkEntry(legacyURLPrefix+"guid-collide/post#v2", 1)
+	processTwice(t, fg, feed, []rss.Entry{guid, link}, link.Title)
+}
+
 // Legacy keys in LastSent and a legacy watermark, stored under the old
 // fragment- and ref-stripped identities, still count after the upgrade:
 // nothing already delivered is resent, the new entry is, and the status is
