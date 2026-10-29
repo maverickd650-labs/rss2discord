@@ -1258,3 +1258,12 @@ func TestParseFeed_AtomXHTMLSummaryFallback(t *testing.T) {
 		})
 	}
 }
+
+// Malformed markup inside an xhtml construct is a parse error, not a
+// silently empty value.
+func TestParseFeed_AtomXHTMLMalformedIsError(t *testing.T) {
+	const doc = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>1</id><title type="xhtml"><div>unclosed</title></entry></feed>`
+	if _, _, err := parseFeed([]byte(doc)); err == nil {
+		t.Fatal("expected an error for malformed xhtml")
+	}
+}

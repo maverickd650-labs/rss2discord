@@ -949,3 +949,30 @@ func TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName(t *testi
 		t.Fatalf("expected ThreadName to stay empty when ForumThreadID is set, got %q", msg.ThreadName)
 	}
 }
+
+// URL-looking IDs that don't parse, or parse to a non-http(s) scheme, are
+// returned unchanged rather than normalized.
+func TestNormalizeIdentity_UnparsableOrNonHTTPURLUnchanged(t *testing.T) {
+	for _, id := range []string{"http://[::1", "httpx://example.com/a#frag", "http"} {
+		if got := normalizeIdentity(id); got != id {
+			t.Errorf("normalizeIdentity(%q) = %q, want unchanged", id, got)
+		}
+	}
+}
+
+// A forum thread-name template that fails at execution is a render error,
+// like a failing content template, so the entry goes through retry/skip.
+func TestBuildDiscordMessage_ThreadNameRenderError(t *testing.T) {
+	threadNameTmpl, err := compileTemplate("thread", "{{.DoesNotExist}}", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	contentTmpl, err := compileTemplate("content", "{{.Title}}", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = buildDiscordMessage(&v1alpha1.FeedGroup{}, nil, contentTmpl, nil, threadNameTmpl, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T"})
+	if err == nil {
+		t.Fatal("expected a render error from the thread name template")
+	}
+}
