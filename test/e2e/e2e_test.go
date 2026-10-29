@@ -323,7 +323,7 @@ spec:
     key: url
   interval: 1m
   retries: 2
-  retryInterval: 5s
+  retryInterval: 10s
   feeds:
     - rssUrl: https://feeds.invalid/feed.xml
 `, feedGroupName, feedGroupNamespace)

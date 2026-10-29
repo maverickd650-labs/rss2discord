@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 )
 
@@ -418,9 +419,28 @@ const maxNSCandidates = 8
 // returns the first non-blank candidate of a namespace tier.
 type nsTexts []nsText
 
+// UnmarshalXML retains the first non-blank value per namespace, subject to
+// nsTexts' retention limits. XHTML constructs retain raw inner markup only when
+// they contain visible text; other constructs retain decoded character data.
+// XML decoding errors are returned; blank or excess candidates are ignored.
 func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var el nsText
-	if err := d.DecodeElement(&el, &start); err != nil {
+	if isXHTMLConstruct(start) {
+		// An Atom type="xhtml" text construct wraps its value in a child
+		// <div>, which chardata alone would drop. Keep the raw inner markup;
+		// the controller's stripHTML turns it into plain text. Only xhtml is
+		// read this way: innerxml of type="html" is still-escaped markup.
+		var x struct {
+			Inner string `xml:",innerxml"`
+		}
+		if err := d.DecodeElement(&x, &start); err != nil {
+			return err
+		}
+		if !hasVisibleXHTMLText(x.Inner) {
+			return nil
+		}
+		el = nsText{XMLName: start.Name, Text: x.Inner}
+	} else if err := d.DecodeElement(&el, &start); err != nil {
 		return err
 	}
 	el.Text = strings.TrimSpace(el.Text)
@@ -444,6 +464,48 @@ func (c *nsTexts) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	}
 	*c = append(*c, el)
 	return nil
+}
+
+// hasVisibleXHTMLText ignores empty wrappers, comments, and script/style
+// bodies so a markup-only Atom summary doesn't mask usable content.
+func hasVisibleXHTMLText(markup string) bool {
+	z := html.NewTokenizer(strings.NewReader(markup))
+	var skipUntil string
+	for {
+		switch tokenType := z.Next(); tokenType {
+		case html.ErrorToken:
+			return false
+		case html.TextToken:
+			if skipUntil == "" && strings.TrimSpace(string(z.Text())) != "" {
+				return true
+			}
+		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
+			name, _ := z.TagName()
+			tag := string(name)
+			if _, local, ok := strings.Cut(tag, ":"); ok {
+				tag = local
+			}
+			if skipUntil != "" {
+				if tokenType == html.EndTagToken && tag == skipUntil {
+					skipUntil = ""
+				}
+			} else if tokenType == html.StartTagToken && (tag == "script" || tag == "style") {
+				skipUntil = tag
+			}
+		}
+	}
+}
+
+// isXHTMLConstruct reports whether start declares type="xhtml", trimming
+// attribute whitespace and ignoring case. Attribute namespaces and the element's
+// name are not checked.
+func isXHTMLConstruct(start xml.StartElement) bool {
+	for _, a := range start.Attr {
+		if a.Name.Local == "type" && strings.EqualFold(strings.TrimSpace(a.Value), "xhtml") {
+			return true
+		}
+	}
+	return false
 }
 
 // preferredNamespace reports whether space is one pickText (or a caller's
@@ -639,12 +701,14 @@ func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMe
 }
 
 type atomEntry struct {
-	ID      string     `xml:"id"`
-	Title   string     `xml:"title"`
-	Links   []atomLink `xml:"link"`
-	Summary string     `xml:"summary"`
-	// Content is a slice of nsText because a direct <media:content> on the
-	// entry shares the local name; see atomText.
+	ID    string     `xml:"id"`
+	Links []atomLink `xml:"link"`
+	// Title, Summary and Content are nsTexts: Content because a direct
+	// <media:content> on the entry shares its local name (see atomText), and
+	// all three so type="xhtml" values (a child <div>) are captured; see
+	// nsTexts.UnmarshalXML.
+	Title      nsTexts        `xml:"title"`
+	Summary    nsTexts        `xml:"summary"`
 	Content    nsTexts        `xml:"content"`
 	Updated    string         `xml:"updated"`
 	Published  string         `xml:"published"`
@@ -833,6 +897,10 @@ func parseRDF(data []byte) ([]Entry, string, error) {
 	return rssItemsToEntries(envelope.Items), pickText(envelope.Channel.Title), nil
 }
 
+// rssItemsToEntries converts RSS 2.0 or RSS 1.0 items in document order, recording
+// each item's index in Seq. Identity falls back from GUID to link to title.
+// Invalid or missing dates become zero
+// times after trying pubDate and then dc:date.
 func rssItemsToEntries(items []rssItem) []Entry {
 	entries := make([]Entry, 0, len(items))
 	for i, item := range items {
@@ -881,6 +949,12 @@ func rssItemsToEntries(items []rssItem) []Entry {
 	return entries
 }
 
+// parseAtom returns entries in document order and the feed title, or nil entries
+// and an empty title on an XML decoding error. Identity falls back from ID to
+// resolved link to title. XHTML
+// text constructs retain their inner markup. Description falls back from summary
+// to content to the Media RSS group description. Invalid or missing dates become
+// zero times after trying published and then updated.
 func parseAtom(data []byte) ([]Entry, string, error) {
 	var feed atomFeed
 	if err := unmarshalXML(data, &feed); err != nil {
@@ -908,14 +982,14 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			id = strings.TrimSpace(link)
 		}
 		if id == "" {
-			id = strings.TrimSpace(item.Title)
+			id = atomText(item.Title)
 		}
 
 		// Content is exposed even when it doubles as Description (no
 		// summary), so templates can use {{.Content}} regardless of which
 		// elements a given feed fills in.
 		content := atomText(item.Content)
-		description := strings.TrimSpace(item.Summary)
+		description := atomText(item.Summary)
 		if description == "" {
 			description = content
 		}
@@ -937,7 +1011,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		entries = append(entries, Entry{
 			ID:          id,
-			Title:       strings.TrimSpace(item.Title),
+			Title:       atomText(item.Title),
 			Link:        strings.TrimSpace(link),
 			Description: description,
 			Content:     content,

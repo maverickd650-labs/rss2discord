@@ -48,6 +48,12 @@ type FeedStatusApplyConfiguration struct {
 	// (RFC3339 timestamp). A 304 or a fetch with no new entries still
 	// counts as a successful check; a failed fetch does not advance it.
 	LastChecked *string `json:"lastChecked,omitempty"`
+	// initialized records that this feed has been fetched successfully with a
+	// usable configuration, even if it had no entries, so entries that appear
+	// later are new rather than an initial backlog. It is left false when a
+	// filter or template error stops processing, and reads as false on
+	// statuses written before this field existed.
+	Initialized *bool `json:"initialized,omitempty"`
 	// lastSeenEntry is the last seen entry identifier (GUID or Link) for
 	// this feed. Used to fetch only new entries after restarts. Identifiers
 	// longer than the field limit are stored as "sha256:<hex digest>".
@@ -111,6 +117,14 @@ func (b *FeedStatusApplyConfiguration) WithRSSUrl(value string) *FeedStatusApply
 // If called multiple times, the LastChecked field is set to the value of the last call.
 func (b *FeedStatusApplyConfiguration) WithLastChecked(value string) *FeedStatusApplyConfiguration {
 	b.LastChecked = &value
+	return b
+}
+
+// WithInitialized sets the Initialized field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Initialized field is set to the value of the last call.
+func (b *FeedStatusApplyConfiguration) WithInitialized(value bool) *FeedStatusApplyConfiguration {
+	b.Initialized = &value
 	return b
 }
 

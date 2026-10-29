@@ -30,12 +30,14 @@ type FeedGroupSpecApplyConfiguration struct {
 	// The secret must contain the webhook URL under the specified key.
 	DiscordWebhookSecretRef *v1.SecretKeySelector `json:"discordWebhookSecretRef,omitempty"`
 	// interval is the duration between feed checks (e.g., "30m", "1h"),
-	// parsed by Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
+	// interval would requeue the FeedGroup in a tight reconcile loop,
+	// hammering every feed host on each pass.
 	Interval *string `json:"interval,omitempty"`
 	// format is the default template for Discord messages.
-	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Link}}, {{.Published}}, {{.Author}}, {{.Categories}}.
+	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
+	// {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
+	// functions truncate, default, lower, upper, trim, replace and discordTime.
 	Format *string `json:"format,omitempty"`
 	// embed configures Discord embed rendering, used as the default for all
 	// feeds in this group unless a feed sets its own Embed.
@@ -52,9 +54,9 @@ type FeedGroupSpecApplyConfiguration struct {
 	// retries is the number of times to retry failed operations (fetch/send).
 	Retries *int32 `json:"retries,omitempty"`
 	// retryInterval is the duration between retries (e.g., "5m"), parsed by
-	// Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// Go's time.ParseDuration. Must be at least 10s: a shorter interval
+	// would requeue the FeedGroup in a tight reconcile loop, hammering every
+	// feed host on each pass.
 	RetryInterval *string `json:"retryInterval,omitempty"`
 	// feeds is the list of RSS feed configurations in this group. Capped at
 	// maxConcurrentFetches (see feedgroup_controller.go) so a single
@@ -63,11 +65,20 @@ type FeedGroupSpecApplyConfiguration struct {
 	// status (LastSeenEntry, LastSent, ETag, ...) is keyed by URL: two feeds
 	// sharing a URL would silently clobber each other's status.
 	Feeds []FeedSpecApplyConfiguration `json:"feeds,omitempty"`
-	// catchUpLimit caps how many backlog entries are sent to Discord the
-	// first time a feed is reconciled (i.e. before it has a recorded
-	// LastSeenEntry). Without this, adding a feed with a long history
-	// floods the webhook with every existing entry at once. Entries beyond
-	// the limit are treated as already seen and are not sent.
+	// catchUpLimit caps how many entries are sent to Discord when a feed has
+	// no usable watermark: the first time it is synced (no recorded
+	// LastSeenEntry), or when its recorded LastSeenEntry has scrolled out of
+	// the feed's window. A normal fetch that finds the watermark is never
+	// capped. Without this, adding a feed with a long history floods the
+	// webhook with every existing entry at once. Entries beyond the limit are
+	// treated as already seen and are not sent.
+	//
+	// Set to 0 to send no backlog: the first non-empty sync records the feed's
+	// newest entry and only entries published afterwards are delivered. A feed
+	// that was empty on its first sync has no watermark yet, so with 0
+	// everything that appears later is delivered uncapped; if a recorded
+	// watermark later scrolls out of the window, 0 falls back to the default
+	// cap of 5. Omitting the field uses the default of 5.
 	CatchUpLimit *int32 `json:"catchUpLimit,omitempty"`
 }
 

@@ -27,6 +27,24 @@ manager:
   args:
     - --leader-elect
 
+  ## FeedGroups reconciled concurrently (--max-concurrent-feedgroup-reconciles).
+  ## Omitted when unset, so the manager's default of 1 applies. Each extra
+  ## concurrent reconcile can buffer more feed bodies at once: raise
+  ## resources.limits.memory with it (see the sizing note on `resources`).
+  ##
+  # maxConcurrentReconciles: 1
+
+  ## OTLP/gRPC endpoint (host:port) to export traces for outbound RSS fetches
+  ## and Discord webhook requests (--otlp-endpoint). Omitted when empty, which
+  ## leaves tracing disabled.
+  ##
+  otlpEndpoint: ""
+
+  ## Log verbosity (--zap-log-level): debug, info, error, or an integer > 0
+  ## for higher verbosity. Omitted when empty, which keeps the manager default.
+  ##
+  logLevel: ""
+
   ## Health probes.
   ## The manager serves the liveness (/healthz) and readiness (/readyz) endpoints on this port.
   ##
@@ -57,10 +75,18 @@ manager:
 
   ## Resource limits and requests
   ##
+  ## Memory sizing: one reconcile fetches up to 10 feeds at once, each response
+  ## buffered up to 10MB, plus XML decode overhead, so a reconcile of large
+  ## feeds can briefly hold on the order of 100-200MB; every additional
+  ## concurrent reconcile (maxConcurrentReconciles) can add as much again.
+  ## GOMEMLIMIT tracks limits.memory so the GC works to stay under it. Typical
+  ## feeds are far smaller, so 256Mi covers a single reconcile; scale the limit
+  ## with maxConcurrentReconciles and the size of your feeds.
+  ##
   resources:
     limits:
       cpu: 500m
-      memory: 128Mi
+      memory: 256Mi
     requests:
       cpu: 10m
       memory: 64Mi

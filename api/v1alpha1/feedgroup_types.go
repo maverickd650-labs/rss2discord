@@ -42,6 +42,11 @@ type Filter struct {
 	Keywords []string `json:"keywords,omitempty"`
 }
 
+// EmbedImageStyleImage is the EmbedSpec.ImageStyle value that shows an
+// entry's image large, below the description. Any other value (including
+// unset) shows it as a small thumbnail.
+const EmbedImageStyleImage = "image"
+
 // EmbedSpec configures Discord's native embed rendering (the colored
 // "bubble" with title, description, thumbnail, author and footer) instead
 // of a plain text message.
@@ -68,6 +73,13 @@ type EmbedSpec struct {
 	// +kubebuilder:validation:MaxLength=4096
 	// +kubebuilder:validation:MinLength=1
 	DescriptionFormat string `json:"descriptionFormat,omitempty"`
+
+	// imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+	// image beside the description, the default) or "image" (a large image
+	// below the description).
+	// +kubebuilder:validation:Enum=thumbnail;image
+	// +optional
+	ImageStyle string `json:"imageStyle,omitempty"`
 
 	// authorName is shown on the embed's author line.
 	// +optional
@@ -121,6 +133,7 @@ type FeedSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[0-9]+$`
 	ForumThreadID string `json:"forumThreadID,omitempty"`
 
 	// paused stops processing this feed if set to true.
@@ -137,18 +150,21 @@ type FeedGroupSpec struct {
 	DiscordWebhookSecretRef corev1.SecretKeySelector `json:"discordWebhookSecretRef"`
 
 	// interval is the duration between feed checks (e.g., "30m", "1h"),
-	// parsed by Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
+	// interval would requeue the FeedGroup in a tight reconcile loop,
+	// hammering every feed host on each pass.
 	// +default="30m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m')",message="interval must be at least 1m"
 	// +optional
 	Interval string `json:"interval,omitempty"`
 
 	// format is the default template for Discord messages.
-	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Link}}, {{.Published}}, {{.Author}}, {{.Categories}}.
+	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
+	// {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
+	// functions truncate, default, lower, upper, trim, replace and discordTime.
 	// +default="**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
 	// +optional
 	// +kubebuilder:validation:MaxLength=4096
@@ -176,21 +192,25 @@ type FeedGroupSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
 	AvatarURL string `json:"avatarURL,omitempty"`
 
 	// retries is the number of times to retry failed operations (fetch/send).
 	// +default=3
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
 	// +optional
 	Retries int32 `json:"retries,omitempty"`
 
 	// retryInterval is the duration between retries (e.g., "5m"), parsed by
-	// Go's time.ParseDuration. Must not be negative: a negative or
-	// unreasonably short interval would requeue the FeedGroup in a tight
-	// reconcile loop, hammering every feed host on each pass.
+	// Go's time.ParseDuration. Must be at least 10s: a shorter interval
+	// would requeue the FeedGroup in a tight reconcile loop, hammering every
+	// feed host on each pass.
 	// +default="5m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('10s')",message="retryInterval must be at least 10s"
 	// +optional
 	RetryInterval string `json:"retryInterval,omitempty"`
 
@@ -207,14 +227,25 @@ type FeedGroupSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(f, self.exists_one(g, g.rssUrl == f.rssUrl))",message="each feed's rssUrl must be unique within a FeedGroup"
 	Feeds []FeedSpec `json:"feeds"`
 
-	// catchUpLimit caps how many backlog entries are sent to Discord the
-	// first time a feed is reconciled (i.e. before it has a recorded
-	// LastSeenEntry). Without this, adding a feed with a long history
-	// floods the webhook with every existing entry at once. Entries beyond
-	// the limit are treated as already seen and are not sent.
+	// catchUpLimit caps how many entries are sent to Discord when a feed has
+	// no usable watermark: the first time it is synced (no recorded
+	// LastSeenEntry), or when its recorded LastSeenEntry has scrolled out of
+	// the feed's window. A normal fetch that finds the watermark is never
+	// capped. Without this, adding a feed with a long history floods the
+	// webhook with every existing entry at once. Entries beyond the limit are
+	// treated as already seen and are not sent.
+	//
+	// Set to 0 to send no backlog: the first non-empty sync records the feed's
+	// newest entry and only entries published afterwards are delivered. A feed
+	// that was empty on its first sync has no watermark yet, so with 0
+	// everything that appears later is delivered uncapped; if a recorded
+	// watermark later scrolls out of the window, 0 falls back to the default
+	// cap of 5. Omitting the field uses the default of 5.
 	// +default=5
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
 	// +optional
-	CatchUpLimit int32 `json:"catchUpLimit,omitempty"`
+	CatchUpLimit *int32 `json:"catchUpLimit,omitempty"`
 }
 
 // FeedStatus is the observed state of a single feed within a FeedGroup,
@@ -254,6 +285,14 @@ type FeedStatus struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:MinLength=1
 	LastChecked string `json:"lastChecked,omitempty"`
+
+	// initialized records that this feed has been fetched successfully with a
+	// usable configuration, even if it had no entries, so entries that appear
+	// later are new rather than an initial backlog. It is left false when a
+	// filter or template error stops processing, and reads as false on
+	// statuses written before this field existed.
+	// +optional
+	Initialized bool `json:"initialized,omitempty"`
 
 	// lastSeenEntry is the last seen entry identifier (GUID or Link) for
 	// this feed. Used to fetch only new entries after restarts. Identifiers

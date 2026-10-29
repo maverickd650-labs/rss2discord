@@ -79,6 +79,10 @@ const (
 	// reasonEntrySkipped marks a Delivered condition left behind by an entry
 	// given up on after exhausting retries (see skipEntry).
 	reasonEntrySkipped = "EntrySkipped"
+	// reasonBacklogSkipped marks a Delivered condition left behind by a first
+	// sync with catchUpLimit: 0, which sends nothing and starts from the
+	// newest entry (see skipBacklog).
+	reasonBacklogSkipped = "BacklogSkipped"
 
 	metricNotFound           = "not_found"
 	metricGone               = "gone"
