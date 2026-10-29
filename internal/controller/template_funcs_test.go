@@ -273,7 +273,7 @@ func TestCompileTemplate_SupportedConstructs(t *testing.T) {
 		{name: "comment only", format: `{{/* {{range 100000000000}}{{end}} */}}`},
 		{name: "empty template"},
 		{name: "safe fallback", format: " \t\n", fallback: `{{if .Title}}{{.Title}}{{else}}none{{end}}`, want: "none"},
-		{name: "unused unsafe fallback", format: `{{.Title}}`, fallback: `{{range 2}}{{end}}`, entry: rss.Entry{Title: "safe"}, want: "safe"},
+		{name: "unused unsafe fallback", format: `{{ .Title }}`, fallback: `{{range 2}}{{end}}`, entry: rss.Entry{Title: "safe"}, want: "safe"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpl, err := compileTemplate("supported", tc.format, tc.fallback)
@@ -290,15 +290,16 @@ func TestCompileTemplate_SupportedConstructs(t *testing.T) {
 
 func TestRenderTemplate_OutputByteBoundaries(t *testing.T) {
 	const limit = 1 << 20
+	truncated8 := strings.Repeat("x", 7) + "…" // an 8-rune cut of a run of x
 	for _, tc := range []struct {
 		name, format, author, want string
 		wantOverflow               int
 		wantError                  bool
 	}{
-		{name: "one byte below", format: `{{.Author}}`, author: strings.Repeat("x", limit-1), want: "xxxxxxx…", wantOverflow: limit - 1 - 8},
-		{name: "exactly one MiB", format: `{{.Author}}`, author: strings.Repeat("x", limit), want: "xxxxxxx…", wantOverflow: limit - 8},
+		{name: "one byte below", format: `{{.Author}}`, author: strings.Repeat("x", limit-1), want: truncated8, wantOverflow: limit - 1 - 8},
+		{name: "exactly one MiB", format: `{{.Author}}`, author: strings.Repeat("x", limit), want: truncated8, wantOverflow: limit - 8},
 		{name: "one byte above", format: `{{.Author}}`, author: strings.Repeat("x", limit+1), wantError: true},
-		{name: "cumulative exact limit", format: `{{.Author}}{{.Author}}`, author: strings.Repeat("x", limit/2), want: "xxxxxxx…", wantOverflow: limit - 8},
+		{name: "cumulative exact limit", format: `{{.Author}}{{.Author}}`, author: strings.Repeat("x", limit/2), want: truncated8, wantOverflow: limit - 8},
 		{name: "literal crosses cumulative limit", format: `{{.Author}}{{.Author}}x`, author: strings.Repeat("x", limit/2), wantError: true},
 		{name: "multibyte exact limit", format: `{{.Author}}`, author: strings.Repeat("é", limit/2), want: "ééééééé…", wantOverflow: limit/2 - 8},
 		{name: "bytes exceed limit but runes do not", format: `{{.Author}}x`, author: strings.Repeat("é", limit/2), wantError: true},
