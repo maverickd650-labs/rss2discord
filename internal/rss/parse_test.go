@@ -1727,6 +1727,26 @@ func TestParseFeed_AtomPreviousID(t *testing.T) {
 	}
 }
 
+// A foreign alternate link with a blank href is what earlier releases read first,
+// so with no id or title they fell back to ContentID. That is the identity to
+// migrate from, not "none".
+func TestParseFeed_AtomPreviousIDFallsBackToContentID(t *testing.T) {
+	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><entry>` +
+		linkEl("ext:link", `rel="alternate" `, "") + linkEl("link", `rel="alternate" `, nsLinkReal) +
+		`<summary>body</summary></entry></feed>`
+	entries, _, err := parseFeed([]byte(doc))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	e := entries[0]
+	if e.ID != nsLinkReal || e.IDSource != IDFromLink {
+		t.Fatalf("ID, IDSource = %q, %v; want %q, %v", e.ID, e.IDSource, nsLinkReal, IDFromLink)
+	}
+	if want := ContentID(e); e.PreviousID != want || e.PreviousIDSource != IDFromContent {
+		t.Errorf("PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.PreviousID, e.PreviousIDSource, want, IDFromContent)
+	}
+}
+
 // TestParseFeed_AtomPreviousIDAlignsWithEntries asserts an extension element
 // named entry, which atomEntry never reads, can't shift PreviousID onto the
 // wrong entry.

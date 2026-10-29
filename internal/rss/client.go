@@ -1305,9 +1305,13 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		}
 		if item.prior != nil {
 			priorLink := resolveAtomURL(base, primaryLink(item.prior.Links))
-			priorID, priorSource := atomIdentity(item.prior.ID, priorLink, atomText(item.Title))
-			if priorID != "" && (priorID != id || priorSource != idSource) {
-				entry.PreviousID, entry.PreviousIDSource = priorID, priorSource
+			previous := entry
+			previous.ID, previous.IDSource = atomIdentity(item.prior.ID, priorLink, atomText(item.Title))
+			// Both identities get the ContentID fallback before comparing, so
+			// an entry with no id, link or title migrates from or to it too.
+			previous, entry = withContentID(previous), withContentID(entry)
+			if previous.ID != entry.ID || previous.IDSource != entry.IDSource {
+				entry.PreviousID, entry.PreviousIDSource = previous.ID, previous.IDSource
 			}
 		}
 		entries = append(entries, withContentID(entry))
