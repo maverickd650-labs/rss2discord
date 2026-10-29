@@ -1068,11 +1068,11 @@ func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) 
 		name   string
 		break_ func(*v1alpha1.FeedSpec)
 	}{
-		{"message template", func(f *v1alpha1.FeedSpec) { f.Format = "{{.Unclosed" }},
+		{"message template", func(f *v1alpha1.FeedSpec) { f.Format = "{{.Open" }},
 		{"embed description template", func(f *v1alpha1.FeedSpec) {
-			f.Embed = &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: "{{.Unclosed"}
+			f.Embed = &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: "{{if .Title}}"}
 		}},
-		{"forum thread name template", func(f *v1alpha1.FeedSpec) { f.ForumThreadName = "{{.Unclosed" }},
+		{"forum thread name template", func(f *v1alpha1.FeedSpec) { f.ForumThreadName = "{{end}}" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := initializationUnitNS, "render-config-error-"+strings.ReplaceAll(tc.name, " ", "-")
@@ -1659,6 +1659,12 @@ func TestProcessFeed_LegacyEmptyFeedStatus(t *testing.T) {
 
 // skipProbeTemplate fails only for the entry titled "bad", so any other entry
 // renders; a title over maxDiscordMessageLength makes that entry overflow.
+const (
+	probePoisonTitle = "bad"
+	probeGoodTitle   = "good"
+	probeKeepText    = "keep"
+)
+
 const skipProbeTemplate = `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`
 
 // runSkipProbe holds a poison entry past its retries, then runs the
@@ -1697,7 +1703,7 @@ func runSkipProbe(
 func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {
 	long := strings.Repeat("g", maxDiscordMessageLength+100)
 	entries := []rss.Entry{
-		{ID: "https://example.com/probe-bad", Title: "bad", Seq: 1},
+		{ID: "https://example.com/probe-bad", Title: probePoisonTitle, Seq: 1},
 		{ID: "https://example.com/probe-long", Title: long, Seq: 0},
 	}
 	ns, name := "processfeed-probe-overflow", "fg-probe-overflow"
@@ -1722,8 +1728,8 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 	long := strings.Repeat("o", maxDiscordMessageLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-old", Title: long, Seq: 3},
-		{ID: "https://example.com/probe-bad2", Title: "bad", Seq: 2},
-		{ID: "https://example.com/probe-good", Title: "good", Seq: 1},
+		{ID: "https://example.com/probe-bad2", Title: probePoisonTitle, Seq: 2},
+		{ID: "https://example.com/probe-good", Title: probeGoodTitle, Seq: 1},
 	}
 	ns, name := "processfeed-probe-sent", "fg-probe-sent"
 	server, fs := runSkipProbe(t, ns, name, entries, func(fg *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) {
@@ -1752,12 +1758,12 @@ func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
 	long := strings.Repeat("f", maxDiscordMessageLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-filtered", Title: long, Description: "drop", Seq: 3},
-		{ID: "https://example.com/probe-bad3", Title: "bad", Description: "keep", Seq: 2},
-		{ID: "https://example.com/probe-good3", Title: "good", Description: "keep", Seq: 1},
+		{ID: "https://example.com/probe-bad3", Title: probePoisonTitle, Description: probeKeepText, Seq: 2},
+		{ID: "https://example.com/probe-good3", Title: probeGoodTitle, Description: probeKeepText, Seq: 1},
 	}
 	ns, name := "processfeed-probe-filtered", "fg-probe-filtered"
 	server, fs := runSkipProbe(t, ns, name, entries, func(_ *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) {
-		feed.Filter = &v1alpha1.Filter{Regex: "keep"}
+		feed.Filter = &v1alpha1.Filter{Regex: probeKeepText}
 	})
 
 	if got := server.MessageCount(); got != 1 {
