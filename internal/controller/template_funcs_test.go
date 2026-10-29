@@ -167,6 +167,9 @@ func TestTemplateFuncs_UnknownFunctionFailsAtCompile(t *testing.T) {
 	}
 }
 
+// authorField is a template that prints only the entry author.
+var authorField = "{{" + ".Author}}"
+
 func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 	for name, format := range map[string]string{
 		"range over int":        `{{range 100000000000}}{{end}}`,
@@ -296,12 +299,12 @@ func TestRenderTemplate_OutputByteBoundaries(t *testing.T) {
 		wantOverflow               int
 		wantError                  bool
 	}{
-		{name: "one byte below", format: `{{.Author}}`, author: strings.Repeat("x", limit-1), want: truncated8, wantOverflow: limit - 1 - 8},
-		{name: "exactly one MiB", format: `{{.Author}}`, author: strings.Repeat("x", limit), want: truncated8, wantOverflow: limit - 8},
-		{name: "one byte above", format: `{{.Author}}`, author: strings.Repeat("x", limit+1), wantError: true},
+		{name: "one byte below", format: authorField, author: strings.Repeat("x", limit-1), want: truncated8, wantOverflow: limit - 1 - 8},
+		{name: "exactly one MiB", format: authorField, author: strings.Repeat("x", limit), want: truncated8, wantOverflow: limit - 8},
+		{name: "one byte above", format: authorField, author: strings.Repeat("x", limit+1), wantError: true},
 		{name: "cumulative exact limit", format: `{{.Author}}{{.Author}}`, author: strings.Repeat("x", limit/2), want: truncated8, wantOverflow: limit - 8},
 		{name: "literal crosses cumulative limit", format: `{{.Author}}{{.Author}}x`, author: strings.Repeat("x", limit/2), wantError: true},
-		{name: "multibyte exact limit", format: `{{.Author}}`, author: strings.Repeat("é", limit/2), want: "ééééééé…", wantOverflow: limit/2 - 8},
+		{name: "multibyte exact limit", format: authorField, author: strings.Repeat("é", limit/2), want: "ééééééé…", wantOverflow: limit/2 - 8},
 		{name: "bytes exceed limit but runes do not", format: `{{.Author}}x`, author: strings.Repeat("é", limit/2), wantError: true},
 		{name: "oversized literal", format: strings.Repeat("x", limit+1), wantError: true},
 		{name: "unexecuted text does not count", format: `{{if false}}` + strings.Repeat("x", limit+1) + `{{end}}ok`, want: "ok"},
@@ -331,7 +334,7 @@ func TestBuildDiscordMessage_OutputLimitAppliesToEveryTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oversized, err := compileTemplate("oversized", `{{.Author}}`, "")
+	oversized, err := compileTemplate("oversized", authorField, "")
 	if err != nil {
 		t.Fatal(err)
 	}
