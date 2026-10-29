@@ -303,7 +303,13 @@ helm uninstall rss2discord-operator -n rss2discord-operator-system
 
 ### Upgrades and rollbacks
 
-Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. A release that adds the field migrates an older feed status in place on that feed's next fetch with entries. Feeds whose entries have GUIDs keep identical state, so they are never resent. For feeds without GUIDs, the migration resolves the old watermark and sent-entry keys from that fetch. An entry the old state can't account for is replayed rather than skipped, so expect at most an occasional duplicate. The exception is entries that an older release wrongly merged, because their links differed only by fragment or `ref`, or because they had no GUID, link or title. Older releases delivered at most one entry of each such group. The upgrade replays only the newest `catchUpLimit` of them, and the rest are skipped for good, as they would have been without the upgrade. The cap never skips past an undelivered entry outside such a group, because that entry is new. Merged entries dated after it are delivered too, even beyond `catchUpLimit`.
+Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. A release that adds the field migrates an older feed status in place on that feed's next fetch with entries:
+
+- **Feeds whose entries have GUIDs** keep identical state, so nothing is resent or skipped. A feed that never recorded a watermark follows the `catchUpLimit` row above.
+- **Feeds without GUIDs** have their old watermark and sent-entry keys resolved against that fetch:
+  - If the old watermark is in the fetch, delivery resumes right after it. An entry after it that the old state can't account for is replayed rather than skipped, so expect at most an occasional duplicate. That includes an entry missing from that fetch that later comes back after the watermark.
+  - If the old watermark has already scrolled out of the feed, the upgrade behaves as older releases did: only the newest `catchUpLimit` entries are sent (5 when it is 0), and older ones the old state can't account for are skipped.
+  - Older releases wrongly merged entries whose links differed only by fragment or `ref`, or that had no GUID, link or title, and delivered at most one entry of each such group. The upgrade replays only the newest `catchUpLimit` of a group, and the rest stay skipped, as they would have without the upgrade. The cap never skips past an undelivered entry outside such a group, because that entry is new, so merged entries dated after it are delivered too, even beyond `catchUpLimit`.
 
 Rolling back to a release without `stateVersion` is safe, but feeds without GUIDs may post a few duplicates:
 
