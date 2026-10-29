@@ -41,7 +41,46 @@ const (
 	retryAfterPosInf = "+Inf"
 	retryAfterNaN    = "NaN"
 	retryAfterNegInf = "-Inf"
+	retryAfterJunk   = "soon"
+	// retryAfterCap is exactly maxCooldown in seconds; retryAfterInt64NS is the
+	// smallest whole-second value whose nanosecond count overflows an int64.
+	retryAfterCap     = "3600"
+	retryAfterInt64NS = "9223372036"
 )
+
+func TestBoundedSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		want        time.Duration
+		wantOK      bool
+	}{
+		{name: "zero is valid", value: "0", want: 0, wantOK: true},
+		{name: "fractional with whitespace", value: " 2.5 ", want: 2500 * time.Millisecond, wantOK: true},
+		{name: "just under the cap", value: "3599.5", want: 3599*time.Second + 500*time.Millisecond, wantOK: true},
+		{name: "exactly the cap", value: retryAfterCap, want: maxCooldown, wantOK: true},
+		{name: "just over the cap", value: "3601", want: maxCooldown, wantOK: true},
+		{name: "a day", value: retryAfterDay, want: maxCooldown, wantOK: true},
+		{name: "int64 nanosecond overflow", value: retryAfterInt64NS, want: maxCooldown, wantOK: true},
+		{name: "huge float", value: retryAfterHuge, want: maxCooldown, wantOK: true},
+		{name: "bounded +Inf", value: retryAfterPosInf, want: maxCooldown, wantOK: true},
+		{name: "NaN", value: retryAfterNaN},
+		{name: "negative infinity", value: retryAfterNegInf},
+		{name: "negative", value: "-1"},
+		{name: "not a number", value: retryAfterJunk},
+		{name: "empty", value: ""},
+		{name: "blank", value: "  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := boundedSeconds(tc.value)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("boundedSeconds(%q) = (%v, %v), want (%v, %v)", tc.value, got, ok, tc.want, tc.wantOK)
+			}
+			if got < 0 || got > maxCooldown {
+				t.Fatalf("boundedSeconds(%q) = %v, outside [0, %v]", tc.value, got, maxCooldown)
+			}
+		})
+	}
+}
 
 func TestParseRetryAfter(t *testing.T) {
 	cases := []struct {
@@ -53,11 +92,11 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "whitespace defaults to 1s", value: "  ", want: time.Second},
 		{name: "integer seconds", value: "5", want: 5 * time.Second},
 		{name: "fractional seconds", value: "0.5", want: 500 * time.Millisecond},
-		{name: "malformed defaults to 1s", value: "soon", want: time.Second},
+		{name: "malformed defaults to 1s", value: retryAfterJunk, want: time.Second},
 		{name: "negative defaults to 1s", value: "-3", want: time.Second},
 		{name: "NaN defaults to 1s", value: retryAfterNaN, want: time.Second},
-		{name: "huge is clamped", value: retryAfterDay, want: maxRetryAfter},
-		{name: "infinity is clamped", value: "Inf", want: maxRetryAfter},
+		{name: "huge is clamped", value: retryAfterDay, want: maxCooldown},
+		{name: "infinity is clamped", value: "Inf", want: maxCooldown},
 		{name: "exact one hour cap", value: "3600", want: time.Hour},
 		{name: "fraction below cap", value: "3599.5", want: time.Hour - 500*time.Millisecond},
 		{name: "fraction above cap", value: "3600.5", want: time.Hour},
