@@ -209,6 +209,21 @@ func messageOverflowSampleCount(t *testing.T, namespace, name string) uint64 {
 	return m.GetHistogram().GetSampleCount()
 }
 
+// messageOverflowSampleSum reads the sum of observed values of a single
+// messageOverflowChars series.
+func messageOverflowSampleSum(t *testing.T, namespace, name string) float64 {
+	t.Helper()
+	obs, err := messageOverflowChars.GetMetricWithLabelValues(namespace, name)
+	if err != nil {
+		t.Fatalf("get histogram metric: %v", err)
+	}
+	var m dto.Metric
+	if err := obs.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("write histogram metric: %v", err)
+	}
+	return m.GetHistogram().GetSampleSum()
+}
+
 // TestProcessFeed_RecordsMessageOverflow asserts that sending an entry whose
 // rendered content exceeds Discord's message length limit records an
 // observation on messageOverflowChars, so an operator can see how often a

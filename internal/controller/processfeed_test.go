@@ -1803,4 +1803,9 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	if got := messageOverflowSampleCount(t, ns, name); got != 3 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 3 (two failed attempts + delivery)", got)
 	}
+	// The default template renders 2548 runes (2500 description + 48 of
+	// title, link and markup), 548 over the limit, on each of the 3 attempts.
+	if got := messageOverflowSampleSum(t, ns, name); got != 3*548 {
+		t.Fatalf("messageOverflowChars sample sum = %v, want %d", got, 3*548)
+	}
 }
