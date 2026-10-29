@@ -16,10 +16,12 @@ reviews:
   # CodeRabbit excludes "!**/dist/**" and "!**/*.json" by default, which hides
   # dist/chart/'s hand-tuned templates, values.yaml, _helpers.tpl and
   # dashboards/*.json. Listing a default's exact pattern without "!" disables
-  # that default without turning path_filters into an allowlist (a broader
-  # include like "dist/chart/**" would instead restrict review to that path).
-  # Exclusions win regardless of order, so the generated parts stay excluded.
+  # that default, but in practice any include also turns path_filters into an
+  # allowlist (files outside it are "included by none" and skipped), so "**"
+  # keeps everything else eligible. Exclusions win regardless of order, so the
+  # generated parts stay excluded.
   path_filters:
+    - "**"
     - "**/dist/**"
     - "**/*.json"
     - "!dist/install.yaml"
