@@ -221,9 +221,11 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // watermark lookup. For non-empty fetches, Initialized is set only once the
 // feed's configuration is known to be usable, so a config error on a first fetch
 // can't turn the next attempt into a "feed was empty" delivery of its whole
-// backlog. It returns whether the reconcile should retry sooner than the
-// normal interval and, if Discord rate limited the webhook, how long to wait
-// before the next attempt.
+// backlog. An ambiguous legacy status additionally waits until the fetch is
+// accounted for (nothing pending) before it is initialized and settled. It
+// returns whether the reconcile should retry sooner than the normal interval
+// and, if Discord rate limited the webhook, how long to wait before the next
+// attempt.
 func (r *FeedGroupReconciler) processFeed(
 	ctx context.Context,
 	feedGroup *v1alpha1.FeedGroup,
@@ -357,8 +359,15 @@ func (r *FeedGroupReconciler) processFeed(
 		return false, 0
 	}
 
-	fs.Initialized = true
-	legacy.settled = true
+	// An ambiguous legacy status is capped in memory only (see below), so it
+	// is settled once the fetch is accounted for, not here: settling it now
+	// would let a failed first send leave a current, watermark-less status
+	// that no longer gets the cap, and the next attempt would deliver the
+	// whole backlog.
+	if !legacy.ambiguous {
+		fs.Initialized = true
+		legacy.settled = true
+	}
 
 	// Sort oldest-to-newest so the catch-up window (limitCatchUp keeps the
 	// tail) and the watermark (sendNewEntries advances LastSeenEntry to the
@@ -436,6 +445,8 @@ func (r *FeedGroupReconciler) processFeed(
 	// the old validators instead forces a full re-fetch (and another attempt
 	// at this entry) on every reconcile until it's actually resolved.
 	if !pending {
+		fs.Initialized = true
+		legacy.settled = true
 		persistValidators()
 		// Every entry from this fetch was either sent (which already clears
 		// these below in sendNewEntries) or skipped as already-sent/filtered.
