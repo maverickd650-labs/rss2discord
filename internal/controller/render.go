@@ -349,14 +349,17 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 // rendered ForumThreadName) and group-level webhook branding.
 // ImageStyle selects a large image or, by default, a thumbnail. Template execution
 // errors and blank plain-text content or rendered thread names return an empty
-// message and an error. Successful builds record truncation in messageOverflowChars.
+// message and an error. The second return value is how many runes were trimmed
+// to fit Discord's limits (0 when nothing was); it is data only. The caller
+// that actually sends the message records it in messageOverflowChars, so
+// diagnostic renders (see otherEntryRenders) don't add samples.
 func buildDiscordMessage(
 	feedGroup *v1alpha1.FeedGroup,
 	embedSpec *v1alpha1.EmbedSpec,
 	contentTmpl, descriptionTmpl, threadNameTmpl *template.Template,
 	feed *v1alpha1.FeedSpec,
 	entry rss.Entry,
-) (discord.Message, error) {
+) (discord.Message, int, error) {
 	msg := discord.Message{
 		Username:  feedGroup.Spec.Username,
 		AvatarURL: feedGroup.Spec.AvatarURL,
@@ -367,7 +370,7 @@ func buildDiscordMessage(
 	if embedSpec != nil && embedSpec.Enabled {
 		description, descOverflow, err := renderTemplate(descriptionTmpl, entry, maxEmbedDescriptionLength)
 		if err != nil {
-			return discord.Message{}, err
+			return discord.Message{}, 0, err
 		}
 		title, titleOverflow := truncateMessage(stripHTML(entry.Title), maxEmbedTitleLength)
 		overflow += descOverflow + titleOverflow
@@ -395,14 +398,14 @@ func buildDiscordMessage(
 	} else {
 		content, contentOverflow, err := renderTemplate(contentTmpl, entry, maxDiscordMessageLength)
 		if err != nil {
-			return discord.Message{}, err
+			return discord.Message{}, 0, err
 		}
 		// Discord rejects a blank message, and a send failure holds the feed
 		// on this entry indefinitely. Failing here routes it through the
 		// render-error path instead, which skips the entry once retries are
 		// exhausted (e.g. "{{.Published}}" for an entry with no date).
 		if strings.TrimSpace(content) == "" {
-			return discord.Message{}, errors.New("message template rendered empty content for this entry")
+			return discord.Message{}, 0, errors.New("message template rendered empty content for this entry")
 		}
 		overflow += contentOverflow
 		msg.Content = content
@@ -413,22 +416,18 @@ func buildDiscordMessage(
 	} else if threadNameTmpl != nil {
 		threadName, threadOverflow, err := renderTemplate(threadNameTmpl, entry, maxForumThreadNameLength)
 		if err != nil {
-			return discord.Message{}, err
+			return discord.Message{}, 0, err
 		}
 		// Without a thread_name a forum webhook rejects the post; fail as a
 		// render error for the same reason as blank content above.
 		if strings.TrimSpace(threadName) == "" {
-			return discord.Message{}, errors.New("forum thread name template rendered empty for this entry")
+			return discord.Message{}, 0, errors.New("forum thread name template rendered empty for this entry")
 		}
 		overflow += threadOverflow
 		msg.ThreadName = threadName
 	}
 
-	if overflow > 0 {
-		messageOverflowChars.WithLabelValues(feedGroup.Namespace, feedGroup.Name).Observe(float64(overflow))
-	}
-
-	return msg, nil
+	return msg, overflow, nil
 }
 
 // truncateMessage trims content to at most max characters (by rune), since
@@ -465,10 +464,11 @@ func truncateMessage(content string, max int) (string, int) {
 	return string(runes[:max-len([]rune(ellipsis))]) + ellipsis, overflow
 }
 
-// feedRenderer bundles what turning one feed's entries into Discord messages
-// needs: the group and feed specs, the resolved embed config, the templates
-// compiled once per processFeed, and the entry filter. Passing it around
-// replaces the loose parameters sendNewEntries and friends used to take.
+// feedRenderer turns one feed's entries into Discord messages. It owns the
+// preparation -- filter compilation, embed inheritance and template
+// compilation -- so callers can't assemble inconsistent state (such as an
+// enabled embed with no description template). Build one with newFeedRenderer
+// once per processFeed.
 type feedRenderer struct {
 	group                            *v1alpha1.FeedGroup
 	feed                             *v1alpha1.FeedSpec
@@ -477,12 +477,58 @@ type feedRenderer struct {
 	filter                           *regexp.Regexp
 }
 
+// newFeedRenderer prepares the renderer for feed within group: it compiles the
+// filter regex, resolves the embed config (feed over group), and compiles the
+// description template if the embed is enabled or the content template if not,
+// plus the forum thread-name template when one is set. The first config error
+// is returned unwrapped, checked in that order.
+func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedRenderer, error) {
+	filter, err := compileFilterRegex(feed.Filter)
+	if err != nil {
+		return nil, err
+	}
+
+	fr := &feedRenderer{group: group, feed: feed, embed: resolveEmbedSpec(group, feed), filter: filter}
+	if fr.embed != nil && fr.embed.Enabled {
+		fr.description, err = compileTemplate("discordEmbedDescription", fr.embed.DescriptionFormat, defaultDescriptionFormat)
+	} else {
+		fr.content, err = compileMessageTemplate(group, feed)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(feed.ForumThreadName) != "" {
+		fr.threadName, err = compileTemplate("discordThreadName", feed.ForumThreadName, "")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return fr, nil
+}
+
 // matches reports whether entry passes the feed's filter.
 func (fr *feedRenderer) matches(entry rss.Entry) bool {
 	return matchesFilter(fr.feed.Filter, entry, fr.filter)
 }
 
-// build renders entry into the message to send; see buildDiscordMessage.
-func (fr *feedRenderer) build(entry rss.Entry) (discord.Message, error) {
+// build renders entry into the message to send and the number of runes
+// trimmed from it; see buildDiscordMessage.
+func (fr *feedRenderer) build(entry rss.Entry) (discord.Message, int, error) {
 	return buildDiscordMessage(fr.group, fr.embed, fr.content, fr.description, fr.threadName, fr.feed, entry)
+}
+
+// otherEntryRenders reports whether any entry other than skip renders
+// successfully with the feed's templates, which distinguishes "this entry is
+// the problem" from "the template is broken for everything".
+func (fr *feedRenderer) otherEntryRenders(entries []rss.Entry, skip rss.Entry) bool {
+	for _, other := range entries {
+		if entryIdentity(other) == entryIdentity(skip) {
+			continue
+		}
+		if _, _, err := fr.build(other); err == nil {
+			return true
+		}
+	}
+	return false
 }

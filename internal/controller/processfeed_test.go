@@ -1060,6 +1060,53 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	}
 }
 
+// Every compile path of the renderer's preparation -- message template, embed
+// description template and forum thread-name template -- must leave a
+// non-empty first fetch uninitialized, like a bad filter regex does.
+func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		break_ func(*v1alpha1.FeedSpec)
+	}{
+		{"message template", func(f *v1alpha1.FeedSpec) { f.Format = "{{.Unclosed" }},
+		{"embed description template", func(f *v1alpha1.FeedSpec) {
+			f.Embed = &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: "{{.Unclosed"}
+		}},
+		{"forum thread name template", func(f *v1alpha1.FeedSpec) { f.ForumThreadName = "{{.Unclosed" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, name := initializationUnitNS, "render-config-error-"+strings.ReplaceAll(tc.name, " ", "-")
+			defer deleteFeedGroupMetrics(ns, name)
+			discordServer := NewMockDiscordServer()
+			defer discordServer.Close()
+
+			fg, feed := newMetricsFeedGroup(ns, name, "")
+			fg.Spec.CatchUpLimit = new(int32(0))
+			good := feed
+			tc.break_(&feed)
+			client := discordServer.DiscordClientBuilder()(discordServer.URL())
+			r := &FeedGroupReconciler{}
+
+			entries := []rss.Entry{
+				{ID: configErrURLPrefix + "n-" + name, Title: "newer", Link: configErrURLPrefix + "n-" + name, Seq: 2},
+				{ID: configErrURLPrefix + "o-" + name, Title: "older", Link: configErrURLPrefix + "o-" + name, Seq: 1},
+			}
+			r.processFeed(t.Context(), fg, feed, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+			if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
+				t.Fatalf("config error left initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+			}
+
+			r.processFeed(t.Context(), fg, good, rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+			if got := discordServer.MessageCount(); got != 0 {
+				t.Fatalf("sent=%d after fixing config, want the backlog skipped", got)
+			}
+			if fs := feedStatusFor(fg, feed.RSSUrl); !fs.Initialized || fs.LastSeenEntry == "" {
+				t.Fatalf("after fix initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
+			}
+		})
+	}
+}
+
 // legacyStateNS namespaces the metric series the stateVersion migration tests create.
 const legacyStateNS = "legacy-state"
 
@@ -1607,5 +1654,150 @@ func TestProcessFeed_LegacyEmptyFeedStatus(t *testing.T) {
 				t.Fatalf("initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 			}
 		})
+	}
+}
+
+// skipProbeTemplate fails only for the entry titled "bad", so any other entry
+// renders; a title over maxDiscordMessageLength makes that entry overflow.
+const skipProbeTemplate = `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`
+
+// runSkipProbe holds a poison entry past its retries, then runs the
+// reconcile whose otherEntryRenders probe lets the feed skip it. prepare may
+// adjust the feed or seed status before the probing reconcile.
+func runSkipProbe(
+	t *testing.T, ns, name string, entries []rss.Entry, prepare func(*v1alpha1.FeedGroup, *v1alpha1.FeedSpec),
+) (*MockDiscordServer, *v1alpha1.FeedStatus) {
+	t.Helper()
+	ctx := t.Context()
+	discordServer := NewMockDiscordServer()
+	t.Cleanup(discordServer.Close)
+	t.Cleanup(func() { deleteFeedGroupMetrics(ns, name) })
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+
+	fg, feed := newMetricsFeedGroup(ns, name, skipProbeTemplate)
+	fg.Spec.Retries = 2
+	if prepare != nil {
+		prepare(fg, &feed)
+	}
+	fetch := rss.FetchResult{Entries: entries}
+	r := &FeedGroupReconciler{Recorder: events.NewFakeRecorder(10)}
+
+	for range 2 {
+		r.processFeed(ctx, fg, feed, fetch, nil, client, testReconcileTime)
+	}
+	r.processFeed(ctx, fg, feed, fetch, nil, client, testReconcileTime)
+
+	return discordServer, feedStatusFor(fg, feed.RSSUrl)
+}
+
+// TestProcessFeed_SkipProbeDoesNotRecordOverflow asserts the diagnostic
+// render in otherEntryRenders adds no messageOverflowChars sample: a long
+// healthy entry behind a skipped poison entry is observed once, when it is
+// actually sent, not once more by the probe.
+func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {
+	long := strings.Repeat("g", maxDiscordMessageLength+100)
+	entries := []rss.Entry{
+		{ID: "https://example.com/probe-bad", Title: "bad", Seq: 1},
+		{ID: "https://example.com/probe-long", Title: long, Seq: 0},
+	}
+	ns, name := "processfeed-probe-overflow", "fg-probe-overflow"
+	server, fs := runSkipProbe(t, ns, name, entries, nil)
+
+	if got := server.MessageCount(); got != 1 {
+		t.Fatalf("messages sent = %d, want 1", got)
+	}
+	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
+		t.Fatalf("messageOverflowChars sample count = %d, want exactly 1 (the send)", got)
+	}
+	if fs.LastSeenEntry != entries[1].ID {
+		t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, entries[1].ID)
+	}
+}
+
+// TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling characterizes that an
+// already-sent entry still counts as evidence the templates work (so the poison
+// entry is skipped) while its overflow is not observed, because it is never
+// sent again.
+func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
+	long := strings.Repeat("o", maxDiscordMessageLength+100)
+	entries := []rss.Entry{
+		{ID: "https://example.com/probe-old", Title: long, Seq: 3},
+		{ID: "https://example.com/probe-bad2", Title: "bad", Seq: 2},
+		{ID: "https://example.com/probe-good", Title: "good", Seq: 1},
+	}
+	ns, name := "processfeed-probe-sent", "fg-probe-sent"
+	server, fs := runSkipProbe(t, ns, name, entries, func(fg *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) {
+		st := feedStatusFor(fg, feed.RSSUrl)
+		if st.LastSent == nil {
+			st.LastSent = map[string]string{}
+		}
+		recordSent(st.LastSent, entries[0], countStripped(entries), testReconcileTime)
+	})
+
+	if got := server.MessageCount(); got != 1 {
+		t.Fatalf("messages sent = %d, want 1 (only the good entry)", got)
+	}
+	if fs.LastSeenEntry != entries[2].ID {
+		t.Fatalf("poison entry should be skipped using the sent sibling as evidence: LastSeenEntry = %q", fs.LastSeenEntry)
+	}
+	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
+		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
+	}
+}
+
+// TestProcessFeed_SkipProbeOverflowOnFilteredSibling characterizes the same
+// for a filtered-out entry: it still counts as evidence, but is never sent, so
+// its overflow is not observed.
+func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
+	long := strings.Repeat("f", maxDiscordMessageLength+100)
+	entries := []rss.Entry{
+		{ID: "https://example.com/probe-filtered", Title: long, Description: "drop", Seq: 3},
+		{ID: "https://example.com/probe-bad3", Title: "bad", Description: "keep", Seq: 2},
+		{ID: "https://example.com/probe-good3", Title: "good", Description: "keep", Seq: 1},
+	}
+	ns, name := "processfeed-probe-filtered", "fg-probe-filtered"
+	server, fs := runSkipProbe(t, ns, name, entries, func(_ *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) {
+		feed.Filter = &v1alpha1.Filter{Regex: "keep"}
+	})
+
+	if got := server.MessageCount(); got != 1 {
+		t.Fatalf("messages sent = %d, want 1 (only the good entry)", got)
+	}
+	if fs.LastSeenEntry != entries[2].ID {
+		t.Fatalf("poison entry should be skipped using the filtered sibling as evidence: LastSeenEntry = %q", fs.LastSeenEntry)
+	}
+	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
+		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
+	}
+}
+
+// TestProcessFeed_OverflowRecordedPerSendAttempt pins the histogram's timing:
+// the observation is made before SendMessage's outcome is known, so a send that
+// fails and is retried counts once per attempt, not only for the delivery.
+func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
+	ctx := t.Context()
+	ns, name := "processfeed-overflow-attempts", "fg-overflow-attempts"
+	defer deleteFeedGroupMetrics(ns, name)
+	discordServer := NewMockDiscordServer()
+	defer discordServer.Close()
+	discordServer.FailNextRequests(2, http.StatusInternalServerError)
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.Retries = 5
+	fetch := rss.FetchResult{Entries: []rss.Entry{{
+		ID: "https://example.com/attempts", Title: "t", Link: "https://example.com/attempts",
+		Description: strings.Repeat("x", maxDiscordMessageLength+500),
+	}}}
+	r := &FeedGroupReconciler{}
+	for range 3 {
+		r.processFeed(ctx, fg, feed, fetch, nil, client, testReconcileTime)
+	}
+
+	if got := discordServer.MessageCount(); got != 1 {
+		t.Fatalf("messages delivered = %d, want 1", got)
+	}
+	if got := messageOverflowSampleCount(t, ns, name); got != 3 {
+		t.Fatalf("messageOverflowChars sample count = %d, want 3 (two failed attempts + delivery)", got)
 	}
 }
