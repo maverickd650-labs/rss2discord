@@ -2,10 +2,12 @@ package discord
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -32,6 +34,15 @@ func TestDecodeErrorDetail(t *testing.T) {
 // fiveRunes is reused across the truncateRunes test cases below.
 const fiveRunes = "abcde"
 
+// Retry-After header values shared by the parse and cooldown tables.
+const (
+	retryAfterDay    = "86400"
+	retryAfterHuge   = "1e300"
+	retryAfterPosInf = "+Inf"
+	retryAfterNaN    = "NaN"
+	retryAfterNegInf = "-Inf"
+)
+
 func TestParseRetryAfter(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -44,12 +55,81 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "fractional seconds", value: "0.5", want: 500 * time.Millisecond},
 		{name: "malformed defaults to 1s", value: "soon", want: time.Second},
 		{name: "negative defaults to 1s", value: "-3", want: time.Second},
+		{name: "NaN defaults to 1s", value: retryAfterNaN, want: time.Second},
+		{name: "huge is clamped", value: retryAfterDay, want: maxRetryAfter},
+		{name: "infinity is clamped", value: "Inf", want: maxRetryAfter},
+		{name: "exact one hour cap", value: "3600", want: time.Hour},
+		{name: "fraction below cap", value: "3599.5", want: time.Hour - 500*time.Millisecond},
+		{name: "fraction above cap", value: "3600.5", want: time.Hour},
+		{name: "scientific notation at cap", value: "3.6e3", want: time.Hour},
+		{name: "huge finite float", value: retryAfterHuge, want: time.Hour},
+		{name: "positive infinity", value: retryAfterPosInf, want: time.Hour},
+		{name: "negative infinity defaults to 1s", value: retryAfterNegInf, want: time.Second},
+		{name: "padded NaN defaults to 1s", value: " \tNaN\r\n", want: time.Second},
+		{name: "padded delay is clamped", value: " \t86400\r\n", want: time.Hour},
+		{name: "float parse overflow defaults to 1s", value: "1e309", want: time.Second},
+		{name: "negative float overflow defaults to 1s", value: "-1e309", want: time.Second},
+		{name: "zero remains immediate", value: "0", want: 0},
+		{name: "negative zero remains immediate", value: "-0", want: 0},
+		{name: "padded fractional delay", value: " \t1.25\r\n", want: 1250 * time.Millisecond},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := parseRetryAfter(tc.value); got != tc.want {
 				t.Fatalf("parseRetryAfter(%q) = %v, want %v", tc.value, got, tc.want)
 			}
+		})
+	}
+}
+
+func TestSendMessage_BoundedRetryAfterControlsCooldown(t *testing.T) {
+	for _, tc := range []struct {
+		name, header string
+		want         time.Duration
+	}{
+		{name: "large finite delay", header: retryAfterDay, want: time.Hour},
+		{name: "duration conversion overflow", header: retryAfterHuge, want: time.Hour},
+		{name: "infinite delay", header: retryAfterPosInf, want: time.Hour},
+		{name: "NaN fallback", header: retryAfterNaN, want: time.Second},
+		{name: "negative infinity fallback", header: retryAfterNegInf, want: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				requests := 0
+				httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					requests++
+					status := http.StatusNoContent
+					if requests == 1 {
+						status = http.StatusTooManyRequests
+					}
+					return &http.Response{
+						StatusCode: status,
+						Header:     http.Header{"Retry-After": {tc.header}},
+						Body:       io.NopCloser(strings.NewReader("")),
+					}, nil
+				})}
+				limiter := NewRateLimiter()
+				first := NewClientWithLimiter(testWebhookURL, httpClient, limiter)
+				err := first.SendMessageText(t.Context(), "first")
+				rle, ok := errors.AsType[*RateLimitError](err)
+				if !ok || rle.RetryAfter != tc.want || requests != 1 {
+					t.Fatalf("first send: err=%v, requests=%d; want rate-limit error with %v and one request", err, requests, tc.want)
+				}
+
+				// Fake time verifies expiry without sleeping for a real hour.
+				time.Sleep(tc.want - time.Nanosecond)
+				second := NewClientWithLimiter(testWebhookURL, httpClient, limiter)
+				err = second.SendMessageText(t.Context(), "held")
+				rle, ok = errors.AsType[*RateLimitError](err)
+				if !ok || rle.RetryAfter != time.Nanosecond || requests != 1 {
+					t.Fatalf("before expiry: err=%v, requests=%d; want 1ns cooldown and no additional request", err, requests)
+				}
+
+				time.Sleep(time.Nanosecond)
+				if err := second.SendMessageText(t.Context(), "retry"); err != nil || requests != 2 {
+					t.Fatalf("after expiry: err=%v, requests=%d; want a successful second request", err, requests)
+				}
+			})
 		})
 	}
 }
