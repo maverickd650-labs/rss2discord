@@ -390,6 +390,7 @@ func (r *FeedGroupReconciler) processFeed(
 		catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
 	}
 	legacy.migrate(fs, entries, catchUpLimit)
+	migratePreviousIdentities(fs, entries)
 
 	// Counted over the whole fetch, before any catch-up trim below, so an
 	// entry's stripped identity is only unique if it is across the feed.

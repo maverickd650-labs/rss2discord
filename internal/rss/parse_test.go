@@ -1553,7 +1553,7 @@ func TestAtomLinksBoundedSelectionMatchesFull(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := []byte(`<entry>` + tc.links + `</entry>`)
 
-			var bounded atomEntry
+			var bounded looseAtomEntry
 			if err := xml.Unmarshal(doc, &bounded); err != nil {
 				t.Fatalf("unmarshal bounded: %v", err)
 			}
@@ -1625,42 +1625,52 @@ func TestParseFeed_AtomEntryXMLBaseComposesWithFeedBase(t *testing.T) {
 	}
 }
 
-// atomDocNS wraps entry in an Atom feed whose default namespace is ns and which
-// declares the foreign "ext" prefix.
+// atomDocNS wraps entry in an Atom feed whose default namespace is ns (none if
+// ns is empty) and which declares the foreign "ext" prefix.
 func atomDocNS(ns, entry string) []byte {
-	return []byte(`<?xml version="1.0"?><feed xmlns="` + ns + `" xmlns:ext="urn:ext"><entry><title>T</title>` + entry + `</entry></feed>`)
+	decl := ""
+	if ns != "" {
+		decl = ` xmlns="` + ns + `"`
+	}
+	return []byte(`<?xml version="1.0"?><feed` + decl + ` xmlns:ext="urn:ext"><entry><title>T</title>` + entry + `</entry></feed>`)
 }
 
-func TestParseFeed_AtomForeignNamespaceCannotDisplaceIDOrLinks(t *testing.T) {
-	const (
-		idReal   = "urn:real"
-		idFake   = "urn:fake"
-		linkReal = "http://example.com/real"
-		linkFake = "http://example.com/fake"
-		imgReal  = "http://example.com/real.png"
-		imgFake  = "http://example.com/fake.png"
-		atomOld  = "http://purl.org/atom/ns#"
-		elEnd    = "\"/>" // closes a self-closing tag after an href value
-	)
+const (
+	nsIDReal   = "urn:real"
+	nsIDFake   = "urn:fake"
+	nsLinkReal = "http://example.com/real"
+	nsLinkFake = "http://example.com/fake"
+	nsImgReal  = "http://example.com/real.png"
+	nsImgFake  = "http://example.com/fake.png"
+	nsAtomOld  = "http://purl.org/atom/ns#"
+	nsElEnd    = "\"/>" // closes a self-closing tag after an href value
+)
+
+// TestParseFeed_AtomExtensionElementsNeverTouchCoreFields asserts that in an
+// Atom 1.0 document an extension's <ext:id> and <ext:link> can neither
+// displace Atom's own nor stand in for a missing one, and that other
+// documents are still read by local name.
+func TestParseFeed_AtomExtensionElementsNeverTouchCoreFields(t *testing.T) {
 	for _, tc := range []struct {
-		name, ns, entry, wantID, wantLink, wantImage string
+		name, ns, entry             string
+		wantID, wantLink, wantImage string
 	}{
-		{name: "foreign id after real", ns: atomNamespace, entry: "<id>" + idReal + "</id><ext:id>" + idFake + "</ext:id>", wantID: idReal},
-		{name: "foreign id before real", ns: atomNamespace, entry: "<ext:id>" + idFake + "</ext:id><id>" + idReal + "</id>", wantID: idReal},
-		{name: "foreign id alone is a last resort", ns: atomNamespace, entry: "<ext:id>" + idFake + "</ext:id>", wantID: idFake},
-		{name: "lookalike default namespace keeps its id and link", ns: atomOld, entry: "<id>" + idReal + "</id><link href=\"" + linkReal + elEnd, wantID: idReal, wantLink: linkReal},
-		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + "\"/><link rel=\"alternate\" href=\"" + linkReal + elEnd, wantLink: linkReal},
-		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + linkReal + "\"/><ext:link rel=\"alternate\" href=\"" + linkFake + elEnd, wantLink: linkReal},
-		{name: "unnamespaced link before an Atom one", ns: atomNamespace, entry: "<link xmlns=\"\" rel=\"alternate\" href=\"" + linkFake + elEnd + "<link rel=\"alternate\" href=\"" + linkReal + elEnd, wantLink: linkReal},
-		{name: "unnamespaced self link before an Atom one", ns: atomNamespace, entry: "<link xmlns=\"\" rel=\"self\" href=\"" + linkFake + elEnd + "<link rel=\"self\" href=\"" + linkReal + elEnd, wantLink: linkReal},
-		{name: "foreign link alone is a last resort", ns: atomNamespace, entry: "<ext:link href=\"" + linkFake + elEnd, wantLink: linkFake},
+		{name: "foreign id after real", ns: atomNamespace, entry: "<id>" + nsIDReal + "</id><ext:id>" + nsIDFake + "</ext:id>", wantID: nsIDReal},
+		{name: "foreign id before real", ns: atomNamespace, entry: "<ext:id>" + nsIDFake + "</ext:id><id>" + nsIDReal + "</id>", wantID: nsIDReal},
+		{name: "foreign id alone is ignored", ns: atomNamespace, entry: "<ext:id>" + nsIDFake + "</ext:id>", wantID: "T"},
+		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + nsLinkFake + "\"/><link rel=\"alternate\" href=\"" + nsLinkReal + nsElEnd, wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + nsLinkReal + "\"/><ext:link rel=\"alternate\" href=\"" + nsLinkFake + nsElEnd, wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign link alone is ignored", ns: atomNamespace, entry: "<ext:link href=\"" + nsLinkFake + nsElEnd, wantID: "T"},
+		{name: "unnamespaced link is not Atom's", ns: atomNamespace, entry: "<link xmlns=\"\" href=\"" + nsLinkFake + "\"/><link href=\"" + nsLinkReal + nsElEnd, wantLink: nsLinkReal, wantID: nsLinkReal},
 		{
 			name: "foreign image enclosure first",
 			ns:   atomNamespace,
-			entry: "<ext:link rel=\"enclosure\" type=\"image/png\" href=\"" + imgFake + elEnd +
-				"<link rel=\"enclosure\" type=\"image/png\" href=\"" + imgReal + elEnd,
-			wantImage: imgReal,
+			entry: "<id>" + nsIDReal + "</id><ext:link rel=\"enclosure\" type=\"image/png\" href=\"" + nsImgFake + "\"/>" +
+				"<link rel=\"enclosure\" type=\"image/png\" href=\"" + nsImgReal + nsElEnd,
+			wantID: nsIDReal, wantLink: nsImgReal, wantImage: nsImgReal, // the only native link doubles as the link
 		},
+		{name: "lookalike default namespace is read by local name", ns: nsAtomOld, entry: "<id>" + nsIDReal + "</id><link href=\"" + nsLinkReal + nsElEnd, wantID: nsIDReal, wantLink: nsLinkReal},
+		{name: "no namespace is read by local name", entry: "<id>" + nsIDReal + "</id><link href=\"" + nsLinkReal + nsElEnd, wantID: nsIDReal, wantLink: nsLinkReal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entries, _, err := parseFeed(atomDocNS(tc.ns, tc.entry))
@@ -1668,15 +1678,62 @@ func TestParseFeed_AtomForeignNamespaceCannotDisplaceIDOrLinks(t *testing.T) {
 				t.Fatalf("parse: entries=%d err=%v", len(entries), err)
 			}
 			e := entries[0]
-			if tc.wantID != "" && e.ID != tc.wantID {
-				t.Errorf("ID = %q, want %q", e.ID, tc.wantID)
-			}
-			if tc.wantLink != "" && e.Link != tc.wantLink {
-				t.Errorf("Link = %q, want %q", e.Link, tc.wantLink)
-			}
-			if tc.wantImage != "" && e.Image != tc.wantImage {
-				t.Errorf("Image = %q, want %q", e.Image, tc.wantImage)
+			if e.ID != tc.wantID || e.Link != tc.wantLink || e.Image != tc.wantImage {
+				t.Errorf("ID, Link, Image = %q, %q, %q; want %q, %q, %q", e.ID, e.Link, e.Image, tc.wantID, tc.wantLink, tc.wantImage)
 			}
 		})
+	}
+}
+
+// TestParseFeed_AtomPreviousID asserts an Atom 1.0 entry reports the ID earlier
+// releases would have picked exactly when that differs, and not otherwise.
+func TestParseFeed_AtomPreviousID(t *testing.T) {
+	for _, tc := range []struct {
+		name, entry    string
+		ns             string
+		wantPrev       string
+		wantPrevSource IDSource
+	}{
+		{name: "foreign id after real", entry: "<id>" + nsIDReal + "</id><ext:id>" + nsIDFake + "</ext:id>", wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
+		{name: "foreign id alone", entry: "<ext:id>" + nsIDFake + "</ext:id>", wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
+		{name: "foreign id before real changes nothing", entry: "<ext:id>" + nsIDFake + "</ext:id><id>" + nsIDReal + "</id>"},
+		{name: "foreign link picked as the link ID", entry: "<ext:link href=\"" + nsLinkFake + "\"/><link href=\"" + nsLinkReal + nsElEnd, wantPrev: nsLinkFake, wantPrevSource: IDFromLink},
+		{name: "foreign link behind an id changes nothing", entry: "<id>" + nsIDReal + "</id><ext:link href=\"" + nsLinkFake + nsElEnd},
+		{name: "plain entry", entry: "<id>" + nsIDReal + "</id><link href=\"" + nsLinkReal + nsElEnd},
+		{name: "loose documents are read as before", ns: nsAtomOld, entry: "<id>" + nsIDReal + "</id><ext:id>" + nsIDFake + "</ext:id>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := tc.ns
+			if ns == "" {
+				ns = atomNamespace
+			}
+			entries, _, err := parseFeed(atomDocNS(ns, tc.entry))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+			}
+			if e := entries[0]; e.PreviousID != tc.wantPrev || e.PreviousIDSource != tc.wantPrevSource {
+				t.Errorf("PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.PreviousID, e.PreviousIDSource, tc.wantPrev, tc.wantPrevSource)
+			}
+		})
+	}
+}
+
+// TestParseFeed_AtomPreviousIDAlignsWithEntries asserts an extension element
+// named entry, which atomEntry never reads, can't shift PreviousID onto the
+// wrong entry.
+func TestParseFeed_AtomPreviousIDAlignsWithEntries(t *testing.T) {
+	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext">` +
+		`<ext:entry><id>` + nsIDFake + `</id></ext:entry>` +
+		`<entry><id>` + nsIDReal + `</id><ext:id>` + nsIDFake + `</ext:id></entry>` +
+		`<entry><id>urn:other</id></entry></feed>`
+	entries, _, err := parseFeed([]byte(doc))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	if entries[0].ID != nsIDReal || entries[0].PreviousID != nsIDFake {
+		t.Errorf("first entry ID, PreviousID = %q, %q; want %q, %q", entries[0].ID, entries[0].PreviousID, nsIDReal, nsIDFake)
+	}
+	if entries[1].ID != "urn:other" || entries[1].PreviousID != "" {
+		t.Errorf("second entry ID, PreviousID = %q, %q; want urn:other and none", entries[1].ID, entries[1].PreviousID)
 	}
 }

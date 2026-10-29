@@ -42,7 +42,7 @@ After editing `*_types.go` or markers, run `mise run manifests generate`. After 
 The reconcile loop is: for each `FeedGroup`, fetch every feed → filter → template/render →
 send to Discord → record per-feed delivery state in `FeedGroup.Status`. Three internal packages:
 
-- `internal/rss` (`client.go`) — fetches and parses feeds. Conditional GET via ETag/Last-Modified, response-size cap.
+- `internal/rss` (`client.go`) — fetches and parses feeds. Conditional GET via ETag/Last-Modified, response-size cap. An Atom document's vocabulary is decided once from its root namespace: in Atom 1.0 the identity/link/date elements are matched by namespace (`atomEntry`) so extension `<ext:id>`/`<ext:link>` can't displace them; other documents are read by local name (`looseAtomEntry`). When this changes an entry's ID versus earlier releases the parser reports it as `Entry.PreviousID`, and the controller (`migratePreviousIdentities`) carries stored identities over.
 - `internal/discord` (`client.go`) — builds and sends webhook messages; rate-limit/error handling, `@everyone`/`@here` suppression via `allowed_mentions`, length clamping. Non-http(s) link/image stripping (`javascript:`/`data:`) lives in `internal/controller/render.go` (`httpURLOrEmpty`), not here. Message templates reject `range`/`define`/`template`/`with`, variable assignment and string-building builtins (`printf`, `html`, ...), and cap output size.
 - `internal/controller` — `FeedGroupReconciler` (`feedgroup_controller.go`) orchestrates everything, plus `metrics.go` (Prometheus) and `classify.go` (error → outcome classification).
 

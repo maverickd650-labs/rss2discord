@@ -2,7 +2,6 @@ package rss
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -57,10 +55,17 @@ type Entry struct {
 	ID string
 	// IDSource is the element ID was taken from: GUID, link, title, or
 	// (for an entry with none of those) ContentID.
-	IDSource    IDSource
-	Title       string
-	Link        string
-	Description string
+	IDSource IDSource
+	// PreviousID and PreviousIDSource are the ID and source earlier releases
+	// would have picked for an Atom entry whose choice has since changed (an
+	// extension's <ext:id> or <ext:link> no longer stands in for Atom's own);
+	// PreviousID is empty when nothing changed. Consumers use them to carry
+	// stored identities over to ID.
+	PreviousID       string
+	PreviousIDSource IDSource
+	Title            string
+	Link             string
+	Description      string
 	// Content is the entry's full body when the feed carries one separately
 	// from its summary: RSS <content:encoded>, or Atom <content> (which, for
 	// Atom entries with no <summary>, is also used as Description). It is raw
@@ -793,21 +798,22 @@ func entryImage(enclosure *rssEnclosure, thumbnail *rssMediaURL, content []rssMe
 	return mediaImage(thumbnail, content, group)
 }
 
-// atomEntries collects a feed's <entry> elements but, like rssItems, stops
+// entryList collects a feed's <entry> elements but, like rssItems, stops
 // decoding after maxFeedEntries.
-type atomEntries []atomEntry
+type entryList[E any] []E
 
 // UnmarshalXML retains the first maxFeedEntries entries. XML decoding errors are
 // returned; excess entries are ignored.
-func (c *atomEntries) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+func (c *entryList[E]) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var err error
 	*c, err = appendBounded(d, start, *c, maxFeedEntries)
 	return err
 }
 
-type atomEntry struct {
-	ID    atomID    `xml:"id"`
-	Links atomLinks `xml:"link"`
+// atomEntryCore is everything an Atom entry carries that doesn't decide its
+// identity, link or dates. The fields that do are declared per vocabulary (see
+// atomEntry and looseAtomEntry).
+type atomEntryCore struct {
 	// Title, Summary and Content are nsTexts: Content because a direct
 	// <media:content> on the entry shares its local name (see atomText), and
 	// all three so type="xhtml" values (a child <div>) are captured; see
@@ -815,8 +821,6 @@ type atomEntry struct {
 	Title      nsTexts        `xml:"title"`
 	Summary    nsTexts        `xml:"summary"`
 	Content    nsTexts        `xml:"content"`
-	Updated    string         `xml:"updated"`
-	Published  string         `xml:"published"`
 	Author     atomAuthor     `xml:"author"`
 	Categories atomCategories `xml:"category"`
 	// MediaThumbnail and MediaGroup carry Media RSS images/descriptions
@@ -832,6 +836,43 @@ type atomEntry struct {
 	// matches "base,attr" by local name regardless of namespace prefix, so
 	// this also covers the attribute written without an "xml:" prefix.
 	Base string `xml:"base,attr"`
+}
+
+// An Atom document's vocabulary is decided once, from its root element's
+// namespace. encoding/xml matches a plain struct tag by local name in any
+// namespace, so in a document that mixes vocabularies an extension's <ext:id>
+// or <ext:link> would otherwise overwrite Atom's own. In an Atom 1.0 document
+// (atomEntry) the identity, link and date elements are therefore matched by
+// Atom's namespace, and extension elements never reach them. Any other
+// document -- Atom 0.3, or one that omits the declaration -- has no namespace
+// to match against and is read by local name alone (looseAtomEntry).
+
+// atomEntry is an entry of an Atom 1.0 document.
+type atomEntry struct {
+	atomEntryCore
+	ID        string    `xml:"http://www.w3.org/2005/Atom id"`
+	Links     atomLinks `xml:"http://www.w3.org/2005/Atom link"`
+	Updated   string    `xml:"http://www.w3.org/2005/Atom updated"`
+	Published string    `xml:"http://www.w3.org/2005/Atom published"`
+}
+
+// looseAtomEntry is an entry of any other Atom document; see atomEntry.
+type looseAtomEntry struct {
+	atomEntryCore
+	ID        string    `xml:"id"`
+	Links     atomLinks `xml:"link"`
+	Updated   string    `xml:"updated"`
+	Published string    `xml:"published"`
+}
+
+// priorAtomEntry reads only what an earlier release chose an entry's
+// identity from, by local name alone as it did. parseAtom compares it with
+// the current choice to fill Entry.PreviousID. XMLName lets the comparison
+// skip an entry-named extension element that atomEntry never sees.
+type priorAtomEntry struct {
+	XMLName xml.Name
+	ID      string    `xml:"id"`
+	Links   atomLinks `xml:"link"`
 }
 
 type atomAuthor struct {
@@ -863,13 +904,9 @@ func (c *atomCategories) UnmarshalXML(d *xml.Decoder, start xml.StartElement) er
 }
 
 type atomLink struct {
-	// XMLName records the namespace the <link> was declared in, so a
-	// foreign-namespace <ext:link> can't displace Atom's own; see
-	// namespaceRank.
-	XMLName xml.Name
-	Href    string `xml:"href,attr"`
-	Rel     string `xml:"rel,attr"`
-	Type    string `xml:"type,attr"`
+	Href string `xml:"href,attr"`
+	Rel  string `xml:"rel,attr"`
+	Type string `xml:"type,attr"`
 }
 
 // isAlternate reports whether l is an article link: Atom defaults an unmarked
@@ -884,111 +921,36 @@ func (l atomLink) isImageEnclosure() bool {
 	return l.Rel == "enclosure" && strings.HasPrefix(l.Type, "image/") && strings.TrimSpace(l.Href) != ""
 }
 
-// namespaceRank orders the namespaces an Atom <id> or <link> may be declared
-// in: Atom's own, then none, then anything else. encoding/xml matches a struct
-// tag by local name in any namespace, so a foreign <ext:id> or <ext:link> would
-// otherwise displace Atom's own. Foreign namespaces stay a last resort rather
-// than being dropped, so a feed using a lookalike default namespace (Atom 0.3)
-// keeps working.
-func namespaceRank(space string) int {
-	switch space {
-	case atomNamespace:
-		return 0
-	case "":
-		return 1
-	}
-	return 2
-}
-
-// atomID is an entry's <id>. It keeps the best-ranked non-blank value (see
-// namespaceRank), and the last one among equals, as a plain string field would.
-type atomID struct {
-	value string
-	rank  int
-	set   bool
-}
-
-// UnmarshalXML keeps the value unless one from a better-ranked namespace is
-// already held. XML decoding errors are returned; blank values are ignored.
-func (a *atomID) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
-	var v string
-	if err := d.DecodeElement(&v, &start); err != nil {
-		return err
-	}
-	if strings.TrimSpace(v) == "" {
-		return nil
-	}
-	if r := namespaceRank(start.Name.Space); !a.set || r <= a.rank {
-		a.value, a.rank, a.set = v, r, true
-	}
-	return nil
-}
-
 // atomLinks collects an entry's <link> elements but retains only the three
-// per namespace rank (see namespaceRank) that primaryLink and enclosureImage
-// can select: the first link, the first alternate link, and the first image
-// enclosure of that rank. Entries rarely carry more than a handful of links,
-// but nothing else bounds them, and the retained subset yields exactly the same
-// selection as the full list.
+// that primaryLink and enclosureImage can select: the first link overall, the
+// first alternate link, and the first image enclosure. Entries rarely carry
+// more than a handful of links, but nothing else bounds them, and the retained
+// subset yields exactly the same selection as the full list.
 type atomLinks []atomLink
 
-// foreign reports whether l was declared outside Atom's namespace and the
-// empty one.
-func (l atomLink) foreign() bool {
-	return namespaceRank(l.XMLName.Space) == 2
-}
-
 // UnmarshalXML retains a link only if it is the first, the first alternate, or
-// the first image enclosure of its namespace rank. XML decoding errors are
-// returned; other links are ignored.
+// the first image enclosure. XML decoding errors are returned; other links are
+// ignored.
 func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var l atomLink
 	if err := d.DecodeElement(&l, &start); err != nil {
 		return err
 	}
-	// The slots are per rank so a lower-ranked link arriving first can't use up
-	// the slot a better-ranked one needs.
-	rank := namespaceRank(l.XMLName.Space)
-	any, hasAlternate, hasEnclosure := false, false, false
+	hasAlternate, hasEnclosure := false, false
 	for _, kept := range *c {
-		if namespaceRank(kept.XMLName.Space) != rank {
-			continue
-		}
-		any = true
 		hasAlternate = hasAlternate || kept.isAlternate()
 		hasEnclosure = hasEnclosure || kept.isImageEnclosure()
 	}
-	if !any || (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure()) {
+	if len(*c) == 0 || (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure()) {
 		*c = append(*c, l)
 	}
 	return nil
-}
-
-// rankedLinks returns the links declared in Atom's namespace or none, or all of
-// links if every one is foreign (a lookalike default namespace), ordered by
-// namespace rank with document order kept within a rank. Selecting the first
-// match from this list therefore prefers Atom's own links.
-func rankedLinks(links []atomLink) []atomLink {
-	ranked := make([]atomLink, 0, len(links))
-	for _, l := range links {
-		if !l.foreign() {
-			ranked = append(ranked, l)
-		}
-	}
-	if len(ranked) == 0 {
-		ranked = append(ranked, links...)
-	}
-	slices.SortStableFunc(ranked, func(a, b atomLink) int {
-		return cmp.Compare(namespaceRank(a.XMLName.Space), namespaceRank(b.XMLName.Space))
-	})
-	return ranked
 }
 
 // primaryLink returns the entry's main article link: the "alternate" rel,
 // or the first link if none is explicitly marked alternate (Atom defaults
 // an unmarked link's rel to "alternate").
 func primaryLink(links []atomLink) string {
-	links = rankedLinks(links)
 	for _, l := range links {
 		if l.isAlternate() {
 			return l.Href
@@ -1003,7 +965,7 @@ func primaryLink(links []atomLink) string {
 // enclosureImage returns an Atom entry's image enclosure link, if any
 // (<link rel="enclosure" type="image/..">).
 func enclosureImage(links []atomLink) string {
-	for _, l := range rankedLinks(links) {
+	for _, l := range links {
 		if l.isImageEnclosure() {
 			return strings.TrimSpace(l.Href)
 		}
@@ -1011,14 +973,27 @@ func enclosureImage(links []atomLink) string {
 	return ""
 }
 
+// atomFeed is an Atom 1.0 document; see atomEntry.
 type atomFeed struct {
 	// Title is a slice of nsText so a feed-level <media:title> or
 	// <itunes:title> can't override Atom's own <title>; see atomText.
-	Title   nsTexts     `xml:"title"`
-	Entries atomEntries `xml:"entry"`
+	Title   nsTexts              `xml:"title"`
+	Entries entryList[atomEntry] `xml:"http://www.w3.org/2005/Atom entry"`
 	// Base is the feed-level xml:base, used to resolve an entry's relative
 	// link/enclosure hrefs when the entry doesn't set its own.
 	Base string `xml:"base,attr"`
+}
+
+// looseAtomFeed is any other Atom document; see looseAtomEntry.
+type looseAtomFeed struct {
+	Title   nsTexts                   `xml:"title"`
+	Entries entryList[looseAtomEntry] `xml:"entry"`
+	Base    string                    `xml:"base,attr"`
+}
+
+// priorAtomFeed is atomFeed as earlier releases read it; see priorAtomEntry.
+type priorAtomFeed struct {
+	Entries entryList[priorAtomEntry] `xml:"entry"`
 }
 
 // resolveAtomURL resolves ref against base per RFC 3986. Atom commonly
@@ -1072,15 +1047,21 @@ func unmarshalXML(data []byte, v any) error {
 // parseRSS vs. parseAtom without paying for a full Unmarshal twice -- once
 // here and again in whichever of those it then calls.
 func rootElementName(data []byte) (string, error) {
+	root, err := rootElement(data)
+	return root.Local, err
+}
+
+// rootElement is rootElementName with the root's namespace too.
+func rootElement(data []byte) (xml.Name, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.CharsetReader = charset.NewReaderLabel
 	for {
 		tok, err := decoder.Token()
 		if err != nil {
-			return "", err
+			return xml.Name{}, err
 		}
 		if start, ok := tok.(xml.StartElement); ok {
-			return start.Name.Local, nil
+			return start.Name, nil
 		}
 	}
 }
@@ -1194,16 +1175,89 @@ func rssItemsToEntries(items []rssItem) []Entry {
 // text constructs retain their inner markup. Description falls back from summary
 // to content to the Media RSS group description. Invalid or missing dates become
 // zero times after trying published and then updated.
-func parseAtom(data []byte) ([]Entry, string, error) {
-	var feed atomFeed
+// atomItem is an entry of either Atom vocabulary, with what an earlier release
+// would have read its identity from (nil when that can't differ).
+type atomItem struct {
+	atomEntryCore
+	ID, Updated, Published string
+	Links                  atomLinks
+	prior                  *priorAtomEntry
+}
+
+// atomIdentity picks an Atom entry's ID: its <id>, else its link, else its
+// title (which may be empty; see withContentID).
+func atomIdentity(guid, link, title string) (string, IDSource) {
+	if id := strings.TrimSpace(guid); id != "" {
+		return id, IDFromGUID
+	}
+	if id := strings.TrimSpace(link); id != "" {
+		return id, IDFromLink
+	}
+	return title, IDFromTitle
+}
+
+// priorAtomEntries reads data the way earlier releases picked identities -- by
+// local name alone -- and returns one entry per Atom-namespace entry, or nil
+// if they can't be lined up with want parsed entries (a bounded list cut off
+// differently, say), in which case no PreviousID is reported.
+func priorAtomEntries(data []byte, want int) []priorAtomEntry {
+	var feed priorAtomFeed
 	if err := unmarshalXML(data, &feed); err != nil {
+		return nil
+	}
+	prior := make([]priorAtomEntry, 0, want)
+	for _, e := range feed.Entries {
+		if e.XMLName.Space == atomNamespace {
+			prior = append(prior, e)
+		}
+	}
+	if len(prior) != want {
+		return nil
+	}
+	return prior
+}
+
+func parseAtom(data []byte) ([]Entry, string, error) {
+	root, err := rootElement(data)
+	if err != nil {
 		return nil, "", err
 	}
 
-	feedBase := strings.TrimSpace(feed.Base)
+	var (
+		items        []atomItem
+		title        nsTexts
+		feedBaseAttr string
+	)
+	if root.Space == atomNamespace {
+		var feed atomFeed
+		if err := unmarshalXML(data, &feed); err != nil {
+			return nil, "", err
+		}
+		prior := priorAtomEntries(data, len(feed.Entries))
+		items = make([]atomItem, len(feed.Entries))
+		for i, e := range feed.Entries {
+			items[i] = atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
+			if prior != nil {
+				items[i].prior = &prior[i]
+			}
+		}
+		title, feedBaseAttr = feed.Title, feed.Base
+	} else {
+		var feed looseAtomFeed
+		if err := unmarshalXML(data, &feed); err != nil {
+			return nil, "", err
+		}
+		items = make([]atomItem, len(feed.Entries))
+		for i, e := range feed.Entries {
+			items[i] = atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
+		}
+		title, feedBaseAttr = feed.Title, feed.Base
+	}
 
-	entries := make([]Entry, 0, len(feed.Entries))
-	for i, item := range feed.Entries {
+	feedBase := strings.TrimSpace(feedBaseAttr)
+
+	entries := make([]Entry, 0, len(items))
+	for i, item := range items {
 		published, _ := parseTime(item.Published)
 		if published.IsZero() {
 			published, _ = parseTime(item.Updated)
@@ -1219,13 +1273,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 		link := resolveAtomURL(base, primaryLink(item.Links))
 
-		id, idSource := strings.TrimSpace(item.ID.value), IDFromGUID
-		if id == "" {
-			id, idSource = strings.TrimSpace(link), IDFromLink
-		}
-		if id == "" {
-			id, idSource = atomText(item.Title), IDFromTitle
-		}
+		id, idSource := atomIdentity(item.ID, link, atomText(item.Title))
 
 		// Content is exposed even when it doubles as Description (no
 		// summary), so templates can use {{.Content}} regardless of which
@@ -1251,7 +1299,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			categoryTerms[i] = c.Term
 		}
 
-		entries = append(entries, withContentID(Entry{
+		entry := Entry{
 			ID:          id,
 			IDSource:    idSource,
 			Title:       atomText(item.Title),
@@ -1263,10 +1311,18 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			Categories:  trimCategories(categoryTerms),
 			Published:   published,
 			Seq:         i,
-		}))
+		}
+		if item.prior != nil {
+			priorLink := resolveAtomURL(base, primaryLink(item.prior.Links))
+			priorID, priorSource := atomIdentity(item.prior.ID, priorLink, atomText(item.Title))
+			if priorID != "" && (priorID != id || priorSource != idSource) {
+				entry.PreviousID, entry.PreviousIDSource = priorID, priorSource
+			}
+		}
+		entries = append(entries, withContentID(entry))
 	}
 
-	return entries, atomText(feed.Title), nil
+	return entries, atomText(title), nil
 }
 
 func parseTime(value string) (time.Time, error) {
