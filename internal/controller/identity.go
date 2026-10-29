@@ -108,7 +108,9 @@ func normalizeLinkIdentity(id string) string {
 }
 
 // normalizeURLIdentity implements normalizeIdentity and, with keepTarget,
-// normalizeLinkIdentity.
+// normalizeLinkIdentity. When keepTarget is true, the fragment and ref query
+// parameter are preserved while other known tracking parameters are removed.
+// Invalid URLs and identities without an http(s) scheme are returned unchanged.
 func normalizeURLIdentity(id string, keepTarget bool) string {
 	// Opaque GUIDs and title fallbacks are common and can't be URLs we
 	// normalize, so skip the (allocating) parse for anything that doesn't
@@ -146,8 +148,9 @@ func normalizeURLIdentity(id string, keepTarget bool) string {
 // entryIdentity resolves entry's stable identity, used for both the
 // catch-up watermark (LastSeenEntry) and per-entry dedup (LastSent):
 // entry.ID itself (already resolved via GUID -> Link -> Title -> ContentID
-// precedence by the RSS/Atom parser), normalized when it's a URL. An entry
-// with no ID gets the parser's ContentID, so the identity is never empty.
+// precedence by the RSS/Atom parser), normalized when it's a URL. Link-derived
+// URL IDs retain their fragment and ref parameter. An entry with no ID gets the
+// parser's ContentID, so the identity is never empty.
 func entryIdentity(entry rss.Entry) string {
 	switch {
 	case entry.ID == "":
@@ -236,7 +239,8 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 // migrateLegacyIdentities rewrites a stateVersion 0 watermark and dedup keys
 // into the current identity scheme, using entries (sorted oldest-to-newest)
 // to recover which entry each legacy value stood for. Only entries whose
-// identity changed need translating; a GUID-identified entry keeps its key.
+// identity changed need translating; a shared legacy key is dropped even if
+// another entry, such as one identified by a GUID, still uses that identity.
 //
 // A legacy identity can stand for several entries in entries (links that
 // differed only by fragment or ref, or several entries with no GUID, link or
