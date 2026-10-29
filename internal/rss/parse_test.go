@@ -1636,15 +1636,24 @@ func atomDocNS(ns, entry string) []byte {
 }
 
 const (
-	nsIDReal   = "urn:real"
-	nsIDFake   = "urn:fake"
-	nsLinkReal = "http://example.com/real"
-	nsLinkFake = "http://example.com/fake"
-	nsImgReal  = "http://example.com/real.png"
-	nsImgFake  = "http://example.com/fake.png"
-	nsAtomOld  = "http://purl.org/atom/ns#"
-	nsElEnd    = "\"/>" // closes a self-closing tag after an href value
+	nsIDReal    = "urn:real"
+	nsIDFake    = "urn:fake"
+	nsLinkReal  = "http://example.com/real"
+	nsLinkFake  = "http://example.com/fake"
+	nsImgReal   = "http://example.com/real.png"
+	nsImgFake   = "http://example.com/fake.png"
+	nsAtomOld   = "http://purl.org/atom/ns#"
+	nsEnclosure = `rel="enclosure" type="image/png" `
 )
+
+// Element builders for the Atom namespace tests.
+func idEl(v string) string    { return "<id>" + v + "</id>" }
+func extIDEl(v string) string { return "<ext:id>" + v + "</ext:id>" }
+
+// linkEl is a self-closing <tag> carrying attrs (each ending in a space) and an href.
+func linkEl(tag, attrs, href string) string {
+	return "<" + tag + " " + attrs + `href="` + href + `"/>`
+}
 
 // TestParseFeed_AtomExtensionElementsNeverTouchCoreFields asserts that in an
 // Atom 1.0 document an extension's <ext:id> and <ext:link> can neither
@@ -1655,22 +1664,21 @@ func TestParseFeed_AtomExtensionElementsNeverTouchCoreFields(t *testing.T) {
 		name, ns, entry             string
 		wantID, wantLink, wantImage string
 	}{
-		{name: "foreign id after real", ns: atomNamespace, entry: "<id>" + nsIDReal + "</id><ext:id>" + nsIDFake + "</ext:id>", wantID: nsIDReal},
-		{name: "foreign id before real", ns: atomNamespace, entry: "<ext:id>" + nsIDFake + "</ext:id><id>" + nsIDReal + "</id>", wantID: nsIDReal},
-		{name: "foreign id alone is ignored", ns: atomNamespace, entry: "<ext:id>" + nsIDFake + "</ext:id>", wantID: "T"},
-		{name: "foreign link first", ns: atomNamespace, entry: "<ext:link href=\"" + nsLinkFake + "\"/><link rel=\"alternate\" href=\"" + nsLinkReal + nsElEnd, wantLink: nsLinkReal, wantID: nsLinkReal},
-		{name: "foreign alternate after real", ns: atomNamespace, entry: "<link href=\"" + nsLinkReal + "\"/><ext:link rel=\"alternate\" href=\"" + nsLinkFake + nsElEnd, wantLink: nsLinkReal, wantID: nsLinkReal},
-		{name: "foreign link alone is ignored", ns: atomNamespace, entry: "<ext:link href=\"" + nsLinkFake + nsElEnd, wantID: "T"},
-		{name: "unnamespaced link is not Atom's", ns: atomNamespace, entry: "<link xmlns=\"\" href=\"" + nsLinkFake + "\"/><link href=\"" + nsLinkReal + nsElEnd, wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign id after real", ns: atomNamespace, entry: idEl(nsIDReal) + extIDEl(nsIDFake), wantID: nsIDReal},
+		{name: "foreign id before real", ns: atomNamespace, entry: extIDEl(nsIDFake) + idEl(nsIDReal), wantID: nsIDReal},
+		{name: "foreign id alone is ignored", ns: atomNamespace, entry: extIDEl(nsIDFake), wantID: "T"},
+		{name: "foreign link first", ns: atomNamespace, entry: linkEl("ext:link", "", nsLinkFake) + linkEl("link", `rel="alternate" `, nsLinkReal), wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign alternate after real", ns: atomNamespace, entry: linkEl("link", "", nsLinkReal) + linkEl("ext:link", `rel="alternate" `, nsLinkFake), wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign link alone is ignored", ns: atomNamespace, entry: linkEl("ext:link", "", nsLinkFake), wantID: "T"},
+		{name: "unnamespaced link is not Atom's", ns: atomNamespace, entry: linkEl("link", `xmlns="" `, nsLinkFake) + linkEl("link", "", nsLinkReal), wantLink: nsLinkReal, wantID: nsLinkReal},
 		{
-			name: "foreign image enclosure first",
-			ns:   atomNamespace,
-			entry: "<id>" + nsIDReal + "</id><ext:link rel=\"enclosure\" type=\"image/png\" href=\"" + nsImgFake + "\"/>" +
-				"<link rel=\"enclosure\" type=\"image/png\" href=\"" + nsImgReal + nsElEnd,
+			name:   "foreign image enclosure first",
+			ns:     atomNamespace,
+			entry:  idEl(nsIDReal) + linkEl("ext:link", nsEnclosure, nsImgFake) + linkEl("link", nsEnclosure, nsImgReal),
 			wantID: nsIDReal, wantLink: nsImgReal, wantImage: nsImgReal, // the only native link doubles as the link
 		},
-		{name: "lookalike default namespace is read by local name", ns: nsAtomOld, entry: "<id>" + nsIDReal + "</id><link href=\"" + nsLinkReal + nsElEnd, wantID: nsIDReal, wantLink: nsLinkReal},
-		{name: "no namespace is read by local name", entry: "<id>" + nsIDReal + "</id><link href=\"" + nsLinkReal + nsElEnd, wantID: nsIDReal, wantLink: nsLinkReal},
+		{name: "lookalike default namespace is read by local name", ns: nsAtomOld, entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
+		{name: "no namespace is read by local name", entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entries, _, err := parseFeed(atomDocNS(tc.ns, tc.entry))
@@ -1694,13 +1702,13 @@ func TestParseFeed_AtomPreviousID(t *testing.T) {
 		wantPrev       string
 		wantPrevSource IDSource
 	}{
-		{name: "foreign id after real", entry: "<id>" + nsIDReal + "</id><ext:id>" + nsIDFake + "</ext:id>", wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
-		{name: "foreign id alone", entry: "<ext:id>" + nsIDFake + "</ext:id>", wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
-		{name: "foreign id before real changes nothing", entry: "<ext:id>" + nsIDFake + "</ext:id><id>" + nsIDReal + "</id>"},
-		{name: "foreign link picked as the link ID", entry: "<ext:link href=\"" + nsLinkFake + "\"/><link href=\"" + nsLinkReal + nsElEnd, wantPrev: nsLinkFake, wantPrevSource: IDFromLink},
-		{name: "foreign link behind an id changes nothing", entry: "<id>" + nsIDReal + "</id><ext:link href=\"" + nsLinkFake + nsElEnd},
-		{name: "plain entry", entry: "<id>" + nsIDReal + "</id><link href=\"" + nsLinkReal + nsElEnd},
-		{name: "loose documents are read as before", ns: nsAtomOld, entry: "<id>" + nsIDReal + "</id><ext:id>" + nsIDFake + "</ext:id>"},
+		{name: "foreign id after real", entry: idEl(nsIDReal) + extIDEl(nsIDFake), wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
+		{name: "foreign id alone", entry: extIDEl(nsIDFake), wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
+		{name: "foreign id before real changes nothing", entry: extIDEl(nsIDFake) + idEl(nsIDReal)},
+		{name: "foreign link picked as the link ID", entry: linkEl("ext:link", "", nsLinkFake) + linkEl("link", "", nsLinkReal), wantPrev: nsLinkFake, wantPrevSource: IDFromLink},
+		{name: "foreign link behind an id changes nothing", entry: idEl(nsIDReal) + linkEl("ext:link", "", nsLinkFake)},
+		{name: "plain entry", entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal)},
+		{name: "loose documents are read as before", ns: nsAtomOld, entry: idEl(nsIDReal) + extIDEl(nsIDFake)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns := tc.ns
@@ -1723,9 +1731,9 @@ func TestParseFeed_AtomPreviousID(t *testing.T) {
 // wrong entry.
 func TestParseFeed_AtomPreviousIDAlignsWithEntries(t *testing.T) {
 	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext">` +
-		`<ext:entry><id>` + nsIDFake + `</id></ext:entry>` +
-		`<entry><id>` + nsIDReal + `</id><ext:id>` + nsIDFake + `</ext:id></entry>` +
-		`<entry><id>urn:other</id></entry></feed>`
+		`<ext:entry>` + idEl(nsIDFake) + `</ext:entry>` +
+		`<entry>` + idEl(nsIDReal) + extIDEl(nsIDFake) + `</entry>` +
+		`<entry>` + idEl("urn:other") + `</entry></feed>`
 	entries, _, err := parseFeed([]byte(doc))
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
