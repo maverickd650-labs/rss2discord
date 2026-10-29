@@ -77,6 +77,98 @@ func parseDurationWithDefault(value string, fallback time.Duration) (time.Durati
 	return max(duration, minParsedInterval), nil
 }
 
+// fallbackInterval and fallbackRetryInterval are the waits used when the spec's
+// Interval/RetryInterval is empty or unparsable. They are the single source of
+// these fallbacks for polling, requeueing and permanent-failure backoff.
+const (
+	fallbackInterval      = 30 * time.Minute
+	fallbackRetryInterval = 5 * time.Minute
+)
+
+// feedPlan is the outcome of deciding which feeds a reconcile fetches.
+type feedPlan struct {
+	// active are the feeds to fetch, in spec order.
+	active []v1alpha1.FeedSpec
+	// nextDue is how long until the soonest feed skipped as not-yet-due becomes
+	// due; zero when no feed was skipped for that reason.
+	nextDue time.Duration
+}
+
+// planFeeds decides, as of now, which of the group's feeds to fetch. Paused
+// feeds and feeds without a URL are skipped. A feed in permanent-failure
+// backoff is skipped next, before the due check: backoff outranks the "failing
+// feeds are always due" rule, and a backed-off feed contributes no wake time.
+// A feed that is not yet due is skipped and bounds nextDue, so the requeue
+// cannot sleep past the moment it becomes due (e.g. after a restart
+// mid-interval). force (a spec change) makes every non-backed-off feed due. An
+// unparsable Interval falls back to fallbackInterval here; requeueWithStatus
+// reports it.
+func planFeeds(feedGroup *v1alpha1.FeedGroup, now time.Time, force bool) feedPlan {
+	pollInterval, _ := parseDurationWithDefault(feedGroup.Spec.Interval, fallbackInterval)
+	plan := feedPlan{active: make([]v1alpha1.FeedSpec, 0, len(feedGroup.Spec.Feeds))}
+	for _, feed := range feedGroup.Spec.Feeds {
+		if feed.RSSUrl == "" || feed.Paused {
+			continue
+		}
+		fs := feedStatusFor(feedGroup, feed.RSSUrl)
+		if fs != nil && feedInBackoff(fs.BackoffUntil, now) {
+			continue
+		}
+		if fs != nil && !feedDue(fs, pollInterval, now, force) {
+			if last, err := time.Parse(time.RFC3339, fs.LastChecked); err == nil {
+				if until := last.Add(pollInterval).Sub(now); plan.nextDue == 0 || until < plan.nextDue {
+					plan.nextDue = until
+				}
+			}
+			continue
+		}
+		plan.active = append(plan.active, feed)
+	}
+	return plan
+}
+
+// requeueDecision is how long to wait before the next reconcile, in the terms
+// requeueWithStatus takes, plus the bound a not-yet-due feed puts on it.
+type requeueDecision struct {
+	interval string
+	fallback time.Duration
+	// jitter is false only for an externally dictated wait (Discord's
+	// Retry-After), which is already the exact minimum Discord demands.
+	jitter  bool
+	nextDue time.Duration
+}
+
+// retryRequeue is the decision after a reconcile that could not attempt any
+// feed (e.g. the webhook secret is unusable): wait RetryInterval.
+func retryRequeue(spec *v1alpha1.FeedGroupSpec) requeueDecision {
+	return requeueDecision{interval: spec.RetryInterval, fallback: fallbackRetryInterval, jitter: true}
+}
+
+// requeue decides the wait after feeds were processed. A Discord rate limit
+// overrides everything: the exact Retry-After, unjittered, regardless of
+// sibling feeds. Otherwise the wait is RetryInterval if any feed wants a retry
+// and Interval if not, jittered, and shortened to the plan's nextDue by bound.
+func (p feedPlan) requeue(spec *v1alpha1.FeedGroupSpec, wantRetry bool, rateLimitRetryAfter time.Duration) requeueDecision {
+	if rateLimitRetryAfter > 0 {
+		return requeueDecision{fallback: rateLimitRetryAfter}
+	}
+	if wantRetry {
+		d := retryRequeue(spec)
+		d.nextDue = p.nextDue
+		return d
+	}
+	return requeueDecision{interval: spec.Interval, fallback: fallbackInterval, jitter: true, nextDue: p.nextDue}
+}
+
+// bound shortens wait to the soonest not-yet-due feed, never below
+// minParsedInterval. A wait already shorter than nextDue is left alone.
+func (d requeueDecision) bound(wait time.Duration) time.Duration {
+	if d.nextDue > 0 && d.nextDue < wait {
+		return max(d.nextDue, minParsedInterval)
+	}
+	return wait
+}
+
 // maxRetryCount returns the configured retry limit, with a minimum of one.
 func maxRetryCount(specRetries int32) int32 {
 	if specRetries < 1 {
