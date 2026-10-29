@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"math"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -105,5 +106,53 @@ func TestWebhookKey_HashesRatherThanStoringRawURL(t *testing.T) {
 	}
 	if got := webhookKey(webhookURL); len(got) != 64 {
 		t.Fatalf("expected a 64-char hex-encoded SHA-256 digest, got %d chars: %q", len(got), got)
+	}
+}
+
+func TestRateLimiter_CooldownNeverShortens(t *testing.T) {
+	l := NewRateLimiter()
+
+	l.cooldown(testWebhookURL, time.Minute)
+	l.cooldown(testWebhookURL, time.Second)
+
+	if remaining, cooling := l.reserve(testWebhookURL); !cooling || remaining <= 30*time.Second {
+		t.Fatalf("a shorter later cooldown must not release the webhook early: remaining=%v cooling=%v", remaining, cooling)
+	}
+
+	l.cooldown(testWebhookURL, time.Hour)
+	if remaining, _ := l.reserve(testWebhookURL); remaining <= 30*time.Minute {
+		t.Fatalf("a longer later cooldown must extend it, remaining=%v", remaining)
+	}
+}
+
+func TestRateLimiter_CooldownIsClampedToMax(t *testing.T) {
+	for _, requested := range []time.Duration{1000 * time.Hour, time.Duration(math.MaxInt64)} {
+		l := NewRateLimiter()
+		l.cooldown(testWebhookURL, requested)
+
+		remaining, cooling := l.reserve(testWebhookURL)
+		if !cooling || remaining > maxCooldown || remaining < maxCooldown-time.Minute {
+			t.Fatalf("cooldown(%v): remaining=%v cooling=%v, want it clamped to about %v", requested, remaining, cooling, maxCooldown)
+		}
+	}
+}
+
+func TestRateLimiter_ExcessiveCooldownCannotExtendAClampedOne(t *testing.T) {
+	l := NewRateLimiter()
+	l.cooldown(testWebhookURL, maxCooldown)
+	l.cooldown(testWebhookURL, 5000*time.Hour)
+	l.cooldown(testWebhookURL, time.Minute)
+
+	if remaining, _ := l.reserve(testWebhookURL); remaining > maxCooldown || remaining < maxCooldown-time.Minute {
+		t.Fatalf("remaining = %v, want about %v: neither a longer nor a shorter request may move it", remaining, maxCooldown)
+	}
+}
+
+func TestRateLimiter_PaceIsClampedToMaxPaceWait(t *testing.T) {
+	l := NewRateLimiter()
+	l.pace(testWebhookURL, time.Hour)
+
+	if d := l.paceDelay(testWebhookURL); d <= 0 || d > maxPaceWait {
+		t.Fatalf("paceDelay = %v, want in (0, %v]", d, maxPaceWait)
 	}
 }

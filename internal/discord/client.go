@@ -213,30 +213,38 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("discord webhook returned %s%s", e.Status, e.Detail)
 }
 
-// parseRetryAfter parses Discord's Retry-After header, which is a number of
-// seconds (optionally fractional). It defaults to 1s if the header is
-// missing or malformed, so callers always back off at least briefly, and
-// clamps to maxRetryAfter so a hostile or buggy value can't park a webhook
-// (and its FeedGroup's requeue) indefinitely.
-func parseRetryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return time.Second
-	}
+// maxCooldown is the finite ceiling for any wait derived from a response
+// header: Retry-After on a 429 and X-RateLimit-Reset-After on a success. The
+// header values are untrusted, and a cooldown is never shortened (see
+// RateLimiter.cooldown), so an excessive deadline could not be repaired by a
+// later response; it is bounded here, before it exists, instead.
+const maxCooldown = time.Hour
 
-	seconds, err := strconv.ParseFloat(value, 64)
+// boundedSeconds converts a rate-limit header value -- a number of seconds,
+// optionally fractional -- to a Duration in [0, maxCooldown]. It validates
+// before converting, so the float-to-Duration conversion can never overflow:
+// a missing, non-numeric, NaN or negative value (including -Inf) is rejected
+// (ok is false), while +Inf and anything at or above maxCooldown clamp to it.
+func boundedSeconds(value string) (d time.Duration, ok bool) {
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil || math.IsNaN(seconds) || seconds < 0 {
-		return time.Second
+		return 0, false
 	}
-
-	if seconds > maxRetryAfter.Seconds() {
-		return maxRetryAfter
+	if seconds >= maxCooldown.Seconds() {
+		return maxCooldown, true
 	}
-	return time.Duration(seconds * float64(time.Second))
+	return time.Duration(seconds * float64(time.Second)), true
 }
 
-// maxRetryAfter caps how long a single 429 can hold a webhook in cooldown.
-const maxRetryAfter = time.Hour
+// parseRetryAfter parses Discord's Retry-After header (see boundedSeconds). It
+// defaults to 1s if the header is missing or malformed, so callers always back
+// off at least briefly.
+func parseRetryAfter(value string) time.Duration {
+	if d, ok := boundedSeconds(value); ok {
+		return d
+	}
+	return time.Second
+}
 
 // SendMessage delivers msg to the webhook. Either Content or Embed (or both)
 // must be set. SendMessageText is a convenience wrapper for the common
@@ -348,11 +356,10 @@ func (c *Client) notePacing(h http.Header) {
 	if c.rateLimiter == nil || strings.TrimSpace(h.Get("X-RateLimit-Remaining")) != "0" {
 		return
 	}
-	seconds, err := strconv.ParseFloat(strings.TrimSpace(h.Get("X-RateLimit-Reset-After")), 64)
-	if err != nil || seconds <= 0 {
+	d, ok := boundedSeconds(h.Get("X-RateLimit-Reset-After"))
+	if !ok || d <= 0 {
 		return
 	}
-	d := time.Duration(seconds * float64(time.Second))
 	if d > maxPaceWait {
 		c.rateLimiter.cooldown(c.webhookURL, d)
 		return

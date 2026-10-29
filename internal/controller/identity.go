@@ -166,10 +166,81 @@ func entryIdentity(entry rss.Entry) string {
 // computed it: every URL normalized with normalizeIdentity, and an empty
 // identity for an entry with no GUID, link or title.
 func legacyEntryIdentity(entry rss.Entry) string {
+	entry, _ = previouslyIdentified(entry)
 	if entry.ID == "" || entry.IDSource == rss.IDFromContent {
 		return ""
 	}
 	return normalizeIdentity(entry.ID)
+}
+
+// previouslyIdentified returns entry carrying the ID earlier releases picked for
+// it, and whether that is a different one (see rss.Entry.PreviousID).
+func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
+	if entry.PreviousID == "" {
+		return entry, false
+	}
+	entry.ID, entry.IDSource = entry.PreviousID, entry.PreviousIDSource
+	return entry, true
+}
+
+// migratePreviousIdentities carries a feed's stored identities over for the
+// Atom entries whose ID the parser now picks differently from earlier releases
+// (rss.Entry.PreviousID): the watermark and the dedup keys, which are keyed by
+// the old identity, move to the new one, keeping their send times. Without it
+// such an entry would look new and be sent again, and a watermark naming the
+// old identity would match nothing and fall back to the capped catch-up.
+//
+// It is idempotent and does nothing for an entry whose identity did not change,
+// so it runs on every fetch. An old identity that more than one entry shares, or
+// that is another entry's current identity, is left alone, as is a move onto an
+// identity more than one entry now has: it can't be told which entry the stored
+// value stands for.
+func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
+	type move struct{ previous, current rss.Entry }
+	var moves []move
+	shared := make(map[string]int)
+	currentCounts := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		currentCounts[entryIdentity(entry)]++
+		if previous, changed := previouslyIdentified(entry); changed {
+			moves = append(moves, move{previous: previous, current: entry})
+			shared[entryIdentity(previous)]++
+		}
+	}
+
+	for _, m := range moves {
+		old, now := entryIdentity(m.previous), entryIdentity(m.current)
+		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
+			continue
+		}
+		if fs.LastSeenEntry == clampWatermark(old) {
+			fs.LastSeenEntry = clampWatermark(now)
+		}
+		moveSentKey(fs.LastSent, hashIdentity(old), hashIdentity(now))
+		if oldStripped := strippedLinkIdentity(m.previous); oldStripped != "" {
+			target := ""
+			if newStripped := strippedLinkIdentity(m.current); newStripped != "" {
+				target = strippedKey(newStripped)
+			}
+			moveSentKey(fs.LastSent, strippedKey(oldStripped), target)
+		}
+	}
+}
+
+// moveSentKey renames a LastSent key, keeping its send time, or just drops it
+// when to is empty. A key already recorded under to is not overwritten.
+func moveSentKey(lastSent map[string]string, from, to string) {
+	sentAt, ok := lastSent[from]
+	if !ok {
+		return
+	}
+	delete(lastSent, from)
+	if to == "" {
+		return
+	}
+	if _, exists := lastSent[to]; !exists {
+		lastSent[to] = sentAt
+	}
 }
 
 // legacyState is what processFeed tracks for a FeedStatus written before

@@ -508,7 +508,7 @@ func TestNotePacing_IgnoresUnusableHeaders(t *testing.T) {
 		{name: "no headers"},
 		{name: "bucket not empty", remaining: "3", reset: "1"},
 		{name: "reset missing", remaining: "0"},
-		{name: "reset malformed", remaining: "0", reset: "soon"},
+		{name: "reset malformed", remaining: "0", reset: retryAfterJunk},
 		{name: "reset zero", remaining: "0", reset: "0"},
 		{name: "reset negative", remaining: "0", reset: "-2"},
 	}
@@ -581,5 +581,71 @@ func TestPaceDelay_PrunesExpiredEntries(t *testing.T) {
 	defer l.mu.Unlock()
 	if got := len(l.pacing); got != 1 {
 		t.Errorf("pacing map has %d entries after pruning, want 1", got)
+	}
+}
+
+// TestNotePacing_ResetAfterIsBounded asserts every X-RateLimit-Reset-After
+// value is validated before it can create a wait: usable values become pacing
+// (up to maxPaceWait) or a hard cooldown no longer than maxCooldown, and
+// unusable ones (NaN, -Inf) start nothing.
+func TestNotePacing_ResetAfterIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name, reset  string
+		wantPace     bool
+		wantCooldown bool
+		maxRemaining time.Duration
+	}{
+		{name: "at the pacing limit", reset: "5", wantPace: true},
+		{name: "just over the pacing limit", reset: "6", wantCooldown: true, maxRemaining: 6 * time.Second},
+		{name: "at the cap", reset: retryAfterCap, wantCooldown: true, maxRemaining: maxCooldown},
+		{name: "a billion seconds", reset: retryAfterBillion, wantCooldown: true, maxRemaining: maxCooldown},
+		{name: "int64 nanosecond overflow", reset: retryAfterInt64NS, wantCooldown: true, maxRemaining: maxCooldown},
+		{name: "huge float", reset: retryAfterHuge, wantCooldown: true, maxRemaining: maxCooldown},
+		{name: "reset-after +Inf", reset: retryAfterPosInf, wantCooldown: true, maxRemaining: maxCooldown},
+		{name: "NaN", reset: retryAfterNaN},
+		{name: "negative infinity", reset: retryAfterNegInf},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limiter := NewRateLimiter()
+			c := NewClientWithLimiter(testWebhookURL, nil, limiter)
+			h := http.Header{}
+			h.Set("X-RateLimit-Remaining", "0")
+			h.Set("X-RateLimit-Reset-After", tc.reset)
+			c.notePacing(h)
+
+			if pace := limiter.paceDelay(testWebhookURL); (pace > 0) != tc.wantPace || pace > maxPaceWait {
+				t.Errorf("paceDelay = %v, want pacing=%v and at most %v", pace, tc.wantPace, maxPaceWait)
+			}
+			remaining, cooling := limiter.reserve(testWebhookURL)
+			if cooling != tc.wantCooldown || remaining > tc.maxRemaining {
+				t.Errorf("cooldown remaining=%v cooling=%v, want cooling=%v and at most %v", remaining, cooling, tc.wantCooldown, tc.maxRemaining)
+			}
+		})
+	}
+}
+
+// TestSendMessage_ExcessiveResetAfterGivesABoundedRateLimit asserts the whole
+// path: a success response with an absurd Reset-After makes the next send fail
+// fast with a RateLimitError whose wait is finite, not decades.
+func TestSendMessage_ExcessiveResetAfterGivesABoundedRateLimit(t *testing.T) {
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset-After": {retryAfterBillion}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	c := NewClientWithLimiter(testWebhookURL, &http.Client{Transport: transport}, NewRateLimiter())
+
+	if err := c.SendMessageText(t.Context(), "first"); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	err := c.SendMessageText(t.Context(), "second")
+	rl, ok := errors.AsType[*RateLimitError](err)
+	if !ok {
+		t.Fatalf("second send error = %v, want a *RateLimitError", err)
+	}
+	if rl.RetryAfter <= maxPaceWait || rl.RetryAfter > maxCooldown {
+		t.Fatalf("RetryAfter = %v, want in (%v, %v]", rl.RetryAfter, maxPaceWait, maxCooldown)
 	}
 }

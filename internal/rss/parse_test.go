@@ -1553,7 +1553,7 @@ func TestAtomLinksBoundedSelectionMatchesFull(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := []byte(`<entry>` + tc.links + `</entry>`)
 
-			var bounded atomEntry
+			var bounded looseAtomEntry
 			if err := xml.Unmarshal(doc, &bounded); err != nil {
 				t.Fatalf("unmarshal bounded: %v", err)
 			}
@@ -1622,5 +1622,191 @@ func TestParseFeed_AtomEntryXMLBaseComposesWithFeedBase(t *testing.T) {
 	}
 	if want := "https://other.example.com/x/article-3"; entries[2].Link != want {
 		t.Fatalf("link = %q, want %q", entries[2].Link, want)
+	}
+}
+
+// atomDocNS wraps entry in an Atom feed whose default namespace is ns (none if
+// ns is empty) and which declares the foreign "ext" prefix.
+func atomDocNS(ns, entry string) []byte {
+	decl := ""
+	if ns != "" {
+		decl = ` xmlns="` + ns + `"`
+	}
+	return []byte(`<?xml version="1.0"?><feed` + decl + ` xmlns:ext="urn:ext"><entry><title>T</title>` + entry + `</entry></feed>`)
+}
+
+const (
+	nsIDReal    = "urn:real"
+	nsIDFake    = "urn:fake"
+	nsLinkReal  = "http://example.com/real"
+	nsLinkFake  = "http://example.com/fake"
+	nsImgReal   = "http://example.com/real.png"
+	nsImgFake   = "http://example.com/fake.png"
+	nsAtomOld   = "http://purl.org/atom/ns#"
+	nsEnclosure = `rel="enclosure" type="image/png" `
+	// nsExtIDFake is an extension's <ext:id>, which must never pass for Atom's own.
+	nsExtIDFake = "<ext:id>" + nsIDFake + "</ext:id>"
+)
+
+// Element builders for the Atom namespace tests.
+func idEl(v string) string { return "<id>" + v + "</id>" }
+
+// linkEl is a self-closing <tag> carrying attrs (each ending in a space) and an href.
+func linkEl(tag, attrs, href string) string {
+	return "<" + tag + " " + attrs + `href="` + href + `"/>`
+}
+
+// TestParseFeed_AtomExtensionElementsNeverTouchCoreFields asserts that in an
+// Atom 1.0 document an extension's <ext:id> and <ext:link> can neither
+// displace Atom's own nor stand in for a missing one, and that other
+// documents are still read by local name.
+func TestParseFeed_AtomExtensionElementsNeverTouchCoreFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, ns, entry             string
+		wantID, wantLink, wantImage string
+	}{
+		{name: "foreign id after real", ns: atomNamespace, entry: idEl(nsIDReal) + nsExtIDFake, wantID: nsIDReal},
+		{name: "foreign id before real", ns: atomNamespace, entry: nsExtIDFake + idEl(nsIDReal), wantID: nsIDReal},
+		{name: "foreign id alone is ignored", ns: atomNamespace, entry: nsExtIDFake, wantID: "T"},
+		{name: "foreign link first", ns: atomNamespace, entry: linkEl("ext:link", "", nsLinkFake) + linkEl("link", `rel="alternate" `, nsLinkReal), wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign alternate after real", ns: atomNamespace, entry: linkEl("link", "", nsLinkReal) + linkEl("ext:link", `rel="alternate" `, nsLinkFake), wantLink: nsLinkReal, wantID: nsLinkReal},
+		{name: "foreign link alone is ignored", ns: atomNamespace, entry: linkEl("ext:link", "", nsLinkFake), wantID: "T"},
+		{name: "unnamespaced link is not Atom's", ns: atomNamespace, entry: linkEl("link", `xmlns="" `, nsLinkFake) + linkEl("link", "", nsLinkReal), wantLink: nsLinkReal, wantID: nsLinkReal},
+		{
+			name:   "foreign image enclosure first",
+			ns:     atomNamespace,
+			entry:  idEl(nsIDReal) + linkEl("ext:link", nsEnclosure, nsImgFake) + linkEl("link", nsEnclosure, nsImgReal),
+			wantID: nsIDReal, wantLink: nsImgReal, wantImage: nsImgReal, // the only native link doubles as the link
+		},
+		{name: "lookalike default namespace is read by local name", ns: nsAtomOld, entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
+		{name: "no namespace is read by local name", entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, _, err := parseFeed(atomDocNS(tc.ns, tc.entry))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+			}
+			e := entries[0]
+			if e.ID != tc.wantID || e.Link != tc.wantLink || e.Image != tc.wantImage {
+				t.Errorf("ID, Link, Image = %q, %q, %q; want %q, %q, %q", e.ID, e.Link, e.Image, tc.wantID, tc.wantLink, tc.wantImage)
+			}
+		})
+	}
+}
+
+// TestParseFeed_AtomPreviousID asserts an Atom 1.0 entry reports the ID earlier
+// releases would have picked exactly when that differs, and not otherwise.
+func TestParseFeed_AtomPreviousID(t *testing.T) {
+	for _, tc := range []struct {
+		name, entry    string
+		ns             string
+		wantPrev       string
+		wantPrevSource IDSource
+	}{
+		{name: "foreign id after real", entry: idEl(nsIDReal) + nsExtIDFake, wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
+		{name: "foreign id alone", entry: nsExtIDFake, wantPrev: nsIDFake, wantPrevSource: IDFromGUID},
+		{name: "foreign id before real changes nothing", entry: nsExtIDFake + idEl(nsIDReal)},
+		{name: "foreign link picked as the link ID", entry: linkEl("ext:link", "", nsLinkFake) + linkEl("link", "", nsLinkReal), wantPrev: nsLinkFake, wantPrevSource: IDFromLink},
+		{name: "foreign link behind an id changes nothing", entry: idEl(nsIDReal) + linkEl("ext:link", "", nsLinkFake)},
+		{name: "plain entry", entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal)},
+		{name: "loose documents are read as before", ns: nsAtomOld, entry: idEl(nsIDReal) + nsExtIDFake},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := tc.ns
+			if ns == "" {
+				ns = atomNamespace
+			}
+			entries, _, err := parseFeed(atomDocNS(ns, tc.entry))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+			}
+			if e := entries[0]; e.PreviousID != tc.wantPrev || e.PreviousIDSource != tc.wantPrevSource {
+				t.Errorf("PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.PreviousID, e.PreviousIDSource, tc.wantPrev, tc.wantPrevSource)
+			}
+		})
+	}
+}
+
+// A foreign alternate link with a blank href is what earlier releases read first,
+// so with no id or title they fell back to ContentID. That is the identity to
+// migrate from, not "none".
+func TestParseFeed_AtomPreviousIDFallsBackToContentID(t *testing.T) {
+	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><entry>` +
+		linkEl("ext:link", `rel="alternate" `, "") + linkEl("link", `rel="alternate" `, nsLinkReal) +
+		`<summary>body</summary></entry></feed>`
+	entries, _, err := parseFeed([]byte(doc))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	e := entries[0]
+	if e.ID != nsLinkReal || e.IDSource != IDFromLink {
+		t.Fatalf("ID, IDSource = %q, %v; want %q, %v", e.ID, e.IDSource, nsLinkReal, IDFromLink)
+	}
+	if want := ContentID(e); e.PreviousID != want || e.PreviousIDSource != IDFromContent {
+		t.Errorf("PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.PreviousID, e.PreviousIDSource, want, IDFromContent)
+	}
+}
+
+// The content hash covers the publication date and image, which earlier releases
+// also read by local name, so a foreign <ext:updated> or image enclosure that
+// stood in for a missing one is part of the identity to migrate from. The blank
+// alternate link is what leaves the entry with no link identity.
+func TestParseFeed_AtomPreviousIDContentHashUsesPriorDateAndImage(t *testing.T) {
+	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><entry>` +
+		`<ext:updated>2024-01-02T03:04:05Z</ext:updated>` +
+		linkEl("ext:link", `rel="alternate" `, "") +
+		linkEl("ext:link", `rel="enclosure" type="image/png" `, nsImgFake) +
+		`<summary>body</summary></entry></feed>`
+	entries, _, err := parseFeed([]byte(doc))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	e := entries[0]
+	prior := e
+	prior.Published = time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	prior.Image = nsImgFake
+	if e.IDSource != IDFromContent || e.PreviousIDSource != IDFromContent || e.PreviousID != ContentID(prior) || e.PreviousID == e.ID {
+		t.Errorf("ID source %v, PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.IDSource, e.PreviousID, e.PreviousIDSource, ContentID(prior), IDFromContent)
+	}
+}
+
+// TestParseFeed_AtomPreviousIDAlignsWithEntries asserts an extension element
+// named entry, which atomEntry never reads, can't shift PreviousID onto the
+// wrong entry.
+func TestParseFeed_AtomPreviousIDAlignsWithEntries(t *testing.T) {
+	doc := `<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext">` +
+		`<ext:entry>` + idEl(nsIDFake) + `</ext:entry>` +
+		`<entry>` + idEl(nsIDReal) + nsExtIDFake + `</entry>` +
+		`<entry>` + idEl("urn:other") + `</entry></feed>`
+	entries, _, err := parseFeed([]byte(doc))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	if entries[0].ID != nsIDReal || entries[0].PreviousID != nsIDFake {
+		t.Errorf("first entry ID, PreviousID = %q, %q; want %q, %q", entries[0].ID, entries[0].PreviousID, nsIDReal, nsIDFake)
+	}
+	if entries[1].ID != "urn:other" || entries[1].PreviousID != "" {
+		t.Errorf("second entry ID, PreviousID = %q, %q; want urn:other and none", entries[1].ID, entries[1].PreviousID)
+	}
+}
+
+// An extension element named entry, ahead of more genuine entries than the cap
+// keeps, must not use up the cap in the prior reading: PreviousID is still
+// reported for the entries the parser retains.
+func TestParseFeed_AtomPreviousIDSurvivesTheCapWithForeignEntries(t *testing.T) {
+	var doc strings.Builder
+	doc.WriteString(`<feed xmlns="` + atomNamespace + `" xmlns:ext="urn:ext"><ext:entry>` + idEl(nsIDFake) + `</ext:entry>`)
+	doc.WriteString(`<entry>` + idEl(nsIDReal) + nsExtIDFake + `</entry>`)
+	for i := range maxFeedEntries + 5 {
+		doc.WriteString(`<entry>` + idEl(fmt.Sprintf("urn:filler:%d", i)) + `</entry>`)
+	}
+	doc.WriteString(`</feed>`)
+
+	entries, _, err := parseFeed([]byte(doc.String()))
+	if err != nil || len(entries) != maxFeedEntries {
+		t.Fatalf("parse: entries=%d err=%v, want %d entries", len(entries), err, maxFeedEntries)
+	}
+	if entries[0].ID != nsIDReal || entries[0].PreviousID != nsIDFake {
+		t.Fatalf("first entry ID, PreviousID = %q, %q; want %q, %q", entries[0].ID, entries[0].PreviousID, nsIDReal, nsIDFake)
 	}
 }

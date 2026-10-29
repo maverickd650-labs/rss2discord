@@ -251,7 +251,7 @@ func TestAtomLinksRetentionAcrossCandidateOrders(t *testing.T) {
 		t.Run(fmt.Sprint(order), func(t *testing.T) {
 			body := links[order[0]] + links[order[1]] + links[order[2]] +
 				strings.Repeat(`<link rel="alternate" href="later"/><link rel="enclosure" type="image/png" href="later.png"/>`, 10)
-			var item atomEntry
+			var item looseAtomEntry
 			if err := xml.Unmarshal([]byte(`<entry>`+body+`</entry>`), &item); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
