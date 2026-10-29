@@ -43,7 +43,7 @@ The reconcile loop is: for each `FeedGroup`, fetch every feed → filter → tem
 send to Discord → record per-feed delivery state in `FeedGroup.Status`. Three internal packages:
 
 - `internal/rss` (`client.go`) — fetches and parses feeds. Conditional GET via ETag/Last-Modified, response-size cap.
-- `internal/discord` (`client.go`) — builds and sends webhook messages; rate-limit/error handling, content sanitization, length clamping, `@everyone`/`@here` suppression, `javascript:`/`data:` URI stripping.
+- `internal/discord` (`client.go`) — builds and sends webhook messages; rate-limit/error handling, `@everyone`/`@here` suppression via `allowed_mentions`, length clamping. Non-http(s) link/image stripping (`javascript:`/`data:`) lives in `internal/controller/render.go` (`httpURLOrEmpty`), not here. Message templates reject `range`/`define`/`template` and cap output size.
 - `internal/controller` — `FeedGroupReconciler` (`feedgroup_controller.go`) orchestrates everything, plus `metrics.go` (Prometheus) and `classify.go` (error → outcome classification).
 
 Cross-cutting designs that span multiple files (change these carefully):

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -214,7 +215,9 @@ func (e *HTTPStatusError) Error() string {
 
 // parseRetryAfter parses Discord's Retry-After header, which is a number of
 // seconds (optionally fractional). It defaults to 1s if the header is
-// missing or malformed, so callers always back off at least briefly.
+// missing or malformed, so callers always back off at least briefly, and
+// clamps to maxRetryAfter so a hostile or buggy value can't park a webhook
+// (and its FeedGroup's requeue) indefinitely.
 func parseRetryAfter(value string) time.Duration {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -222,12 +225,18 @@ func parseRetryAfter(value string) time.Duration {
 	}
 
 	seconds, err := strconv.ParseFloat(value, 64)
-	if err != nil || seconds < 0 {
+	if err != nil || math.IsNaN(seconds) || seconds < 0 {
 		return time.Second
 	}
 
+	if seconds > maxRetryAfter.Seconds() {
+		return maxRetryAfter
+	}
 	return time.Duration(seconds * float64(time.Second))
 }
+
+// maxRetryAfter caps how long a single 429 can hold a webhook in cooldown.
+const maxRetryAfter = time.Hour
 
 // SendMessage delivers msg to the webhook. Either Content or Embed (or both)
 // must be set. SendMessageText is a convenience wrapper for the common

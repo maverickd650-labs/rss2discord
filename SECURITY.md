@@ -24,8 +24,14 @@ Areas of particular interest for reports:
   [`internal/discord/client.go`](internal/discord/client.go) (webhook delivery) — these resolve
   and validate destination IPs/hosts before making requests.
 - Webhook secret handling and log/error redaction.
-- Discord message sanitization (`@everyone`/`@here` suppression, `javascript:`/`data:` URI
-  stripping, length clamping).
+- Discord message sanitization (`@everyone`/`@here` suppression, non-http(s) link/image
+  stripping, length clamping) and message-template execution limits.
+
+Known trade-off: feed URLs (`spec.feeds[].rssUrl`) are not treated as secrets. They appear in
+controller logs, Events, `FeedGroup.status`, Prometheus metric labels and trace attributes, and
+fetch errors may echo them. Don't put credentials or tokens in a feed URL's query string or
+userinfo unless everyone who can read those surfaces is trusted with them. Only the Discord
+webhook URL (kept in a Secret) is redacted.
 
 ## Supply Chain
 

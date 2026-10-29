@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"text/template/parse"
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -77,7 +78,75 @@ func compileTemplate(name, text, fallback string) (*template.Template, error) {
 	if text == "" {
 		text = fallback
 	}
-	return template.New(name).Funcs(templateFuncs).Parse(text)
+	tmpl, err := template.New(name).Funcs(templateFuncs).Parse(text)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectUnboundedConstructs(tmpl); err != nil {
+		return nil, err
+	}
+	return tmpl, nil
+}
+
+// maxTemplateOutputBytes bounds what one template execution may write, well
+// above Discord's limits (2000 message / 4096 embed runes).
+const maxTemplateOutputBytes = 1024 * 1024
+
+// rejectUnboundedConstructs refuses the template actions that let a
+// user-supplied template run unbounded: range (including over an integer,
+// e.g. {{range 100000000000}}{{end}}, which spins the reconcile worker
+// forever), and define/template (exponential recursion). Templates only
+// interpolate a handful of strings, so none of these has a legitimate use;
+// {{if}}, {{with}} and the helpers in templateFuncs remain available.
+func rejectUnboundedConstructs(tmpl *template.Template) error {
+	if len(tmpl.Templates()) > 1 {
+		return errors.New("template: {{define}} is not supported")
+	}
+	if tmpl.Tree == nil {
+		return nil
+	}
+	return checkNodes(tmpl.Tree.Root)
+}
+
+func checkNodes(node parse.Node) error {
+	switch n := node.(type) {
+	case *parse.ListNode:
+		if n == nil {
+			return nil
+		}
+		for _, c := range n.Nodes {
+			if err := checkNodes(c); err != nil {
+				return err
+			}
+		}
+	case *parse.RangeNode:
+		return errors.New("template: {{range}} is not supported")
+	case *parse.TemplateNode:
+		return errors.New("template: {{template}} is not supported")
+	case *parse.IfNode:
+		return checkBranch(&n.BranchNode)
+	case *parse.WithNode:
+		return checkBranch(&n.BranchNode)
+	}
+	return nil
+}
+
+func checkBranch(b *parse.BranchNode) error {
+	if err := checkNodes(b.List); err != nil {
+		return err
+	}
+	return checkNodes(b.ElseList)
+}
+
+// limitedBuffer is a bytes.Buffer that fails once it would exceed
+// maxTemplateOutputBytes, as defense in depth behind rejectUnboundedConstructs.
+type limitedBuffer struct{ bytes.Buffer }
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > maxTemplateOutputBytes {
+		return 0, fmt.Errorf("template output exceeds maximum size of %d bytes", maxTemplateOutputBytes)
+	}
+	return b.Buffer.Write(p)
 }
 
 // templateFuncs are the helpers available in message templates. Keep the set
@@ -323,7 +392,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 	data := templateData{
 		Title:         stripHTML(entry.Title),
 		Description:   stripHTML(entry.Description),
-		Link:          entry.Link,
+		Link:          httpURLOrEmpty(entry.Link),
 		Image:         httpURLOrEmpty(entry.Image),
 		Published:     formatPublished(entry.Published),
 		PublishedUnix: publishedUnix(entry.Published),
@@ -333,7 +402,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 		content:       entry.Content,
 	}
 
-	var buf bytes.Buffer
+	var buf limitedBuffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", 0, err
 	}

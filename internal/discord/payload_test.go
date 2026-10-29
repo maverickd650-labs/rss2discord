@@ -44,6 +44,9 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "fractional seconds", value: "0.5", want: 500 * time.Millisecond},
 		{name: "malformed defaults to 1s", value: "soon", want: time.Second},
 		{name: "negative defaults to 1s", value: "-3", want: time.Second},
+		{name: "NaN defaults to 1s", value: "NaN", want: time.Second},
+		{name: "huge is clamped", value: "86400", want: maxRetryAfter},
+		{name: "infinity is clamped", value: "Inf", want: maxRetryAfter},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

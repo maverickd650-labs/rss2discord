@@ -164,3 +164,60 @@ func TestTemplateFuncs_UnknownFunctionFailsAtCompile(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
+	for name, format := range map[string]string{
+		"range over int":        `{{range 100000000000}}{{end}}`,
+		"range inside if":       `{{if .Title}}{{range 20000000}}aaaaaaaaaa{{end}}{{end}}`,
+		"range inside else":     `{{if .Title}}x{{else}}{{range 5}}y{{end}}{{end}}`,
+		"range inside with":     `{{with .Title}}{{range 5}}y{{end}}{{end}}`,
+		"template invocation":   `{{template "x"}}`,
+		"define":                `{{define "x"}}y{{end}}z`,
+		"recursive define blow": `{{define "a"}}{{template "a"}}{{template "a"}}{{end}}{{template "a"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := compileTemplate("t", format, ""); err == nil || !strings.Contains(err.Error(), "not supported") {
+				t.Fatalf("expected a 'not supported' error, got %v", err)
+			}
+		})
+	}
+	// if/with/else and helpers must keep working.
+	tmpl, err := compileTemplate("t", `{{if .Title}}{{.Title}}{{else}}none{{end}}{{with .Author}}/{{.}}{{end}}`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := renderTemplate(tmpl, rss.Entry{Title: "a", Author: "b"}, maxDiscordMessageLength)
+	if err != nil || got != "a/b" {
+		t.Fatalf("got %q, err=%v", got, err)
+	}
+}
+
+func TestRenderTemplate_OutputLimit(t *testing.T) {
+	// A single large value passes through untruncated by the helpers, so only
+	// the output cap stops it.
+	tmpl, err := compileTemplate("t", `{{.Title}}{{.Title}}`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = renderTemplate(tmpl, rss.Entry{Title: strings.Repeat("x", maxTemplateOutputBytes/2+1)}, maxDiscordMessageLength)
+	if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
+		t.Fatalf("expected output limit error, got %v", err)
+	}
+}
+
+func TestRenderTemplate_LinkSchemeFiltered(t *testing.T) {
+	tmpl, err := compileTemplate("t", `[{{.Link}}]`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for link, want := range map[string]string{
+		"https://example.com/a": "[https://example.com/a]",
+		"javascript:alert(1)":   "[]",
+		"data:text/html,x":      "[]",
+	} {
+		got, _, err := renderTemplate(tmpl, rss.Entry{Link: link}, maxDiscordMessageLength)
+		if err != nil || got != want {
+			t.Fatalf("link %q rendered %q (err=%v), want %q", link, got, err, want)
+		}
+	}
+}
