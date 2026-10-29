@@ -107,8 +107,10 @@ func normalizeLinkIdentity(id string) string {
 	return normalizeURLIdentity(id, true)
 }
 
-// normalizeURLIdentity implements normalizeIdentity and, with keepTarget,
-// normalizeLinkIdentity.
+// normalizeURLIdentity lowercases an HTTP(S) URL's scheme and host and removes
+// tracking query parameters. keepTarget preserves the fragment and ref parameter;
+// otherwise both are removed. Invalid URLs and non-HTTP(S) identities are returned
+// unchanged.
 func normalizeURLIdentity(id string, keepTarget bool) string {
 	// Opaque GUIDs and title fallbacks are common and can't be URLs we
 	// normalize, so skip the (allocating) parse for anything that doesn't
@@ -146,8 +148,9 @@ func normalizeURLIdentity(id string, keepTarget bool) string {
 // entryIdentity resolves entry's stable identity, used for both the
 // catch-up watermark (LastSeenEntry) and per-entry dedup (LastSent):
 // entry.ID itself (already resolved via GUID -> Link -> Title -> ContentID
-// precedence by the RSS/Atom parser), normalized when it's a URL. An entry
-// with no ID gets the parser's ContentID, so the identity is never empty.
+// precedence by the RSS/Atom parser), normalized when it's a URL. Link-derived
+// IDs retain the fragment and ref parameter; other IDs use normalizeIdentity.
+// An entry with no ID gets the parser's ContentID, so the identity is never empty.
 func entryIdentity(entry rss.Entry) string {
 	switch {
 	case entry.ID == "":
@@ -235,8 +238,8 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 
 // migrateLegacyIdentities rewrites a stateVersion 0 watermark and dedup keys
 // into the current identity scheme, using entries (sorted oldest-to-newest)
-// to recover which entry each legacy value stood for. Only entries whose
-// identity changed need translating; a GUID-identified entry keeps its key.
+// to recover which entry each legacy value stood for. For an unshared legacy
+// identity, changed dedup keys retain their recorded send time.
 //
 // A legacy identity can stand for several entries in entries (links that
 // differed only by fragment or ref, or several entries with no GUID, link or
@@ -246,8 +249,11 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 // was ever delivered. That replay is a backlog, so only the newest
 // replayLimit of them after the watermark are left to send: the watermark
 // moves past the older ones, so a feed whose entries all collided can't post
-// its whole history on upgrade. It never moves past an unsent entry outside
-// the group, so colliding entries dated after such a (new) entry are sent. emptyWatermark says an absent LastSeenEntry stands for a
+// its whole history on upgrade. A replayLimit of 0 skips that replay. It never
+// moves past an unsent entry outside the group, so colliding entries dated after
+// such a (new) entry are sent even beyond the cap.
+//
+// emptyWatermark says an absent LastSeenEntry stands for a
 // legacy empty identity rather than no watermark at all. Legacy values that
 // match no entry are left as they are: a watermark that matches nothing
 // falls back to the catch-up cap either way.

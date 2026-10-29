@@ -252,11 +252,12 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // processFeed handles a completed fetch for a single feed: it records the
-// fetch outcome, applies the catch-up policy on a first sync, sends new
-// entries that pass the filter, and updates the feed's FeedStatus. now is an
+// fetch outcome, applies the catch-up policy when no usable watermark exists,
+// sends new entries that pass the filter, and updates the feed's FeedStatus. now is an
 // RFC3339 status timestamp. Fetch, configuration, rendering, and delivery
-// errors are recorded in status. Initialized is set only once the feed's
-// configuration is known to be usable, so a config error on a first fetch
+// errors are recorded in status. Legacy identities are migrated before the
+// watermark lookup. For non-empty fetches, Initialized is set only once the
+// feed's configuration is known to be usable, so a config error on a first fetch
 // can't turn the next attempt into a "feed was empty" delivery of its whole
 // backlog. It returns whether the reconcile should retry sooner than the
 // normal interval and, if Discord rate limited the webhook, how long to wait
@@ -522,6 +523,8 @@ func (r *FeedGroupReconciler) processFeed(
 // (if hasSeenID is set) before sending anything, then sends each not-yet-sent
 // entry that passes the filter and updates fs (feed's FeedStatus) as it goes.
 // entries must be sorted oldest-to-newest; now is an RFC3339 send timestamp.
+// counts must cover the entire fetch before any catch-up trimming. If lastSeenID
+// has no match, the scan starts at the first entry.
 // Rendering and delivery failures update status and stop the scan unless a
 // render failure qualifies for skipping. The results indicate whether to retry
 // sooner, the rate-limit wait, and whether an unresolved entry remains pending
