@@ -598,7 +598,7 @@ func TestNotePacing_ResetAfterIsBounded(t *testing.T) {
 		{name: "at the pacing limit", reset: "5", wantPace: true},
 		{name: "just over the pacing limit", reset: "6", wantCooldown: true, maxRemaining: 6 * time.Second},
 		{name: "at the cap", reset: retryAfterCap, wantCooldown: true, maxRemaining: maxCooldown},
-		{name: "a billion seconds", reset: "1e9", wantCooldown: true, maxRemaining: maxCooldown},
+		{name: "a billion seconds", reset: retryAfterBillion, wantCooldown: true, maxRemaining: maxCooldown},
 		{name: "int64 nanosecond overflow", reset: retryAfterInt64NS, wantCooldown: true, maxRemaining: maxCooldown},
 		{name: "huge float", reset: retryAfterHuge, wantCooldown: true, maxRemaining: maxCooldown},
 		{name: "reset-after +Inf", reset: retryAfterPosInf, wantCooldown: true, maxRemaining: maxCooldown},
@@ -631,7 +631,7 @@ func TestSendMessage_ExcessiveResetAfterGivesABoundedRateLimit(t *testing.T) {
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
-			Header:     http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset-After": {"1e9"}},
+			Header:     http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset-After": {retryAfterBillion}},
 			Body:       io.NopCloser(strings.NewReader("")),
 		}, nil
 	})

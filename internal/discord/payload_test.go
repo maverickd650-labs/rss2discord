@@ -42,6 +42,8 @@ const (
 	retryAfterNaN    = "NaN"
 	retryAfterNegInf = "-Inf"
 	retryAfterJunk   = "soon"
+	// retryAfterBillion is far past maxCooldown (about 31 years).
+	retryAfterBillion = "1e9"
 	// retryAfterCap is exactly maxCooldown in seconds; retryAfterInt64NS is the
 	// smallest whole-second value whose nanosecond count overflows an int64.
 	retryAfterCap     = "3600"
