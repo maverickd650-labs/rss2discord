@@ -170,7 +170,17 @@ func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 		"range over int":        `{{range 100000000000}}{{end}}`,
 		"range inside if":       `{{if .Title}}{{range 20000000}}aaaaaaaaaa{{end}}{{end}}`,
 		"range inside else":     `{{if .Title}}x{{else}}{{range 5}}y{{end}}{{end}}`,
-		"range inside with":     `{{with .Title}}{{range 5}}y{{end}}{{end}}`,
+		"with":                  `{{with .Title}}{{.}}{{end}}`,
+		"variable assignment":   `{{$x := .Title}}{{$x = printf "%s%s" $x $x}}`,
+		"variable declaration":  `{{$x := .Title}}{{$x}}`,
+		"printf":                `{{printf "%s" .Title}}`,
+		"print in pipeline":     `{{.Title | print}}`,
+		"printf in parens":      `{{if eq (printf "a") "a"}}x{{end}}`,
+		"printf in if pipe":     `{{if printf "%s" .Title}}x{{end}}`,
+		"html":                  `{{html .Title}}`,
+		"js":                    `{{js .Title}}`,
+		"urlquery":              `{{urlquery .Title}}`,
+		"call":                  `{{call .Title}}`,
 		"template invocation":   `{{template "x"}}`,
 		"define":                `{{define "x"}}y{{end}}z`,
 		"recursive define blow": `{{define "a"}}{{template "a"}}{{template "a"}}{{end}}{{template "a"}}`,
@@ -182,7 +192,7 @@ func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 		})
 	}
 	// if/with/else and helpers must keep working.
-	tmpl, err := compileTemplate("t", `{{if .Title}}{{.Title}}{{else}}none{{end}}{{with .Author}}/{{.}}{{end}}`, "")
+	tmpl, err := compileTemplate("t", `{{if .Title}}{{.Title}}{{else}}none{{end}}{{if .Author}}/{{.Author}}{{end}}`, "")
 	if err != nil {
 		t.Fatal(err)
 	}
