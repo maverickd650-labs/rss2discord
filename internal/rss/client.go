@@ -1197,13 +1197,14 @@ func atomIdentity(guid, link, title string) (string, IDSource) {
 }
 
 // priorAtomEntries reads data the way earlier releases picked identities -- by
-// local name alone -- and returns one entry per parsed entry, or nil if the
-// count differs from want, in which case no PreviousID is reported.
-func priorAtomEntries(data []byte, want int) []priorAtomEntry {
+// local name alone -- and returns the entries in the order atomFeed parses them.
+// priorAtomFeed selects exactly the entries atomFeed does, so the two lists pair
+// up by index. data already decoded cleanly into atomFeed, so a decode error
+// can't happen; were it to, the entries decoded before it still pair up, and
+// the rest simply report no PreviousID.
+func priorAtomEntries(data []byte) []priorAtomEntry {
 	var feed priorAtomFeed
-	if err := unmarshalXML(data, &feed); err != nil || len(feed.Entries) != want {
-		return nil
-	}
+	_ = unmarshalXML(data, &feed)
 	return feed.Entries
 }
 
@@ -1223,11 +1224,11 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		if err := unmarshalXML(data, &feed); err != nil {
 			return nil, "", err
 		}
-		prior := priorAtomEntries(data, len(feed.Entries))
+		prior := priorAtomEntries(data)
 		items = make([]atomItem, len(feed.Entries))
 		for i, e := range feed.Entries {
 			items[i] = atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
-			if prior != nil {
+			if i < len(prior) {
 				items[i].prior = &prior[i]
 			}
 		}
