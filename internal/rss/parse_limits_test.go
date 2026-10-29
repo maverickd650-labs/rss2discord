@@ -88,7 +88,8 @@ func TestParseFeed_EmptyEntriesConsumeLimit(t *testing.T) {
 				t.Fatalf("retained %d entries, want %d", len(entries), maxFeedEntries)
 			}
 			for i, entry := range entries {
-				if entry.ID != "" || entry.Title != "" || entry.Seq != i {
+				// An entry with no GUID, link or title is identified by ContentID.
+				if entry.ID != ContentID(entry) || entry.IDSource != IDFromContent || entry.Title != "" || entry.Seq != i {
 					t.Fatalf("entry[%d] = %+v, want empty entry at document position %d", i, entry, i)
 				}
 			}

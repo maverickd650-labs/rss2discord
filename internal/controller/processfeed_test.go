@@ -1233,6 +1233,21 @@ func TestProcessFeed_LegacyKeysPresent(t *testing.T) {
 	}
 }
 
+// A legacy LastSent key whose entry is missing from the fetch that migrates
+// the status can't be translated then, but it is that link's stripped key,
+// so when the entry comes back after the upgrade it is still not resent.
+func TestProcessFeed_LegacyKeyForAbsentEntryStillDedups(t *testing.T) {
+	fg, feed, fs := newLegacyFeedGroup(t, "absent-legacy-key", "{{.Title}}")
+	away := linkEntry(legacyURLPrefix+"absent/post-1?ref=rss", 0)
+	present := linkEntry(legacyURLPrefix+"absent/post-2?ref=rss", 1)
+	fs.Initialized = true
+	fs.LastSeenEntry = legacyEntryIdentity(present)
+	fs.LastSent[legacyKey(away)] = legacySentAt
+	fs.LastSent[legacyKey(present)] = legacySentAt
+	processTwice(t, fg, feed, []rss.Entry{present})
+	processTwice(t, fg, feed, []rss.Entry{away, present})
+}
+
 // The upgrade bug an earlier identity change hit: a legacy watermark followed
 // by more than defaultCatchUpLimit new entries must still resume after the
 // watermark, delivering all of them, instead of reading as scrolled out and
