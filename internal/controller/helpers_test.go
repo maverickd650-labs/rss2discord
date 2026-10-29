@@ -755,7 +755,7 @@ func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{Title: "T", Published: tc.published})
+			msg, _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{Title: "T", Published: tc.published})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -789,7 +789,7 @@ func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := &v1alpha1.EmbedSpec{Enabled: true, ImageStyle: tc.style}
-			msg, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, spec, nil, descriptionTmpl, nil, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T", Image: tc.image})
+			msg, _, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, spec, nil, descriptionTmpl, nil, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T", Image: tc.image})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -827,7 +827,7 @@ func TestBuildDiscordMessage_EmbedTitleStripsHTML(t *testing.T) {
 	}
 
 	entry := rss.Entry{Title: "<b>Breaking</b> News"}
-	msg, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, entry)
+	msg, _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, entry)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -853,7 +853,7 @@ func TestBuildDiscordMessage_EmbedDescriptionRenderError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{}); err == nil {
+	if _, _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{}); err == nil {
 		t.Fatal("expected an error from a description template that fails at execution")
 	}
 }
@@ -874,7 +874,7 @@ func TestBuildDiscordMessage_ForumThreadNameRenderError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{}); err == nil {
+	if _, _, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{}); err == nil {
 		t.Fatal("expected an error from a forum thread name template that fails at execution")
 	}
 }
@@ -897,21 +897,21 @@ func TestBuildDiscordMessage_EmptyRenderIsError(t *testing.T) {
 	entry := rss.Entry{Title: "T"}
 
 	t.Run("blank content", func(t *testing.T) {
-		if _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, entry); err == nil {
+		if _, _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, entry); err == nil {
 			t.Fatal("expected an error for content that renders blank")
 		}
 	})
 
 	t.Run("blank forum thread name", func(t *testing.T) {
 		feed := &v1alpha1.FeedSpec{ForumThreadName: "{{.Published}}"}
-		if _, err := buildDiscordMessage(feedGroup, nil, title, nil, publishedOnly, feed, entry); err == nil {
+		if _, _, err := buildDiscordMessage(feedGroup, nil, title, nil, publishedOnly, feed, entry); err == nil {
 			t.Fatal("expected an error for a forum thread name that renders blank")
 		}
 	})
 
 	t.Run("dated entry still renders", func(t *testing.T) {
 		dated := rss.Entry{Title: "T", Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
-		msg, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, dated)
+		msg, _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, dated)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -938,7 +938,7 @@ func TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName(t *testi
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msg, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{Title: "Hello"})
+	msg, _, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{Title: "Hello"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -971,7 +971,7 @@ func TestBuildDiscordMessage_ThreadNameRenderError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, err = buildDiscordMessage(&v1alpha1.FeedGroup{}, nil, contentTmpl, nil, threadNameTmpl, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T"})
+	_, _, err = buildDiscordMessage(&v1alpha1.FeedGroup{}, nil, contentTmpl, nil, threadNameTmpl, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T"})
 	if err == nil {
 		t.Fatal("expected a render error from the thread name template")
 	}

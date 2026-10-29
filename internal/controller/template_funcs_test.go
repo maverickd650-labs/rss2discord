@@ -352,7 +352,7 @@ func TestBuildDiscordMessage_OutputLimitAppliesToEveryTemplate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := rss.Entry{Author: strings.Repeat("x", (1<<20)+1)}
-			msg, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, tc.embed, tc.content, tc.description, tc.thread, &v1alpha1.FeedSpec{}, entry)
+			msg, _, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, tc.embed, tc.content, tc.description, tc.thread, &v1alpha1.FeedSpec{}, entry)
 			if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
 				t.Fatalf("expected output-limit error, got %v", err)
 			}

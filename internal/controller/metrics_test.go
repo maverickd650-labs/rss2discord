@@ -32,6 +32,12 @@ import (
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
+// Failure messages shared by the helpers that read a histogram series back.
+const (
+	getHistogramMetricFmt   = "get histogram metric: %v"
+	writeHistogramMetricFmt = "write histogram metric: %v"
+)
+
 // newMetricsFeedGroup builds a minimal FeedGroup (status maps initialized)
 // keyed by a unique namespace/name so each test's metric series starts from
 // zero, avoiding cross-test accumulation in the shared registry.
@@ -64,11 +70,11 @@ func histogramSampleCount(t *testing.T, namespace, name, operation string) uint6
 	t.Helper()
 	obs, err := feedRequestDuration.GetMetricWithLabelValues(namespace, name, operation)
 	if err != nil {
-		t.Fatalf("get histogram metric: %v", err)
+		t.Fatalf(getHistogramMetricFmt, err)
 	}
 	var m dto.Metric
 	if err := obs.(prometheus.Metric).Write(&m); err != nil {
-		t.Fatalf("write histogram metric: %v", err)
+		t.Fatalf(writeHistogramMetricFmt, err)
 	}
 	return m.GetHistogram().GetSampleCount()
 }
@@ -200,13 +206,28 @@ func messageOverflowSampleCount(t *testing.T, namespace, name string) uint64 {
 	t.Helper()
 	obs, err := messageOverflowChars.GetMetricWithLabelValues(namespace, name)
 	if err != nil {
-		t.Fatalf("get histogram metric: %v", err)
+		t.Fatalf(getHistogramMetricFmt, err)
 	}
 	var m dto.Metric
 	if err := obs.(prometheus.Metric).Write(&m); err != nil {
-		t.Fatalf("write histogram metric: %v", err)
+		t.Fatalf(writeHistogramMetricFmt, err)
 	}
 	return m.GetHistogram().GetSampleCount()
+}
+
+// messageOverflowSampleSum reads the sum of observed values of a single
+// messageOverflowChars series.
+func messageOverflowSampleSum(t *testing.T, namespace, name string) float64 {
+	t.Helper()
+	obs, err := messageOverflowChars.GetMetricWithLabelValues(namespace, name)
+	if err != nil {
+		t.Fatalf(getHistogramMetricFmt, err)
+	}
+	var m dto.Metric
+	if err := obs.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf(writeHistogramMetricFmt, err)
+	}
+	return m.GetHistogram().GetSampleSum()
 }
 
 // TestProcessFeed_RecordsMessageOverflow asserts that sending an entry whose
@@ -311,11 +332,11 @@ func assertSeriesNativeOnly(t *testing.T, vec *prometheus.HistogramVec, labelVal
 	t.Helper()
 	obs, err := vec.GetMetricWithLabelValues(labelValues...)
 	if err != nil {
-		t.Fatalf("get histogram metric: %v", err)
+		t.Fatalf(getHistogramMetricFmt, err)
 	}
 	var m dto.Metric
 	if err := obs.(prometheus.Metric).Write(&m); err != nil {
-		t.Fatalf("write histogram metric: %v", err)
+		t.Fatalf(writeHistogramMetricFmt, err)
 	}
 	assertNativeOnlyHistogram(t, &m)
 }
@@ -582,7 +603,7 @@ func reconcileDurationSampleCount(t *testing.T, namespace, name string) uint64 {
 	t.Helper()
 	count, err := reconcileDurationSampleCountErr(namespace, name)
 	if err != nil {
-		t.Fatalf("get histogram metric: %v", err)
+		t.Fatalf(getHistogramMetricFmt, err)
 	}
 	return count
 }

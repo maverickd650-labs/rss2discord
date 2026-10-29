@@ -25,7 +25,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -385,34 +384,14 @@ func (r *FeedGroupReconciler) processFeed(
 		return false, 0
 	}
 
-	filterRegex, err := compileFilterRegex(feed.Filter)
+	// Every config check happens in one step, before Initialized is set below,
+	// so a config error on a non-empty first fetch can't turn the next
+	// attempt into a "feed was empty" delivery of its whole backlog.
+	renderer, err := newFeedRenderer(feedGroup, &feed)
 	if err != nil {
-		log.Error(err, "invalid filter regex", "url", feed.RSSUrl)
+		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
 		r.recordConfigError(feedGroup, fs, feed.RSSUrl, err)
 		return false, 0
-	}
-
-	embedSpec := resolveEmbedSpec(feedGroup, &feed)
-
-	var contentTmpl, descriptionTmpl, threadNameTmpl *template.Template
-	if embedSpec != nil && embedSpec.Enabled {
-		descriptionTmpl, err = compileTemplate("discordEmbedDescription", embedSpec.DescriptionFormat, defaultDescriptionFormat)
-	} else {
-		contentTmpl, err = compileMessageTemplate(feedGroup, &feed)
-	}
-	if err != nil {
-		log.Error(err, "invalid Discord message template", "url", feed.RSSUrl)
-		r.recordConfigError(feedGroup, fs, feed.RSSUrl, err)
-		return false, 0
-	}
-
-	if strings.TrimSpace(feed.ForumThreadName) != "" {
-		threadNameTmpl, err = compileTemplate("discordThreadName", feed.ForumThreadName, "")
-		if err != nil {
-			log.Error(err, "invalid Discord forum thread name template", "url", feed.RSSUrl)
-			r.recordConfigError(feedGroup, fs, feed.RSSUrl, err)
-			return false, 0
-		}
 	}
 
 	fs.Initialized = true
@@ -479,15 +458,6 @@ func (r *FeedGroupReconciler) processFeed(
 	}
 
 	var pending bool
-	renderer := &feedRenderer{
-		group:       feedGroup,
-		feed:        &feed,
-		embed:       embedSpec,
-		content:     contentTmpl,
-		description: descriptionTmpl,
-		threadName:  threadNameTmpl,
-		filter:      filterRegex,
-	}
 	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, counts, hasSeenID, lastSeenID,
 		discordClient, now)
 
@@ -558,7 +528,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			continue
 		}
 
-		discordMessage, err := renderer.build(entry)
+		discordMessage, overflow, err := renderer.build(entry)
 		if err != nil {
 			log.Error(err, "failed to render Discord message", "url", feed.RSSUrl)
 			fs.LastError = errText(err)
@@ -608,6 +578,13 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			// instead of jumping ahead.
 			pending = true
 			break
+		}
+
+		// Recorded per send attempt, before the outcome is known, so a retried
+		// entry counts again; renders that are never sent (see
+		// otherEntryRenders) are not observed.
+		if overflow > 0 {
+			messageOverflowChars.WithLabelValues(feedGroup.Namespace, feedGroup.Name).Observe(float64(overflow))
 		}
 
 		sendStart := time.Now()
@@ -682,21 +659,6 @@ func (r *FeedGroupReconciler) sendNewEntries(
 	}
 
 	return wantRetry, rateLimitRetryAfter, pending
-}
-
-// otherEntryRenders reports whether any entry other than skip renders
-// successfully with the feed's templates, which distinguishes "this entry is
-// the problem" from "the template is broken for everything".
-func (fr *feedRenderer) otherEntryRenders(entries []rss.Entry, skip rss.Entry) bool {
-	for _, other := range entries {
-		if entryIdentity(other) == entryIdentity(skip) {
-			continue
-		}
-		if _, err := fr.build(other); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 // skipEntry gives up on a single entry whose retries are exhausted, so the
