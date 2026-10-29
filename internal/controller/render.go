@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"text/template/parse"
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -77,7 +78,118 @@ func compileTemplate(name, text, fallback string) (*template.Template, error) {
 	if text == "" {
 		text = fallback
 	}
-	return template.New(name).Funcs(templateFuncs).Parse(text)
+	tmpl, err := template.New(name).Funcs(templateFuncs).Parse(text)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectUnboundedConstructs(tmpl); err != nil {
+		return nil, err
+	}
+	return tmpl, nil
+}
+
+// maxTemplateOutputBytes bounds what one template execution may write, well
+// above Discord's limits (2000 message / 4096 embed runes).
+const maxTemplateOutputBytes = 1024 * 1024
+
+// growthBuiltins are text/template builtins that build a new string from
+// their arguments. Combined with repeated reuse of a value they can grow
+// memory exponentially before anything is written to the output buffer, so
+// they are not available; the helpers in templateFuncs cover real needs.
+var growthBuiltins = map[string]bool{
+	"printf": true, "print": true, "println": true,
+	"html": true, "js": true, "urlquery": true, "call": true,
+}
+
+// rejectUnboundedConstructs refuses the template features that let a
+// user-supplied template consume unbounded CPU or memory:
+//   - range (including over an integer, e.g. {{range 100000000000}}{{end}},
+//     which spins the reconcile worker forever) and define/template
+//     (recursion);
+//   - variable declarations/assignments and {{with}} (which rebinds dot), the
+//     two ways to reuse a value so that a chain of string-building calls
+//     doubles it each step (e.g. {{$x = printf "%s%s" $x $x}} repeated);
+//   - the string-building builtins in growthBuiltins.
+//
+// Templates only interpolate a handful of strings; {{if}}/{{else}}, field
+// access, pipelines and the helpers in templateFuncs remain available.
+func rejectUnboundedConstructs(tmpl *template.Template) error {
+	if len(tmpl.Templates()) > 1 {
+		return errors.New("template: {{define}} is not supported")
+	}
+	if tmpl.Tree == nil {
+		return nil
+	}
+	return checkNode(tmpl.Root)
+}
+
+func checkNode(node parse.Node) error {
+	switch n := node.(type) {
+	case *parse.ListNode:
+		if n == nil {
+			return nil
+		}
+		for _, c := range n.Nodes {
+			if err := checkNode(c); err != nil {
+				return err
+			}
+		}
+	case *parse.ActionNode:
+		return checkNode(n.Pipe)
+	case *parse.IfNode:
+		return checkBranch(&n.BranchNode)
+	case *parse.RangeNode:
+		return errors.New("template: {{range}} is not supported")
+	case *parse.WithNode:
+		return errors.New("template: {{with}} is not supported")
+	case *parse.TemplateNode:
+		return errors.New("template: {{template}} is not supported")
+	case *parse.PipeNode:
+		if n == nil {
+			return nil
+		}
+		if len(n.Decl) > 0 {
+			return errors.New("template: variable declaration and assignment are not supported")
+		}
+		for _, cmd := range n.Cmds {
+			for _, arg := range cmd.Args {
+				if err := checkNode(arg); err != nil {
+					return err
+				}
+			}
+		}
+	case *parse.ChainNode:
+		return checkNode(n.Node)
+	case *parse.IdentifierNode:
+		if growthBuiltins[n.Ident] {
+			return fmt.Errorf("template: %s is not supported", n.Ident)
+		}
+	case *parse.VariableNode:
+		// Only $ (the root value) can appear without a declaration.
+		return nil
+	}
+	return nil
+}
+
+func checkBranch(b *parse.BranchNode) error {
+	if err := checkNode(b.Pipe); err != nil {
+		return err
+	}
+	if err := checkNode(b.List); err != nil {
+		return err
+	}
+	return checkNode(b.ElseList)
+}
+
+// limitedBuffer is a bytes.Buffer that fails once it would exceed
+// maxTemplateOutputBytes, as defense in depth behind rejectUnboundedConstructs.
+type limitedBuffer struct{ bytes.Buffer }
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > maxTemplateOutputBytes {
+		return 0, fmt.Errorf("template output exceeds maximum size of %d bytes", maxTemplateOutputBytes)
+	}
+	return b.Buffer.Write(p)
 }
 
 // templateFuncs are the helpers available in message templates. Keep the set
@@ -323,7 +435,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 	data := templateData{
 		Title:         stripHTML(entry.Title),
 		Description:   stripHTML(entry.Description),
-		Link:          entry.Link,
+		Link:          httpURLOrEmpty(entry.Link),
 		Image:         httpURLOrEmpty(entry.Image),
 		Published:     formatPublished(entry.Published),
 		PublishedUnix: publishedUnix(entry.Published),
@@ -333,7 +445,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 		content:       entry.Content,
 	}
 
-	var buf bytes.Buffer
+	var buf limitedBuffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", 0, err
 	}
