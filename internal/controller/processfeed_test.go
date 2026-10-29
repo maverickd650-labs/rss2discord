@@ -1661,7 +1661,6 @@ func TestProcessFeed_LegacyEmptyFeedStatus(t *testing.T) {
 // renders; a title over maxDiscordMessageLength makes that entry overflow.
 const (
 	probePoisonTitle = "bad"
-	probeGoodTitle   = "good"
 	probeKeepText    = "keep"
 )
 
@@ -1729,7 +1728,6 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-old", Title: long, Seq: 3},
 		{ID: "https://example.com/probe-bad2", Title: probePoisonTitle, Seq: 2},
-		{ID: "https://example.com/probe-good", Title: probeGoodTitle, Seq: 1},
 	}
 	ns, name := "processfeed-probe-sent", "fg-probe-sent"
 	server, fs := runSkipProbe(t, ns, name, entries, func(fg *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) {
@@ -1740,11 +1738,11 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 		recordSent(st.LastSent, entries[0], countStripped(entries), testReconcileTime)
 	})
 
-	if got := server.MessageCount(); got != 1 {
-		t.Fatalf("messages sent = %d, want 1 (only the good entry)", got)
+	if got := server.MessageCount(); got != 0 {
+		t.Fatalf("messages sent = %d, want 0 (the sibling is already sent)", got)
 	}
-	if fs.LastSeenEntry != entries[2].ID {
-		t.Fatalf("poison entry should be skipped using the sent sibling as evidence: LastSeenEntry = %q", fs.LastSeenEntry)
+	if fs.LastSeenEntry != entries[1].ID {
+		t.Fatalf("poison entry should be skipped using the sent sibling as the only evidence: LastSeenEntry = %q", fs.LastSeenEntry)
 	}
 	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
@@ -1759,18 +1757,17 @@ func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-filtered", Title: long, Description: "drop", Seq: 3},
 		{ID: "https://example.com/probe-bad3", Title: probePoisonTitle, Description: probeKeepText, Seq: 2},
-		{ID: "https://example.com/probe-good3", Title: probeGoodTitle, Description: probeKeepText, Seq: 1},
 	}
 	ns, name := "processfeed-probe-filtered", "fg-probe-filtered"
 	server, fs := runSkipProbe(t, ns, name, entries, func(_ *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) {
 		feed.Filter = &v1alpha1.Filter{Regex: probeKeepText}
 	})
 
-	if got := server.MessageCount(); got != 1 {
-		t.Fatalf("messages sent = %d, want 1 (only the good entry)", got)
+	if got := server.MessageCount(); got != 0 {
+		t.Fatalf("messages sent = %d, want 0 (the sibling is filtered out)", got)
 	}
-	if fs.LastSeenEntry != entries[2].ID {
-		t.Fatalf("poison entry should be skipped using the filtered sibling as evidence: LastSeenEntry = %q", fs.LastSeenEntry)
+	if fs.LastSeenEntry != entries[1].ID {
+		t.Fatalf("poison entry should be skipped using the filtered sibling as the only evidence: LastSeenEntry = %q", fs.LastSeenEntry)
 	}
 	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
