@@ -251,11 +251,16 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return result, err
 }
 
-// processFeed handles a completed fetch, filters/sends entries for a single
-// feed, and updates its FeedStatus. now is an RFC3339 status timestamp.
-// Fetch, configuration, rendering, and delivery errors are recorded in status.
-// It returns whether the reconcile should retry sooner than the normal interval
-// and, if Discord rate limited the webhook, how long to wait before the next attempt.
+// processFeed handles a completed fetch for a single feed: it records the
+// fetch outcome, applies the catch-up policy on a first sync, sends new
+// entries that pass the filter, and updates the feed's FeedStatus. now is an
+// RFC3339 status timestamp. Fetch, configuration, rendering, and delivery
+// errors are recorded in status. Initialized is set only once the feed's
+// configuration is known to be usable, so a config error on a first fetch
+// can't turn the next attempt into a "feed was empty" delivery of its whole
+// backlog. It returns whether the reconcile should retry sooner than the
+// normal interval and, if Discord rate limited the webhook, how long to wait
+// before the next attempt.
 func (r *FeedGroupReconciler) processFeed(
 	ctx context.Context,
 	feedGroup *v1alpha1.FeedGroup,

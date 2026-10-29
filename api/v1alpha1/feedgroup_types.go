@@ -228,11 +228,13 @@ type FeedGroupSpec struct {
 	Feeds []FeedSpec `json:"feeds"`
 
 	// catchUpLimit caps how many backlog entries are sent to Discord the
-	// first time a feed is successfully fetched. Without this, adding a feed
-	// with a long history floods the webhook with every existing entry at
-	// once. Entries beyond the limit are treated as already seen and are not
-	// sent. Set to 0 to send no backlog at all: the first sync records the
-	// feed's newest entry and only entries published afterwards are delivered.
+	// first time a feed is synced (i.e. before it has a recorded
+	// LastSeenEntry). Without this, adding a feed with a long history
+	// floods the webhook with every existing entry at once. Entries beyond
+	// the limit are treated as already seen and are not sent. Set to 0 to
+	// send no backlog at all: the first sync records the feed's newest entry
+	// and only entries published afterwards are delivered (a feed that was
+	// empty on its first sync delivers everything that appears later).
 	// Omitting the field uses the default of 5.
 	// +default=5
 	// +kubebuilder:validation:Minimum=0
@@ -279,8 +281,11 @@ type FeedStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	LastChecked string `json:"lastChecked,omitempty"`
 
-	// initialized records whether this feed has been successfully fetched,
-	// even if it had no entries. Later entries are not an initial backlog.
+	// initialized records that this feed has been fetched successfully with a
+	// usable configuration, even if it had no entries, so entries that appear
+	// later are new rather than an initial backlog. It is left false when a
+	// filter or template error stops processing, and reads as false on
+	// statuses written before this field existed.
 	// +optional
 	Initialized bool `json:"initialized,omitempty"`
 
