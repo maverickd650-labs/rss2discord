@@ -93,6 +93,9 @@ spec:
         {{- with .Values.manager.logLevel }}
         - --zap-log-level={{ . }}
         {{- end }}
+        {{- with include "rss2discord-operator.watchNamespaces" . }}
+        - --watch-namespaces={{ . }}
+        {{- end }}
         {{- range .Values.manager.args }}
         - {{ tpl . $ }}
         {{- end }}

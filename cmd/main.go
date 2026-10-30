@@ -120,6 +120,7 @@ func main() {
 	var enableHTTP2 bool
 	var maxConcurrentFeedGroupReconciles int
 	var otlpEndpoint string
+	var watchNamespaces string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -140,6 +141,10 @@ func main() {
 	flag.StringVar(&otlpEndpoint, "otlp-endpoint", "",
 		"OTLP/gRPC endpoint (host:port) to export traces to for outbound RSS fetch and Discord webhook "+
 			"requests. Leave empty to disable tracing entirely.")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", "",
+		"Comma-separated namespaces to watch for FeedGroups and their webhook Secrets. Empty watches every "+
+			"namespace. When set, grant the manager's RBAC as a Role in exactly these namespaces instead of a "+
+			"ClusterRole: limiting the watch alone does not limit what the service account may read.")
 	// Development defaults to false so production deployments get
 	// structured JSON logs at info level rather than zap's human-oriented
 	// console encoder with debug-level and stack-traced warnings. Pass
@@ -182,6 +187,8 @@ func main() {
 			},
 		},
 		Cache: cache.Options{
+			// Empty (every namespace) unless --watch-namespaces is set.
+			DefaultNamespaces: controller.WatchNamespaces(watchNamespaces),
 			// Keeps Secret data that kubectl copies into an annotation out of
 			// the metadata-only Secret watch's cache.
 			DefaultTransform: controller.StripMetadataOnlyAnnotations(),

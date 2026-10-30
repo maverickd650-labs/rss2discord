@@ -117,6 +117,21 @@ func TestStripMetadataOnlyAnnotations(t *testing.T) {
 	}
 }
 
+func TestWatchNamespaces(t *testing.T) {
+	if got := WatchNamespaces(" , "); got != nil {
+		t.Errorf("blank flag = %v, want nil (every namespace)", got)
+	}
+	got := WatchNamespaces("team-a, team-b,,team-a")
+	if len(got) != 2 {
+		t.Fatalf("got %v, want exactly team-a and team-b", got)
+	}
+	for _, ns := range []string{"team-a", "team-b"} {
+		if _, ok := got[ns]; !ok {
+			t.Errorf("missing %q in %v", ns, got)
+		}
+	}
+}
+
 var _ = Describe("Webhook Secret watch", func() {
 	It("maps a Secret to the FeedGroups in its namespace that reference it", func() {
 		const watched = "secret-watch-a"

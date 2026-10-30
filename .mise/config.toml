@@ -217,12 +217,16 @@ MAKEFILE
 # dashboards/*.json survive any regen, forced or not, because the plugin
 # only ever touches its own known scaffold set.
 #
-# The plugin *does* always regenerate these three templates regardless of
-# --force, since it doesn't know about our shortened resource-name suffixes
-# or the native-histogram ServiceMonitor fields. Back them up so we can
-# restore the hand-tuned versions after regenerating everything else
-# (CRDs, RBAC, the rest of templates/).
-preserved="dist/chart/templates/manager/manager.yaml dist/chart/templates/metrics/controller-manager-metrics-service.yaml dist/chart/templates/prometheus/controller-manager-metrics-monitor.yaml"
+# The plugin *does* always regenerate these templates regardless of
+# --force, since it doesn't know about our shortened resource-name suffixes,
+# the native-histogram ServiceMonitor fields, or the per-namespace manager
+# Role/RoleBinding (rbac.watchNamespaces). Back them up so we can restore the
+# hand-tuned versions after regenerating everything else (CRDs, the rest of
+# RBAC and templates/). manager-role.yaml's rules are therefore no longer
+# refreshed from config/rbac/role.yaml: after a +kubebuilder:rbac marker
+# change, copy them across by hand -- TestChartManagerRoleRulesMatchConfig in
+# test/chart fails until you do.
+preserved="dist/chart/templates/manager/manager.yaml dist/chart/templates/metrics/controller-manager-metrics-service.yaml dist/chart/templates/prometheus/controller-manager-metrics-monitor.yaml dist/chart/templates/rbac/manager-role.yaml dist/chart/templates/rbac/manager-rolebinding.yaml"
 backup_dir="$(mktemp -d)"
 trap 'rm -f Makefile; rm -rf "$backup_dir"' EXIT
 for f in $preserved; do

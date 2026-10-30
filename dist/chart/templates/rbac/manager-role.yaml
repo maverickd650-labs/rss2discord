@@ -1,14 +1,11 @@
-apiVersion: rbac.authorization.k8s.io/v1
-{{- if .Values.rbac.namespaced }}
-kind: Role
-{{- else }}
-kind: ClusterRole
-{{- end }}
-metadata:
-{{- if .Values.rbac.namespaced }}
-  namespace: {{ .Release.Namespace }}
-{{- end }}
-  name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+{{- /*
+Hand-tuned (preserved by mise run helm-chart-refresh): a ClusterRole, or a Role
+in each namespace from rss2discord-operator.watchNamespaces (see _helpers.tpl).
+The rules must match config/rbac/role.yaml, which is generated from the
++kubebuilder:rbac markers; test/chart's TestChartManagerRoleRulesMatchConfig
+fails when they drift.
+*/}}
+{{- define "rss2discord-operator.managerRoleRules" }}
 rules:
 - apiGroups:
   - ""
@@ -52,3 +49,20 @@ rules:
   - get
   - patch
   - update
+{{- end }}
+{{- $namespaces := include "rss2discord-operator.watchNamespaces" . }}
+{{- $targets := list "" }}
+{{- if $namespaces }}
+{{- $targets = splitList "," $namespaces }}
+{{- end }}
+{{- range $ns := $targets }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if $ns }}Role{{ else }}ClusterRole{{ end }}
+metadata:
+  {{- with $ns }}
+  namespace: {{ . }}
+  {{- end }}
+  name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+{{- include "rss2discord-operator.managerRoleRules" $ }}
+{{- end }}

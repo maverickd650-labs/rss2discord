@@ -18,11 +18,13 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -92,4 +94,23 @@ func StripMetadataOnlyAnnotations() toolscache.TransformFunc {
 		}
 		return in, nil
 	}
+}
+
+// WatchNamespaces turns the --watch-namespaces flag (comma-separated, blanks
+// and duplicates ignored) into the cache's DefaultNamespaces, scoping the
+// FeedGroup and webhook Secret watches alike. Empty input returns nil, which
+// watches every namespace. This only narrows what the operator watches; the
+// matching RBAC (a Role per namespace) is what narrows what it may read.
+func WatchNamespaces(flagValue string) map[string]cache.Config {
+	var namespaces map[string]cache.Config
+	for ns := range strings.SplitSeq(flagValue, ",") {
+		if ns = strings.TrimSpace(ns); ns == "" {
+			continue
+		}
+		if namespaces == nil {
+			namespaces = map[string]cache.Config{}
+		}
+		namespaces[ns] = cache.Config{}
+	}
+	return namespaces
 }

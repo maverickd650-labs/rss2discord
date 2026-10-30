@@ -23,13 +23,18 @@ limitations under the License.
 package chart
 
 import (
+	"errors"
 	"flag"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // update regenerates every golden file from the current chart output
@@ -46,6 +51,10 @@ const (
 	monitorTemplate   = "templates/prometheus/controller-manager-metrics-monitor.yaml"
 	prometheusEnabled = "prometheus.enabled=true"
 	saDisabled        = "serviceAccount.enabled=false"
+
+	managerRoleTemplate        = "templates/rbac/manager-role.yaml"
+	managerRoleBindingTemplate = "templates/rbac/manager-rolebinding.yaml"
+	watchTwoNamespaces         = "rbac.watchNamespaces={team-a,team-b}"
 )
 
 // helmChartLabelPattern matches the helm.sh/chart label's value, which
@@ -203,6 +212,33 @@ func TestChartGolden(t *testing.T) {
 			showOnly:  managerTemplate,
 			setValues: []string{saDisabled, "serviceAccount.name=existing-sa"},
 		},
+		// manager-role.yaml / manager-rolebinding.yaml: a ClusterRole and
+		// ClusterRoleBinding by default; with rbac.watchNamespaces, a Role
+		// and RoleBinding in each listed namespace (and no cluster-wide
+		// grant), with the manager passed the same --watch-namespaces.
+		{
+			name:     "rbac_manager_role_defaults",
+			showOnly: managerRoleTemplate,
+		},
+		{
+			name:      "rbac_manager_role_watch_namespaces",
+			showOnly:  managerRoleTemplate,
+			setValues: []string{watchTwoNamespaces},
+		},
+		{
+			name:     "rbac_manager_rolebinding_defaults",
+			showOnly: managerRoleBindingTemplate,
+		},
+		{
+			name:      "rbac_manager_rolebinding_watch_namespaces",
+			showOnly:  managerRoleBindingTemplate,
+			setValues: []string{watchTwoNamespaces},
+		},
+		{
+			name:      "manager_watch_namespaces",
+			showOnly:  managerTemplate,
+			setValues: []string{watchTwoNamespaces},
+		},
 		// prometheus-rule.yaml: wholly custom, no kubebuilder equivalent.
 		{
 			name:      "prometheus_rule_enabled",
@@ -303,6 +339,89 @@ func TestChartManagerOptionalFlags(t *testing.T) {
 			}
 			if !strings.Contains(rendered, "- --leader-elect\n") {
 				t.Fatal("optional flags displaced the configured manager arguments")
+			}
+		})
+	}
+}
+
+// TestChartManagerRoleRulesMatchConfig guards the hand-tuned manager-role.yaml
+// (preserved by mise run helm-chart-refresh, so a refresh no longer copies new
+// rules into it) against drifting from config/rbac/role.yaml, which
+// controller-gen regenerates from the +kubebuilder:rbac markers. After a marker
+// change, copy the new rules into manager-role.yaml's managerRoleRules.
+func TestChartManagerRoleRulesMatchConfig(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Rules []any `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	for _, values := range [][]string{nil, {watchTwoNamespaces}} {
+		decoder := yaml.NewDecoder(strings.NewReader(renderChartTemplate(t, managerRoleTemplate, values...)))
+		for docs := 0; ; docs++ {
+			var role struct {
+				Kind  string `yaml:"kind"`
+				Rules []any  `yaml:"rules"`
+			}
+			if err := decoder.Decode(&role); errors.Is(err, io.EOF) {
+				if docs == 0 {
+					t.Fatalf("no manager role rendered with values %v", values)
+				}
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(role.Rules, config.Rules) {
+				t.Errorf("%s rules (values %v) differ from config/rbac/role.yaml; copy them into %s",
+					role.Kind, values, managerRoleTemplate)
+			}
+		}
+	}
+}
+
+// TestChartWatchNamespacesScopesGrantAndWatchTogether pins that the Secret
+// grant is never cluster-wide while the manager watches only some namespaces,
+// and that rbac.namespaced still means the release namespace alone.
+func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		values     []string
+		wantArg    string
+		wantKind   string
+		namespaces []string
+	}{
+		{name: "cluster-wide by default", wantKind: "kind: ClusterRole\n"},
+		{
+			name: "release namespace", values: []string{"rbac.namespaced=true"},
+			wantArg: "--watch-namespaces=" + chartNamespace, wantKind: "kind: Role\n", namespaces: []string{chartNamespace},
+		},
+		{
+			name:    "explicit list wins and is deduplicated",
+			values:  []string{"rbac.namespaced=true", "rbac.watchNamespaces={team-a,team-b,team-a}"},
+			wantArg: "--watch-namespaces=team-a,team-b", wantKind: "kind: Role\n", namespaces: []string{"team-a", "team-b"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := renderChartTemplate(t, managerTemplate, tc.values...)
+			if tc.wantArg == "" && strings.Contains(manager, "--watch-namespaces") {
+				t.Errorf("unexpected --watch-namespaces:\n%s", manager)
+			}
+			if tc.wantArg != "" && !strings.Contains(manager, "- "+tc.wantArg+"\n") {
+				t.Errorf("missing %q:\n%s", tc.wantArg, manager)
+			}
+			role := renderChartTemplate(t, managerRoleTemplate, tc.values...)
+			if got := strings.Count(role, "kind: "); got != max(1, len(tc.namespaces)) ||
+				strings.Count(role, tc.wantKind) != got {
+				t.Errorf("want %d x %q, got:\n%s", max(1, len(tc.namespaces)), tc.wantKind, role)
+			}
+			for _, ns := range tc.namespaces {
+				if !strings.Contains(role, "namespace: "+ns+"\n") {
+					t.Errorf("no Role in %s:\n%s", ns, role)
+				}
 			}
 		})
 	}

@@ -292,6 +292,18 @@ One reconcile can buffer up to 10 feed responses of 10MB each, so scale `resourc
 
 Resource names drop the redundant `-controller-manager` suffix — with a release named `rss2discord-operator`, the Deployment, ServiceAccount, and Service are all named `rss2discord-operator` (selection still happens on the `control-plane: controller-manager` label). The `kubectl apply -f dist/install.yaml` path keeps the longer `rss2discord-operator-controller-manager` names, so prefer the label selector in commands that target the pod.
 
+### Restricting the operator to some namespaces
+
+By default the operator gets a ClusterRole: it watches FeedGroups in every namespace and may `get`, `list` and `watch` Secrets cluster-wide (it only ever reads the webhook Secret a FeedGroup names, and caches Secret metadata, never data, but the grant is what a stolen token could use). For strict tenant separation, list the namespaces it serves:
+
+```bash
+helm install rss2discord-operator ./dist/chart \
+  --namespace rss2discord-operator-system --create-namespace \
+  --set 'rbac.watchNamespaces={team-a,team-b}'
+```
+
+The chart then grants the manager's permissions as a Role and RoleBinding in each listed namespace only (no ClusterRole) and starts it with `--watch-namespaces=team-a,team-b`, so the watch scope and the grant always match. FeedGroups in other namespaces are ignored. `rbac.namespaced: true` is shorthand for the release namespace alone. With `kubectl apply -f dist/install.yaml`, do the same by hand: replace the `manager-role` ClusterRole/ClusterRoleBinding with per-namespace Role/RoleBindings and pass `--watch-namespaces`.
+
 Common commands:
 
 ```bash

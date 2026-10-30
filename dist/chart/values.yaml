@@ -146,6 +146,16 @@ rbac:
   ##
   namespaced: false
 
+  ## Namespaces the operator watches for FeedGroups and their webhook Secrets.
+  ## When set, the manager's permissions (including Secret get/list/watch) are
+  ## granted as a Role + RoleBinding in each listed namespace instead of a
+  ## ClusterRole, and the manager runs with the same --watch-namespaces. Use it
+  ## for strict tenant separation: the operator's credential can then read
+  ## Secrets only in these namespaces. Takes precedence over rbac.namespaced
+  ## (which is shorthand for the release namespace alone).
+  ##
+  watchNamespaces: []
+
   ## Helper roles for CRD management (admin/editor/viewer)
   ##
   helpers:

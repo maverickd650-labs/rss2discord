@@ -1,28 +1,33 @@
+{{- /*
+Hand-tuned (preserved by mise run helm-chart-refresh): binds manager-role
+cluster-wide, or in each namespace from rss2discord-operator.watchNamespaces
+(see _helpers.tpl), matching manager-role.yaml.
+*/}}
+{{- $namespaces := include "rss2discord-operator.watchNamespaces" . }}
+{{- $targets := list "" }}
+{{- if $namespaces }}
+{{- $targets = splitList "," $namespaces }}
+{{- end }}
+{{- range $ns := $targets }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
-{{- if .Values.rbac.namespaced }}
-kind: RoleBinding
-{{- else }}
-kind: ClusterRoleBinding
-{{- end }}
+kind: {{ if $ns }}RoleBinding{{ else }}ClusterRoleBinding{{ end }}
 metadata:
-{{- if .Values.rbac.namespaced }}
-  namespace: {{ .Release.Namespace }}
-{{- end }}
+  {{- with $ns }}
+  namespace: {{ . }}
+  {{- end }}
   labels:
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/name: {{ include "rss2discord-operator.name" . }}
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/name: {{ include "rss2discord-operator.name" $ }}
+    helm.sh/chart: {{ $.Chart.Name }}-{{ $.Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
   name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-rolebinding" "context" $) }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  {{- if .Values.rbac.namespaced }}
-  kind: Role
-  {{- else }}
-  kind: ClusterRole
-  {{- end }}
+  kind: {{ if $ns }}Role{{ else }}ClusterRole{{ end }}
   name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
 subjects:
 - kind: ServiceAccount
-  name: {{ include "rss2discord-operator.serviceAccountName" . }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "rss2discord-operator.serviceAccountName" $ }}
+  namespace: {{ $.Release.Namespace }}
+{{- end }}

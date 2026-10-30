@@ -77,3 +77,19 @@ the operator's RBAC to every pod in the namespace that runs under it.
 {{- .Values.serviceAccount.name | default "" | trim | default $default }}
 {{- end }}
 {{- end }}
+
+{{/*
+Namespaces the manager watches and is granted its RBAC in, comma-separated:
+rbac.watchNamespaces if set, else the release namespace when rbac.namespaced,
+else empty (every namespace, via a ClusterRole). manager.yaml passes the same
+list as --watch-namespaces and rbac/manager-role(binding).yaml render a Role
+and RoleBinding per entry, so the watch scope and the grant always match:
+narrowing only the watch would leave a stolen token able to read every Secret.
+*/}}
+{{- define "rss2discord-operator.watchNamespaces" -}}
+{{- if .Values.rbac.watchNamespaces }}
+{{- .Values.rbac.watchNamespaces | uniq | join "," }}
+{{- else if .Values.rbac.namespaced }}
+{{- .Release.Namespace }}
+{{- end }}
+{{- end }}
