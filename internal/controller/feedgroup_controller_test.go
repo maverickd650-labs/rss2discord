@@ -196,11 +196,19 @@ var mockWebhookIDs atomic.Int64
 // discord.AllowedWebhookHosts check unchanged -- tests never widen that
 // SSRF/domain-confusion guard.
 func NewMockDiscordServer(tb testing.TB) *MockDiscordServer {
+	webhookPath := fmt.Sprintf("/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1))
 	d := &MockDiscordServer{
-		webhookURL: fmt.Sprintf("https://discord.com/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1)),
+		webhookURL: "https://discord.com" + webhookPath,
 	}
 
 	d.server = httptest.NewTestServer(tb, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The client routes every host here, so answer only this server's
+		// own webhook -- as Discord would -- and a send to the wrong URL
+		// still fails.
+		if r.Host != "discord.com" || r.URL.Path != webhookPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return

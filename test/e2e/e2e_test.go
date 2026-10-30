@@ -292,8 +292,9 @@ var _ = Describe("Manager", Ordered, func() {
 		// in-cluster manager at a mock webhook receiver without weakening that SSRF
 		// guard — and the envtest-based suite
 		// (internal/controller/feedgroup_controller_test.go) already covers the full
-		// reconcile loop against mock RSS/Discord servers in depth by registering the
-		// mock's loopback address into AllowedWebhookHosts for the test process.
+		// reconcile loop against mock RSS/Discord servers in depth, reaching the
+		// Discord mock through httptest's in-memory network at a real discord.com
+		// webhook URL, so the allowlist is left as it is.
 		// It instead exercises the *failure* path (an unreachable feed), which needs
 		// no mock at all and covers exactly what envtest can't: CRD schema
 		// validation on a real API server, controller RBAC on FeedGroup/status, real
