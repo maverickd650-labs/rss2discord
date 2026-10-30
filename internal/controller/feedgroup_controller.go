@@ -551,24 +551,27 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				class := classifySendError(err)
 				attempt.fail(v1alpha1.FeedConditionTypeDelivered, sendErrorOutcome(class), class.conditionReason, err)
 
-				// See the matching comment on the render-error branch above:
-				// fire the persistent-failure Event only the reconcile
-				// RetryCount first reaches maxRetries, not on every
-				// subsequent reconcile of an entry stuck failing to send.
-				maxRetries := maxRetryCount(feedGroup.Spec.Retries)
-				if fs.RetryCount < maxRetries {
-					wantRetry = true
-				} else {
-					attempt.announceExhaustion(maxRetries, "SendFailed", err)
+				if class.permanent {
 					// A permanent classification (e.g. a deleted webhook, or
 					// a malformed message Discord will keep rejecting) won't
-					// recover on its own, so back off exponentially the same
-					// way a permanent fetch failure does instead of retrying
-					// at full Interval cadence forever. A transient
-					// classification (5xx, timeout) keeps retrying at that
-					// cadence since it's expected to recover on its own.
-					if class.permanent {
-						attempt.backOff("SendFailed", err)
+					// recover on its own, so back off exponentially right
+					// away, exactly as a permanent fetch failure does: no
+					// wantRetry, so it doesn't pull the whole group onto the
+					// faster RetryInterval, and the persistent-failure Event
+					// comes from the backoff reaching its cap.
+					attempt.backOff("SendFailed", err)
+				} else {
+					// A transient classification (5xx, timeout) keeps
+					// retrying since it's expected to recover on its own. See
+					// the matching comment on the render-error branch above:
+					// fire the persistent-failure Event only the reconcile
+					// RetryCount first reaches maxRetries, not on every
+					// subsequent reconcile of an entry stuck failing to send.
+					maxRetries := maxRetryCount(feedGroup.Spec.Retries)
+					if fs.RetryCount < maxRetries {
+						wantRetry = true
+					} else {
+						attempt.announceExhaustion(maxRetries, "SendFailed", err)
 					}
 				}
 			}

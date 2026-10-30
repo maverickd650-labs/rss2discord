@@ -1500,7 +1500,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(feedStatusFor(updated, rssServer.URL()).ETag).To(Equal(`"v1"`))
 		})
 
-		It("should back off exponentially once a permanently-classified send failure exhausts its retries", func() {
+		It("should back off immediately on a permanently-classified send failure, like a permanent fetch failure", func() {
 			const feedGroupName = "test-feedgroup-send-error-permanent-backoff"
 
 			By("Creating a mock Discord server that always 404s, as if the webhook were deleted")
@@ -1523,8 +1523,8 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Creating a secret with Discord webhook URL")
 			createWebhookSecret(ctx, "discord-webhook-send-error-permanent", discordServer.URL())
 
-			By("Creating FeedGroup resource with Retries=1, so the first failure exhausts retries")
-			feedGroup := newTestFeedGroup(feedGroupName, "discord-webhook-send-error-permanent", rssServer.URL(), withRetries("5m", 1))
+			By("Creating FeedGroup resource with Retries=3, so the first failure leaves retries to spare")
+			feedGroup := newTestFeedGroup(feedGroupName, "discord-webhook-send-error-permanent", rssServer.URL(), withRetries("5m", 3))
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			recorder := events.NewFakeRecorder(10)
@@ -1536,17 +1536,22 @@ var _ = Describe("FeedGroup Controller", func() {
 				Recorder:             recorder,
 			}
 
-			By("Reconciling once: the only retry is immediately exhausted")
-			_, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			By("Reconciling once")
+			result, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">=", 30*time.Minute),
+				"a permanent send failure must not pull the group onto the 5m RetryInterval")
 
-			By("Verifying the feed entered backoff instead of being scheduled to retry at full cadence")
+			By("Verifying the feed entered backoff on the first failure rather than spending its retries")
 			updated := &rss2discordv1alpha1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
 			fs := feedStatusFor(updated, rssServer.URL())
 			Expect(fs.BackoffUntil).NotTo(BeEmpty(), "a permanently-classified send failure should set BackoffUntil")
+			Expect(fs.RetryCount).To(Equal(int32(1)))
 			Expect(discordServer.MessageCount()).To(Equal(0))
-			Eventually(recorder.Events).Should(Receive(ContainSubstring("SendFailed")))
+
+			By("Verifying no persistent-failure Event yet: it comes from the backoff reaching its cap, not from retries")
+			Consistently(recorder.Events, 100*time.Millisecond).ShouldNot(Receive(ContainSubstring("SendFailed")))
 		})
 	})
 
