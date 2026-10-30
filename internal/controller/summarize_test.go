@@ -30,6 +30,7 @@ const (
 	whyFeedErrors   = "FeedErrors"
 	whyReconciled   = "Reconciled"
 	whyAllReachable = "AllFeedsReachable"
+	reasonHTTP500   = "HTTP500"
 )
 
 func feedWithReachable(url string, status metav1.ConditionStatus, reason, lastError string) v1alpha1.FeedStatus {
@@ -83,14 +84,14 @@ func TestSummarizeGroup(t *testing.T) {
 		{
 			name: "unreachable feed reports the dominant reason on both conditions",
 			feeds: []v1alpha1.FeedStatus{
-				feedWithReachable("a", metav1.ConditionFalse, "HTTP404", "404"),
-				feedWithReachable("b", metav1.ConditionFalse, "HTTP404", "404"),
+				feedWithReachable("a", metav1.ConditionFalse, reasonHTTP404, "404"),
+				feedWithReachable("b", metav1.ConditionFalse, reasonHTTP404, "404"),
 				feedWithReachable("c", metav1.ConditionFalse, "Timeout", "timeout"),
 			},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  whyFeedErrors,
 			wantReachable: metav1.ConditionFalse,
-			wantReachWhy:  "HTTP404",
+			wantReachWhy:  reasonHTTP404,
 		},
 		{
 			name:          "unknown or missing Reachable is not a failure",
@@ -103,23 +104,23 @@ func TestSummarizeGroup(t *testing.T) {
 		{
 			name:          "invalid interval outranks feed errors and emits once",
 			interval:      badInterval,
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, "HTTP500", "boom")},
+			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, reasonHTTP500, "boom")},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  reasonInvalidInterval,
 			wantReachable: metav1.ConditionFalse,
-			wantReachWhy:  "HTTP500",
+			wantReachWhy:  reasonHTTP500,
 			wantEmit:      true,
 			wantWarning:   true,
 		},
 		{
 			name:          "webhook error outranks invalid interval and emits no Event",
 			interval:      badInterval,
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, "HTTP500", "boom")},
+			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, reasonHTTP500, "boom")},
 			webhookErr:    webhookErr,
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  "WebhookUnresolved",
 			wantReachable: metav1.ConditionFalse,
-			wantReachWhy:  "HTTP500",
+			wantReachWhy:  reasonHTTP500,
 		},
 		{
 			name:     "no Event when InvalidInterval is already recorded with the same message",
