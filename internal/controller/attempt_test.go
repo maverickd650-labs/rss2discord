@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -359,56 +360,59 @@ func drainEvents(recorder *events.FakeRecorder) []string {
 func TestFeedAttempt_Record(t *testing.T) {
 	for i, tc := range attemptCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			name := fmt.Sprintf("attempt-fg-%d", i)
-			defer deleteFeedGroupMetrics(attemptNS, name)
-			fg := &v1alpha1.FeedGroup{}
-			fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
-			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
-			fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
-			if tc.failing {
-				fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(time.Now().UTC(), time.Hour)
-			}
-			recorder := events.NewFakeRecorder(10)
-			attempt := (&FeedGroupReconciler{Recorder: recorder}).newFeedAttempt(fg, fs, attemptURL, attemptNow)
-
-			before := time.Now().UTC()
-			verdict := attempt.record(tc.outcome, tc.class, tc.err)
-
-			if verdict != tc.want.verdict {
-				t.Errorf("verdict = %+v, want %+v", verdict, tc.want.verdict)
-			}
-			if fs.RetryCount != tc.want.retryCount {
-				t.Errorf("RetryCount = %d, want %d", fs.RetryCount, tc.want.retryCount)
-			}
-			if fs.LastError != tc.want.lastError {
-				t.Errorf("LastError = %q, want %q", fs.LastError, tc.want.lastError)
-			}
-			assertBackoffUntil(t, fs.BackoffUntil, before, tc.want.backoff)
-			if checked := fs.LastChecked == attemptNow; checked != tc.want.checked || (!checked && fs.LastChecked != "") {
-				t.Errorf("LastChecked = %q, want advanced=%t", fs.LastChecked, tc.want.checked)
-			}
-			assertAttemptCondition(t, fs, tc.want)
-			assertOutcomeMetric(t, name, tc.want.label)
-			assertAttemptEvents(t, drainEvents(recorder), tc.want.warnings)
+			// A synctest bubble's fake clock doesn't move while the case runs,
+			// so BackoffUntil is checked to the second, not within a window.
+			synctest.Test(t, func(t *testing.T) { checkAttemptCase(t, fmt.Sprintf("attempt-fg-%d", i), tc) })
 		})
 	}
 }
 
-func assertBackoffUntil(t *testing.T, backoffUntil string, from time.Time, want time.Duration) {
+// checkAttemptCase records tc's outcome on a fresh FeedGroup named name and
+// checks every effect TestFeedAttempt_Record covers.
+func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	t.Helper()
-	if want == 0 {
-		if backoffUntil != "" {
-			t.Errorf("BackoffUntil = %q, want none", backoffUntil)
-		}
-		return
+	defer deleteFeedGroupMetrics(attemptNS, name)
+	fg := &v1alpha1.FeedGroup{}
+	fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
+	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
+	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
+	if tc.failing {
+		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(time.Now().UTC(), time.Hour)
 	}
-	until, err := time.Parse(time.RFC3339, backoffUntil)
-	if err != nil {
-		t.Errorf("BackoffUntil %q is not RFC3339: %v", backoffUntil, err)
-		return
+	recorder := events.NewFakeRecorder(10)
+	attempt := (&FeedGroupReconciler{Recorder: recorder}).newFeedAttempt(fg, fs, attemptURL, attemptNow)
+
+	now := time.Now().UTC()
+	verdict := attempt.record(tc.outcome, tc.class, tc.err)
+
+	if verdict != tc.want.verdict {
+		t.Errorf("verdict = %+v, want %+v", verdict, tc.want.verdict)
 	}
-	if got := until.Sub(from); got < want-3*time.Second || got > want+time.Minute {
-		t.Errorf("BackoffUntil is %v out, want about %v", got, want)
+	if fs.RetryCount != tc.want.retryCount {
+		t.Errorf("RetryCount = %d, want %d", fs.RetryCount, tc.want.retryCount)
+	}
+	if fs.LastError != tc.want.lastError {
+		t.Errorf("LastError = %q, want %q", fs.LastError, tc.want.lastError)
+	}
+	assertBackoffUntil(t, fs.BackoffUntil, now, tc.want.backoff)
+	if checked := fs.LastChecked == attemptNow; checked != tc.want.checked || (!checked && fs.LastChecked != "") {
+		t.Errorf("LastChecked = %q, want advanced=%t", fs.LastChecked, tc.want.checked)
+	}
+	assertAttemptCondition(t, fs, tc.want)
+	assertOutcomeMetric(t, name, tc.want.label)
+	assertAttemptEvents(t, drainEvents(recorder), tc.want.warnings)
+}
+
+// assertBackoffUntil checks that backoffUntil is exactly want after now, the
+// (fake, unmoving) time record ran at, or unset when want is 0.
+func assertBackoffUntil(t *testing.T, backoffUntil string, now time.Time, want time.Duration) {
+	t.Helper()
+	wantUntil := ""
+	if want != 0 {
+		wantUntil = nextBackoffUntil(now, want)
+	}
+	if backoffUntil != wantUntil {
+		t.Errorf("BackoffUntil = %q, want %q (%v after %s)", backoffUntil, wantUntil, want, now.Format(time.RFC3339))
 	}
 }
 
