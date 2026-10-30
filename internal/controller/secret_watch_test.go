@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,12 +34,17 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
 )
+
+// testSecretName names the Secret in the tests that don't need a real one.
+const testSecretName = "webhook-url"
 
 // sendBackedOff and fetchBackedOff are feeds in permanent backoff after a
 // send failure (fetch still Reachable) and after a fetch failure.
@@ -93,7 +99,7 @@ func TestStripMetadataOnlyAnnotations(t *testing.T) {
 	transform := StripMetadataOnlyAnnotations()
 
 	meta := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
-		Name:          "webhook-url",
+		Name:          testSecretName,
 		Labels:        map[string]string{"app": "x"},
 		Annotations:   map[string]string{"kubectl.kubernetes.io/last-applied-configuration": `{"data":{"url":"c2VjcmV0"}}`},
 		ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl"}},
@@ -104,7 +110,7 @@ func TestStripMetadataOnlyAnnotations(t *testing.T) {
 	if meta.Annotations != nil || meta.ManagedFields != nil {
 		t.Errorf("metadata-only object kept annotations/managedFields: %+v", meta.ObjectMeta)
 	}
-	if meta.Name != "webhook-url" || meta.Labels["app"] != "x" {
+	if meta.Name != testSecretName || meta.Labels["app"] != "x" {
 		t.Errorf("name/labels must survive: %+v", meta.ObjectMeta)
 	}
 
@@ -114,6 +120,22 @@ func TestStripMetadataOnlyAnnotations(t *testing.T) {
 	}
 	if full.Annotations["keep"] != "me" {
 		t.Error("typed objects must be left untouched")
+	}
+}
+
+// TestFeedGroupsForSecretListFailure pins that a failed FeedGroup List maps
+// the Secret event to nothing rather than panicking: the dropped wake-up is
+// made up by the FeedGroup's normal RequeueAfter.
+func TestFeedGroupsForSecretListFailure(t *testing.T) {
+	failing := interceptor.NewClient(fake.NewClientBuilder().Build(), interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("cache not synced")
+		},
+	})
+	r := &FeedGroupReconciler{Client: failing}
+	secret := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: testSecretName, Namespace: testNamespace}}
+	if got := r.feedGroupsForSecret(context.Background(), secret); got != nil {
+		t.Errorf("requests = %v, want none when listing FeedGroups fails", got)
 	}
 }
 
