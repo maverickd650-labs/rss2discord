@@ -123,7 +123,7 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 			ns, name := "metrics-"+tc.name, "fg-"+tc.name
 			defer deleteFeedGroupMetrics(ns, name)
 
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 			if tc.setup != nil {
 				tc.setup(discordServer)
@@ -153,7 +153,7 @@ func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	ns, name := "metrics-sent-extra", "fg-sent-extra"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -239,7 +239,7 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 	ns, name := "metrics-overflow", "fg-overflow"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -268,7 +268,7 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 	ns, name := "metrics-no-overflow", "fg-no-overflow"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -294,7 +294,7 @@ func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.
 	ns, name := "metrics-embed-total-overflow", "fg-embed-total-overflow"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")

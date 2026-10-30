@@ -19,7 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
-	"net"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -237,20 +237,19 @@ var _ = Describe("Webhook Secret watch", func() {
 		var failing atomic.Bool
 		var delivered atomic.Int32
 		failing.Store(true)
-		discordServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			if failing.Load() {
+		// In-memory, like MockDiscordServer: its client sends webhookURL's
+		// discord.com host here, so the production allowlist is unchanged. It
+		// routes every host here, so only webhookURL counts as a delivery.
+		webhookPath := fmt.Sprintf("/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1))
+		webhookURL := "https://" + mockWebhookHost + webhookPath
+		discordServer := httptest.NewTestServer(GinkgoTB(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if failing.Load() || r.Host != mockWebhookHost || r.URL.Path != webhookPath {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 			delivered.Add(1)
 			w.WriteHeader(http.StatusNoContent)
 		}))
-		host := discordServer.Listener.Addr().(*net.TCPAddr).IP.String()
-		discord.AllowedWebhookHosts[host] = true
-		DeferCleanup(func() {
-			delete(discord.AllowedWebhookHosts, host)
-			discordServer.Close()
-		})
 		rssServer := NewMockRSSServer(createRSSFeed(testEntry{
 			title:   "Delivered After Rotation Under A Manager",
 			link:    "https://example.com/delivered-after-rotation-manager",
@@ -299,7 +298,7 @@ var _ = Describe("Webhook Secret watch", func() {
 		By("Creating a FeedGroup whose webhook 404s, so it backs off for well over the spec's runtime")
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "rotated-webhook", Namespace: watchNamespace},
-			Data:       map[string][]byte{secretURLKey: []byte(discordServer.URL)},
+			Data:       map[string][]byte{secretURLKey: []byte(webhookURL)},
 		}
 		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 		fg := newTestFeedGroup("rotated-webhook-feed", secret.Name, rssServer.URL(), withRetries("5m", 3))
@@ -319,7 +318,7 @@ var _ = Describe("Webhook Secret watch", func() {
 		By("Replacing the webhook URL in the Secret")
 		failing.Store(false)
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-		secret.Data[secretURLKey] = []byte(discordServer.URL + "\n")
+		secret.Data[secretURLKey] = []byte(webhookURL + "\n")
 		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
 
 		if !watchWebhookSecrets {
