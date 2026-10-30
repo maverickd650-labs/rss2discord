@@ -303,6 +303,10 @@ func TestFit_PerFieldLimits(t *testing.T) {
 		{"title", Message{Embed: &Embed{Title: strings.Repeat("x", MaxEmbedTitleLength+3)}}, func(m Message) int { return len([]rune(m.Embed.Title)) }, MaxEmbedTitleLength, 3},
 		{"description", Message{Embed: &Embed{Description: strings.Repeat("x", MaxEmbedDescriptionLength+11)}}, func(m Message) int { return len([]rune(m.Embed.Description)) }, MaxEmbedDescriptionLength, 11},
 		{"thread name", Message{ThreadName: strings.Repeat("x", MaxThreadNameLength+5)}, func(m Message) int { return len([]rune(m.ThreadName)) }, MaxThreadNameLength, 5},
+		{"username", Message{Username: strings.Repeat("x", MaxUsernameLength+2)}, func(m Message) int { return len([]rune(m.Username)) }, MaxUsernameLength, 2},
+		{"author name", Message{Embed: &Embed{AuthorName: strings.Repeat("x", MaxEmbedAuthorNameLength+4)}}, func(m Message) int { return len([]rune(m.Embed.AuthorName)) }, MaxEmbedAuthorNameLength, 4},
+		{"footer text", Message{Embed: &Embed{FooterText: strings.Repeat("x", MaxEmbedFooterTextLength+6)}}, func(m Message) int { return len([]rune(m.Embed.FooterText)) }, MaxEmbedFooterTextLength, 6},
+		{"username at limit", Message{Username: strings.Repeat("x", MaxUsernameLength)}, func(m Message) int { return len([]rune(m.Username)) }, MaxUsernameLength, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,17 +326,18 @@ func TestFit_PerFieldLimits(t *testing.T) {
 func TestFit_CombinedEmbedClamp(t *testing.T) {
 	e := &Embed{
 		Title:       strings.Repeat("t", 200),
-		Description: strings.Repeat("d", 3000),
-		FooterText:  strings.Repeat("f", 2000),
-		AuthorName:  strings.Repeat("a", 1000),
+		Description: strings.Repeat("d", 3700),
+		FooterText:  strings.Repeat("f", MaxEmbedFooterTextLength),
+		AuthorName:  strings.Repeat("a", 252),
 	}
-	// 6200 combined: 200 over the cap, all taken from Description.
+	// Every field is within its own limit; 6200 combined: 200 over the cap,
+	// all taken from Description.
 	got, trimmed := Fit(Message{Embed: e})
 	if trimmed != 200 {
 		t.Fatalf("trimmed = %d, want 200", trimmed)
 	}
-	if n := len([]rune(got.Embed.Description)); n != 2800 {
-		t.Fatalf("description length = %d, want 2800", n)
+	if n := len([]rune(got.Embed.Description)); n != 3500 {
+		t.Fatalf("description length = %d, want 3500", n)
 	}
 	if got.Embed.Title != e.Title || got.Embed.FooterText != e.FooterText || got.Embed.AuthorName != e.AuthorName {
 		t.Fatal("combined clamp must only trim Description")
@@ -343,12 +348,12 @@ func TestFit_CombinedEmbedClamp(t *testing.T) {
 	e2 := &Embed{
 		Title:       "t",
 		Description: strings.Repeat("d", 5000),
-		FooterText:  strings.Repeat("f", 1500),
-		AuthorName:  strings.Repeat("a", 1000),
+		FooterText:  strings.Repeat("f", MaxEmbedFooterTextLength),
+		AuthorName:  strings.Repeat("a", MaxEmbedAuthorNameLength),
 	}
-	// After the per-field trim: 1+4096+1500+1000 = 6597, 597 over the cap.
-	if _, trimmed := Fit(Message{Embed: e2}); trimmed != 904+597 {
-		t.Fatalf("trimmed = %d, want %d", trimmed, 904+597)
+	// After the per-field trim: 1+4096+2048+256 = 6401, 401 over the cap.
+	if _, trimmed := Fit(Message{Embed: e2}); trimmed != 904+401 {
+		t.Fatalf("trimmed = %d, want %d", trimmed, 904+401)
 	}
 }
 
@@ -401,13 +406,16 @@ func TestFit_DoesNotMutateCallerEmbed(t *testing.T) {
 	}
 }
 
-func TestFit_OtherFieldsAloneOverCap(t *testing.T) {
-	e := &Embed{Description: "desc", FooterText: strings.Repeat("f", 4000), AuthorName: strings.Repeat("a", 4000)}
-	got, trimmed := Fit(Message{Embed: e})
-	if got.Embed.Description != "" || trimmed != 4 {
-		t.Fatalf("description=%q trimmed=%d; want empty description and 4 trimmed", got.Embed.Description, trimmed)
+// TestClampEmbedTotalLength_OtherFieldsAloneOverCap covers the clamp's total
+// fallback directly: Fit's per-field limits keep title+footer+author under the
+// combined cap, so this case can't arise through Fit.
+func TestClampEmbedTotalLength_OtherFieldsAloneOverCap(t *testing.T) {
+	e := Embed{Description: "desc", FooterText: strings.Repeat("f", 4000), AuthorName: strings.Repeat("a", 4000)}
+	got, trimmed := clampEmbedTotalLength(e)
+	if got.Description != "" || trimmed != 4 {
+		t.Fatalf("description=%q trimmed=%d; want empty description and 4 trimmed", got.Description, trimmed)
 	}
-	if _, again := Fit(Message{Embed: got.Embed}); again != 0 {
-		t.Fatalf("second Fit trimmed %d, want 0", again)
+	if _, again := clampEmbedTotalLength(got); again != 0 {
+		t.Fatalf("second clamp trimmed %d, want 0", again)
 	}
 }

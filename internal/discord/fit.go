@@ -1,8 +1,7 @@
 package discord
 
-// Discord's webhook length limits for the fields rendered from feed content.
-// Discord rejects a message exceeding any of them outright rather than
-// truncating, so Fit enforces all of them.
+// Discord's webhook length limits. Discord rejects a message exceeding any of
+// them outright rather than truncating, so Fit enforces all of them.
 const (
 	// MaxContentLength is the cap on a message's plain-text content.
 	MaxContentLength = 2000
@@ -10,6 +9,12 @@ const (
 	MaxEmbedTitleLength = 256
 	// MaxEmbedDescriptionLength is the cap on an embed's description.
 	MaxEmbedDescriptionLength = 4096
+	// MaxEmbedAuthorNameLength is the cap on an embed's author name.
+	MaxEmbedAuthorNameLength = 256
+	// MaxEmbedFooterTextLength is the cap on an embed's footer text.
+	MaxEmbedFooterTextLength = 2048
+	// MaxUsernameLength is the cap on a webhook username override.
+	MaxUsernameLength = 80
 	// MaxThreadNameLength is the cap on a forum thread name.
 	MaxThreadNameLength = 100
 	// MaxEmbedTotalLength is the cap on the combined character count of
@@ -21,17 +26,19 @@ const (
 )
 
 // Fit applies the limits above to msg and returns the fitted message plus the
-// total number of runes trimmed (0 when nothing was). Order: Content,
-// Embed.Title, Embed.Description, then the combined embed clamp (which trims
+// total number of runes trimmed (0 when nothing was). Order: Content, Username,
+// the embed's per-field limits, then the combined embed clamp (which trims
 // Description further, measured after the per-field trims), then ThreadName.
-// Embed.AuthorName, Embed.FooterText and Username come from FeedGroup config,
-// which CRD validation already caps at Discord's limits, so Fit leaves them
-// alone (they still count toward the combined embed clamp).
+// AuthorName, FooterText and Username come from FeedGroup config, which CRD
+// validation already caps, so for the controller they never trim; clamping
+// them here keeps SendMessage safe for any caller.
 // Fit is idempotent and never mutates msg.Embed: the embed is copied.
 func Fit(msg Message) (Message, int) {
 	var trimmed, n int
 
 	msg.Content, n = Truncate(msg.Content, MaxContentLength)
+	trimmed += n
+	msg.Username, n = Truncate(msg.Username, MaxUsernameLength)
 	trimmed += n
 
 	if msg.Embed != nil {
@@ -39,6 +46,10 @@ func Fit(msg Message) (Message, int) {
 		e.Title, n = Truncate(e.Title, MaxEmbedTitleLength)
 		trimmed += n
 		e.Description, n = Truncate(e.Description, MaxEmbedDescriptionLength)
+		trimmed += n
+		e.AuthorName, n = Truncate(e.AuthorName, MaxEmbedAuthorNameLength)
+		trimmed += n
+		e.FooterText, n = Truncate(e.FooterText, MaxEmbedFooterTextLength)
 		trimmed += n
 		e, n = clampEmbedTotalLength(e)
 		trimmed += n
@@ -54,8 +65,9 @@ func Fit(msg Message) (Message, int) {
 // until title+description+footer+author fits within MaxEmbedTotalLength, and
 // reports how many runes it cut. Title/footer/author are short in practice, so
 // trimming the (often long) description is the least surprising way to enforce
-// the limit. If the other fields alone exceed the cap, Description is emptied
-// and the remainder is left as is.
+// the limit. If the other fields alone exceed the cap (impossible after Fit's
+// per-field limits, but kept total), Description is emptied and the remainder
+// is left as is.
 func clampEmbedTotalLength(e Embed) (Embed, int) {
 	total := len([]rune(e.Title)) + len([]rune(e.Description)) + len([]rune(e.FooterText)) + len([]rune(e.AuthorName))
 	if total <= MaxEmbedTotalLength {

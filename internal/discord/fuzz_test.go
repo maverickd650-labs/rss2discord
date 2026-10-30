@@ -55,12 +55,17 @@ func FuzzEmbedPayload(f *testing.F) {
 		if n := len([]rune(fe.Description)); n > MaxEmbedDescriptionLength {
 			t.Fatalf("fitted description has %d runes, want <= %d", n, MaxEmbedDescriptionLength)
 		}
-		// Fit only ever trims Description for the combined cap, so the total
-		// can exceed it only when the other fields alone do, with Description
-		// already empty.
+		if n := len([]rune(fe.AuthorName)); n > MaxEmbedAuthorNameLength {
+			t.Fatalf("fitted author name has %d runes, want <= %d", n, MaxEmbedAuthorNameLength)
+		}
+		if n := len([]rune(fe.FooterText)); n > MaxEmbedFooterTextLength {
+			t.Fatalf("fitted footer text has %d runes, want <= %d", n, MaxEmbedFooterTextLength)
+		}
+		// The per-field caps keep title+footer+author well under the combined
+		// cap, so trimming Description always brings the total within it.
 		total := len([]rune(fe.Title)) + len([]rune(fe.Description)) + len([]rune(fe.FooterText)) + len([]rune(fe.AuthorName))
-		if total > MaxEmbedTotalLength && fe.Description != "" {
-			t.Fatalf("Fit left a combined length of %d without emptying Description", total)
+		if total > MaxEmbedTotalLength {
+			t.Fatalf("Fit left a combined embed length of %d, want <= %d", total, MaxEmbedTotalLength)
 		}
 		if _, again := Fit(fitted); again != 0 {
 			t.Fatalf("Fit is not idempotent: second pass trimmed %d runes", again)
