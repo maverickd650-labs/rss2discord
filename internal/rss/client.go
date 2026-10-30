@@ -1210,6 +1210,42 @@ func priorAtomEntries(data []byte) []priorAtomEntry {
 	return feed.Entries
 }
 
+// atomIdentityFields is what an Atom entry's identity is hashed and compared
+// from, derived from one vocabulary's reading of the entry (see
+// atomItem.identityFields).
+type atomIdentityFields struct {
+	link      string
+	id        string
+	idSource  IDSource
+	published time.Time
+	image     string
+}
+
+// identityFields derives an entry's identity fields from one reading of its
+// id, dates and links, resolved against base (the entry's effective
+// xml:base). The title and Media RSS elements are shared by every reading: an
+// earlier release read those by the same names, and only the id, dates and
+// links differ with the vocabulary. Published falls back to Updated when it
+// is missing or invalid; the image falls back from an enclosure link to Media
+// RSS (direct thumbnail, then the group), resolved against base.
+func (item atomItem) identityFields(base, id, updated, published string, links atomLinks) atomIdentityFields {
+	var f atomIdentityFields
+	f.link = resolveAtomURL(base, primaryLink(links))
+	f.id, f.idSource = atomIdentity(id, f.link, atomText(item.Title))
+
+	f.published, _ = parseTime(published)
+	if f.published.IsZero() {
+		f.published, _ = parseTime(updated)
+	}
+
+	image := enclosureImage(links)
+	if image == "" {
+		image = mediaImage(item.MediaThumbnail, nil, item.MediaGroup)
+	}
+	f.image = strings.TrimSpace(resolveAtomURL(base, image))
+	return f
+}
+
 func parseAtom(data []byte) ([]Entry, string, error) {
 	root, err := rootElement(data)
 	if err != nil {
@@ -1251,11 +1287,6 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 	entries := make([]Entry, 0, len(items))
 	for i, item := range items {
-		published, _ := parseTime(item.Published)
-		if published.IsZero() {
-			published, _ = parseTime(item.Updated)
-		}
-
 		// An entry's xml:base is itself resolved against the feed's (RFC 3986
 		// section 5.1.2), so a relative entry base such as "posts/" extends the
 		// feed base instead of replacing it and leaving relative links relative.
@@ -1264,9 +1295,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			base = resolveAtomURL(feedBase, entryBase)
 		}
 
-		link := resolveAtomURL(base, primaryLink(item.Links))
-
-		id, idSource := atomIdentity(item.ID, link, atomText(item.Title))
+		current := item.identityFields(base, item.ID, item.Updated, item.Published, item.Links)
 
 		// Content is exposed even when it doubles as Description (no
 		// summary), so templates can use {{.Content}} regardless of which
@@ -1280,48 +1309,33 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			description = item.MediaGroup.description()
 		}
 
-		// Enclosure link first, then Media RSS (direct thumbnail, then the
-		// group), all resolved against xml:base like the enclosure always was.
-		image := enclosureImage(item.Links)
-		if image == "" {
-			image = mediaImage(item.MediaThumbnail, nil, item.MediaGroup)
-		}
-
 		categoryTerms := make([]string, len(item.Categories))
 		for i, c := range item.Categories {
 			categoryTerms[i] = c.Term
 		}
 
 		entry := Entry{
-			ID:          id,
-			IDSource:    idSource,
+			ID:          current.id,
+			IDSource:    current.idSource,
 			Title:       atomText(item.Title),
-			Link:        strings.TrimSpace(link),
+			Link:        strings.TrimSpace(current.link),
 			Description: description,
 			Content:     content,
-			Image:       strings.TrimSpace(resolveAtomURL(base, image)),
+			Image:       current.image,
 			Author:      strings.TrimSpace(item.Author.Name),
 			Categories:  trimCategories(categoryTerms),
-			Published:   published,
+			Published:   current.published,
 			Seq:         i,
 		}
 		if item.prior != nil {
-			priorLink := resolveAtomURL(base, primaryLink(item.prior.Links))
+			prior := item.identityFields(base, item.prior.ID, item.prior.Updated, item.prior.Published, item.prior.Links)
 			previous := entry
-			previous.ID, previous.IDSource = atomIdentity(item.prior.ID, priorLink, atomText(item.Title))
+			previous.ID, previous.IDSource = prior.id, prior.idSource
 			// A ContentID is also hashed from the date and the image, which
 			// earlier releases read by local name too. (A blank alternate link
 			// wins primaryLink, so an entry can reach a ContentID with an image
 			// enclosure.)
-			previous.Published, _ = parseTime(item.prior.Published)
-			if previous.Published.IsZero() {
-				previous.Published, _ = parseTime(item.prior.Updated)
-			}
-			priorImage := enclosureImage(item.prior.Links)
-			if priorImage == "" {
-				priorImage = mediaImage(item.MediaThumbnail, nil, item.MediaGroup)
-			}
-			previous.Image = strings.TrimSpace(resolveAtomURL(base, priorImage))
+			previous.Published, previous.Image = prior.published, prior.image
 			// Both identities get the ContentID fallback before comparing, so
 			// an entry with no id, link or title migrates from or to it too.
 			previous, entry = withContentID(previous), withContentID(entry)
