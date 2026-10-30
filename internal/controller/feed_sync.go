@@ -344,6 +344,23 @@ func (s *feedSync) close(verdict syncVerdict) {
 	s.legacy.finish(s.fs)
 }
 
+// closeOnReturn is processFeed's deferred close and must be deferred directly,
+// since recover only works in the deferred call itself. A return that set no
+// verdict still panics in close, so a forgotten verdict stays loud. A panic
+// raised before any verdict was set (while rendering, sending or recording) is
+// re-raised unchanged and close is skipped; otherwise close's own "invalid
+// verdict" panic would replace it, and controller-runtime would log a missing
+// verdict instead of the real fault. Status isn't written on a panic path, so
+// skipping settlement there loses nothing.
+func (s *feedSync) closeOnReturn(verdict *syncVerdict) {
+	if *verdict == 0 {
+		if p := recover(); p != nil {
+			panic(p)
+		}
+	}
+	s.close(*verdict)
+}
+
 // settle marks fs initialized and its ambiguous legacy reading resolved.
 func (s *feedSync) settle() {
 	s.fs.Initialized = true

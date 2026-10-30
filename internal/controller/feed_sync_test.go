@@ -497,4 +497,43 @@ func TestFeedSync_MisuseIsLoud(t *testing.T) {
 		s.begin()
 		s.begin()
 	})
+	expectPanic(t, "returning without a verdict", func() {
+		s := open()
+		var verdict syncVerdict
+		defer s.closeOnReturn(&verdict)
+	})
+}
+
+// processFeed defers closeOnReturn. A panic raised before any verdict was set
+// must surface unchanged, not be replaced by close's "invalid verdict" panic,
+// so controller-runtime logs the real fault; a return with a verdict still
+// closes the sync.
+func TestFeedSync_CloseOnReturnKeepsTheOriginalPanic(t *testing.T) {
+	open := func() *feedSync {
+		return openFeedSync(currentStatus(), syncFetch(syncEntries(2)...), syncSpec(defaultCatchUpLimit))
+	}
+
+	const original = "render exploded"
+	s := open()
+	got := func() (recovered any) {
+		defer func() { recovered = recover() }()
+		var verdict syncVerdict
+		defer s.closeOnReturn(&verdict)
+		panic(original)
+	}()
+	if got != original {
+		t.Fatalf("recovered %v, want the original panic %q", got, original)
+	}
+	if s.closed {
+		t.Fatal("a sync that panicked before a verdict was set should not be closed")
+	}
+
+	s = open()
+	func() {
+		verdict := syncFetchFailed
+		defer s.closeOnReturn(&verdict)
+	}()
+	if !s.closed {
+		t.Fatal("a return with a verdict should close the sync")
+	}
 }

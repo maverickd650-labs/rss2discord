@@ -223,10 +223,11 @@ func (r *FeedGroupReconciler) processFeed(
 	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl, now)
 
 	// Every return below sets settlement first; the deferred close is what
-	// settles the FeedStatus, and rejects a return that forgot to.
+	// settles the FeedStatus, and rejects a return that forgot to. A panic
+	// before settlement is set passes through unchanged (see closeOnReturn).
 	syncer := openFeedSync(fs, fetchResult, feedSyncSpecFor(feedGroup, now))
 	var settlement syncVerdict
-	defer func() { syncer.close(settlement) }()
+	defer syncer.closeOnReturn(&settlement)
 
 	if fetchErr != nil {
 		settlement = syncFetchFailed
