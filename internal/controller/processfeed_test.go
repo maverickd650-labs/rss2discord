@@ -46,7 +46,7 @@ const testReconcileTime = "2026-01-01T00:00:00Z"
 func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-bad-regex", "fg-bad-regex"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -79,7 +79,7 @@ func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 func TestProcessFeed_FeedTitleReachesTemplate(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-feed-title", "fg-feed-title"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -106,7 +106,7 @@ func TestProcessFeed_FeedTitleReachesTemplate(t *testing.T) {
 func TestProcessFeed_InvalidMessageTemplate(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-bad-template", "fg-bad-template"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -136,7 +136,7 @@ func TestProcessFeed_InvalidMessageTemplate(t *testing.T) {
 func TestProcessFeed_InvalidForumThreadNameTemplate(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-bad-thread-name", "fg-bad-thread-name"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -167,7 +167,7 @@ func TestProcessFeed_InvalidForumThreadNameTemplate(t *testing.T) {
 func TestProcessFeed_NotModifiedPersistsLastModified(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-not-modified-lm", "fg-not-modified-lm"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fetchResult := rss.FetchResult{NotModified: true, LastModified: "Fri, 23 Oct 2015 07:28:00 GMT"}
@@ -191,7 +191,7 @@ func TestProcessFeed_NotModifiedPersistsLastModified(t *testing.T) {
 func TestProcessFeed_LastCheckedTracksSuccessNotAttempts(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-lastchecked", "fg-lastchecked"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 
@@ -214,7 +214,7 @@ func TestProcessFeed_LastCheckedTracksSuccessNotAttempts(t *testing.T) {
 func TestProcessFeed_AlreadySentEntrySkipped(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-dedup", "fg-dedup"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -248,7 +248,7 @@ func TestProcessFeed_AlreadySentEntrySkipped(t *testing.T) {
 func TestProcessFeed_RecoversFromStaleErrorWithNoNewEntries(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-recovers", "fg-recovers"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -379,7 +379,7 @@ func TestNextBackoffUntil(t *testing.T) {
 func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-perm-backoff", "fg-perm-backoff"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.RetryInterval = "5m"
@@ -424,7 +424,7 @@ func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 func TestProcessFeed_BlockedAddressSetsPermanentBackoff(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-blocked-addr", "fg-blocked-addr"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.RetryInterval = "5m"
@@ -458,7 +458,7 @@ func TestProcessFeed_BlockedAddressSetsPermanentBackoff(t *testing.T) {
 func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-perm-cap", "fg-perm-cap"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.RetryInterval = "5m"
@@ -536,7 +536,7 @@ func TestFeedDue(t *testing.T) {
 func TestProcessFeed_PermanentFailureClearedOnSuccess(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-perm-clear", "fg-perm-clear"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	// Simulate a feed that was previously in permanent backoff.
@@ -587,7 +587,7 @@ func TestClearPermanentBackoffs(t *testing.T) {
 func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-skip-render", "fg-skip-render"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -646,7 +646,7 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-broken-template", "fg-broken-template"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -798,7 +798,7 @@ func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 	run := func(t *testing.T, lastSeen string, limit *int32) (sent int, fs *v1alpha1.FeedStatus) {
 		t.Helper()
 		ns, name := "skip-backlog-unit", "fg-skip-"+lastSeen
-		defer deleteFeedGroupMetrics(ns, name)
+		defer groupMetrics{namespace: ns, name: name}.forget()
 		discordServer := NewMockDiscordServer(t)
 		defer discordServer.Close()
 
@@ -845,7 +845,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := initializationUnitNS, tc.name
-			defer deleteFeedGroupMetrics(ns, name)
+			defer groupMetrics{namespace: ns, name: name}.forget()
 			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 
@@ -871,7 +871,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 // later is new, so none of it may be trimmed by the catch-up cap.
 func TestProcessFeed_CatchUpLimitZeroDeliversAllAfterEmptyFirstSync(t *testing.T) {
 	ns, name := initializationUnitNS, "all-after-empty"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
@@ -910,7 +910,7 @@ func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fg, feed := newMetricsFeedGroup("backlog-restart", tc.name, "{{.Title}}")
-			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 			fg.Generation = 7
 			fg.Spec.CatchUpLimit = new(int32(0))
 			fs := feedStatusFor(fg, feed.RSSUrl)
@@ -1000,7 +1000,7 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, "{{.Title}}")
-			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 			fg.Spec.CatchUpLimit = tc.limit
 			fs := feedStatusFor(fg, feed.RSSUrl)
 			fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
@@ -1042,7 +1042,7 @@ const configErrURLPrefix = "https://config-error.example.test/"
 
 func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	ns, name := initializationUnitNS, "config-error-first-sync"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
@@ -1089,7 +1089,7 @@ func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := initializationUnitNS, "render-config-error-"+strings.ReplaceAll(tc.name, " ", "-")
-			defer deleteFeedGroupMetrics(ns, name)
+			defer groupMetrics{namespace: ns, name: name}.forget()
 			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 
@@ -1158,7 +1158,7 @@ func legacyKey(entry rss.Entry) string {
 func newLegacyFeedGroup(t *testing.T, name, format string) (*v1alpha1.FeedGroup, v1alpha1.FeedSpec, *v1alpha1.FeedStatus) {
 	t.Helper()
 	fg, feed := newMetricsFeedGroup(legacyStateNS, name, format)
-	t.Cleanup(func() { deleteFeedGroupMetrics(fg.Namespace, fg.Name) })
+	t.Cleanup(func() { groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget() })
 	fs := feedStatusFor(fg, feed.RSSUrl)
 	fs.LastChecked = "2025-12-29T00:00:00Z"
 	return fg, feed, fs
@@ -1205,7 +1205,7 @@ func processTwice(t *testing.T, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, 
 // have no GUID, so neither is skipped as a duplicate of the other.
 func TestProcessFeed_LinkFragmentAndRefAreDistinctIdentities(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "fragment-and-ref", "{{.Title}}")
-	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 	entries := []rss.Entry{
 		linkEntry(legacyURLPrefix+"changelog#v1.2", 0),
 		linkEntry(legacyURLPrefix+"changelog#v1.3", 1),
@@ -1226,7 +1226,7 @@ func TestProcessFeed_LinkFragmentAndRefAreDistinctIdentities(t *testing.T) {
 // when no other entry shares it. A genuinely new entry is still delivered.
 func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "rotating-target", "{{.Title}}")
-	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 	titled := func(link, title string, i int) rss.Entry {
 		entry := linkEntry(legacyURLPrefix+link, i)
 		entry.Title = title
@@ -1251,7 +1251,7 @@ func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
 // GUID was already sent.
 func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "stripped-to-guid", "{{.Title}}")
-	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 	guid := guidEntry(legacyURLPrefix+"guid-collide/post", 0)
 	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
 	link := linkEntry(legacyURLPrefix+"guid-collide/post#v2", 1)
@@ -1263,7 +1263,7 @@ func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
 // the feed: neither the GUID's dedup key nor its watermark may stand in for it.
 func TestProcessFeed_LinkAfterGUIDWithSameBaseIsDelivered(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "link-after-guid", "{{.Title}}")
-	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 	guid := guidEntry(legacyURLPrefix+"after-guid/post", 0)
 	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
 	link := linkEntry(legacyURLPrefix+"after-guid/post#v2", 1)
@@ -1520,7 +1520,7 @@ func TestProcessFeed_LegacyCollidingReplayIsCapped(t *testing.T) {
 // only what is new instead of the whole backlog.
 func TestProcessFeed_EmptyIdentityEntriesKeepWatermark(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "empty-identity", "{{.Description}}")
-	defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 	fg.Spec.CatchUpLimit = new(int32(0))
 	backlog := []rss.Entry{contentEntry("old-1", 0), contentEntry("old-2", 1)}
 	// Entries built without an ID get the same identity the parser assigns.
@@ -1690,7 +1690,7 @@ func runSkipProbe(
 	ctx := t.Context()
 	discordServer := NewMockDiscordServer(t)
 	t.Cleanup(discordServer.Close)
-	t.Cleanup(func() { deleteFeedGroupMetrics(ns, name) })
+	t.Cleanup(func() { groupMetrics{namespace: ns, name: name}.forget() })
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, skipProbeTemplate)
@@ -1794,7 +1794,7 @@ func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
 func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-overflow-attempts", "fg-overflow-attempts"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 	discordServer.FailNextRequests(2, http.StatusInternalServerError)

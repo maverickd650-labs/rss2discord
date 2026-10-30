@@ -91,7 +91,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if apierrors.IsNotFound(err) {
 			// The FeedGroup is gone; drop its metric series so a deleted
 			// group can't leave a stale feedLastSuccessTimestamp behind.
-			deleteFeedGroupMetrics(req.Namespace, req.Name)
+			groupMetrics{namespace: req.Namespace, name: req.Name}.forget()
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "failed to get FeedGroup")
@@ -100,12 +100,17 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Timed from here, not from the top of Reconcile, so a deleted FeedGroup
 	// never re-creates its just-dropped feedGroupReconcileDuration series via
-	// a deferred Observe running after deleteFeedGroupMetrics above.
+	// a deferred Observe running after groupMetrics.forget above.
 	defer func() {
-		feedGroupReconcileDuration.WithLabelValues(req.Namespace, req.Name).Observe(time.Since(reconcileStart).Seconds())
+		groupMetrics{namespace: req.Namespace, name: req.Name}.reconcileDuration(time.Since(reconcileStart))
 	}()
 
-	ensureFeedStatuses(&feedGroup)
+	// Prune the metric series of feeds dropped from the spec, so editing a
+	// group's feed list doesn't leave stale series behind until the whole
+	// FeedGroup is deleted.
+	for _, url := range ensureFeedStatuses(&feedGroup) {
+		metricsFor(&feedGroup).forgetFeed(url)
+	}
 
 	// A spec change (generation bump) lets a feed in permanent backoff retry
 	// right away instead of waiting out its BackoffUntil. Clear BackoffUntil
@@ -343,7 +348,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 		// entry counts again; renders that are never sent (see
 		// otherEntryRenders) are not observed.
 		if overflow > 0 {
-			messageOverflowChars.WithLabelValues(feedGroup.Namespace, feedGroup.Name).Observe(float64(overflow))
+			metricsFor(feedGroup).overflow(overflow)
 		}
 
 		err = discordClient.SendMessage(ctx, discordMessage)

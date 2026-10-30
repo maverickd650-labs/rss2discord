@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 	"unicode/utf8"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -67,16 +66,6 @@ func errText(err error) string {
 	return clampText(err.Error(), maxStatusTextBytes)
 }
 
-// markFeedCheckSuccess records that a feed was successfully checked this
-// reconcile, whether or not it had anything new to send. It's the single
-// place that advances feedLastSuccessTimestamp, so a quiet-but-healthy feed
-// (304, or zero new entries) reads as fresh rather than as if the operator
-// had stopped checking it.
-func markFeedCheckSuccess(feedGroup *v1alpha1.FeedGroup) {
-	feedLastSuccessTimestamp.WithLabelValues(feedGroup.Namespace, feedGroup.Name).
-		Set(float64(time.Now().Unix()))
-}
-
 // ensureFeedStatuses rebuilds feedGroup.Status.Feeds to have exactly one
 // entry per feed in feedGroup.Spec.Feeds, in spec order: existing entries are
 // matched up by RSSUrl, new feeds get an entry with their RSSUrl, and
@@ -92,11 +81,11 @@ func markFeedCheckSuccess(feedGroup *v1alpha1.FeedGroup) {
 // across reconciles whenever the spec doesn't change, which
 // apiequality.Semantic.DeepEqual (used by requeueWithStatus to skip no-op
 // writes) needs to avoid seeing a reordered-but-otherwise-identical slice as
-// a change. It also drops the rss_url-labeled metric series of any feed it
-// prunes (see deleteFeedMetrics).
+// a change. It returns the RSSUrls it pruned so the caller can drop their
+// metric series; it does not touch Prometheus.
 // Retained entries have nil LastSent maps initialized, LastError bounded, and
 // oversized LastSeenEntry values replaced by clampWatermark digests.
-func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) {
+func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) (pruned []string) {
 	existing := make(map[string]v1alpha1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
 		existing[fs.RSSUrl] = fs
@@ -120,12 +109,12 @@ func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) {
 	}
 	feedGroup.Status.Feeds = rebuilt
 
-	// Whatever is left in existing was dropped from the spec. Drop its
-	// rss_url-labeled series too, so editing a group's feed list doesn't
-	// leave stale series behind until the whole FeedGroup is deleted.
+	// Whatever is left in existing was dropped from the spec.
 	for url := range existing {
-		deleteFeedMetrics(feedGroup.Namespace, feedGroup.Name, url)
+		pruned = append(pruned, url)
 	}
+	slices.Sort(pruned)
+	return pruned
 }
 
 // feedStatusFor returns a pointer to the FeedStatus for url, or nil if absent
@@ -209,7 +198,7 @@ func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *
 
 	// Before the no-op short-circuit below so the per-feed gauges are refreshed
 	// on every reconcile, not just ones that changed status.
-	recordFeedStateMetrics(feedGroup)
+	metricsFor(feedGroup).syncFeedState(feedGroup)
 
 	if apiequality.Semantic.DeepEqual(original, &feedGroup.Status) {
 		return ctrl.Result{RequeueAfter: duration}, nil

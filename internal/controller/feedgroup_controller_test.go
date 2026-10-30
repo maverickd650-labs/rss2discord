@@ -2259,7 +2259,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Running reconciliation for non-existent resource")
 			reconciler := newTestReconciler(nil)
 
-			defer deleteFeedGroupMetrics(namespace, "nonexistent")
+			defer groupMetrics{namespace: namespace, name: "nonexistent"}.forget()
 
 			result, err := reconcileFeedGroup(ctx, reconciler, "nonexistent")
 			Expect(err).NotTo(HaveOccurred())

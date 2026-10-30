@@ -371,7 +371,7 @@ func TestFeedAttempt_Record(t *testing.T) {
 // checks every effect TestFeedAttempt_Record covers.
 func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	t.Helper()
-	defer deleteFeedGroupMetrics(attemptNS, name)
+	defer groupMetrics{namespace: attemptNS, name: name}.forget()
 	fg := &v1alpha1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
 	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
@@ -490,7 +490,7 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 	for i, tc := range attemptCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			name := fmt.Sprintf("attempt-nil-%d", i)
-			defer deleteFeedGroupMetrics(attemptNS, name)
+			defer groupMetrics{namespace: attemptNS, name: name}.forget()
 			fg := &v1alpha1.FeedGroup{}
 			fg.Namespace, fg.Name = attemptNS, name
 			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
@@ -505,7 +505,7 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 // appears or its message changes, and not while it recurs.
 func TestFeedAttempt_ConfigErrorWarnsOncePerDistinctError(t *testing.T) {
 	name := "attempt-config-once"
-	defer deleteFeedGroupMetrics(attemptNS, name)
+	defer groupMetrics{namespace: attemptNS, name: name}.forget()
 	fg := &v1alpha1.FeedGroup{}
 	fg.Namespace, fg.Name = attemptNS, name
 	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL}
