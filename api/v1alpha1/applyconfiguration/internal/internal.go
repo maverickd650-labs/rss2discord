@@ -144,6 +144,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: observedGeneration
       type:
         scalar: numeric
+    - name: webhookSecretResourceVersion
+      type:
+        scalar: string
 - name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedSpec
   map:
     fields:

@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -172,14 +173,18 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Client: client.Options{
-			// Secrets are only ever fetched by name (the webhook URL secret
-			// referenced by a FeedGroup), so route them around the informer
-			// cache. Caching them would make the client list/watch *all*
-			// Secrets cluster-wide, which needs RBAC far beyond the `get`
-			// the operator actually requires.
+			// The webhook URL Secret is only ever read by name, so route full
+			// Secret reads around the informer cache: caching them would hold
+			// every Secret's data in memory, cluster-wide. Changes are noticed
+			// through a separate metadata-only watch (see SetupWithManager).
 			Cache: &client.CacheOptions{
 				DisableFor: []client.Object{&corev1.Secret{}},
 			},
+		},
+		Cache: cache.Options{
+			// Keeps Secret data that kubectl copies into an annotation out of
+			// the metadata-only Secret watch's cache.
+			DefaultTransform: controller.StripMetadataOnlyAnnotations(),
 		},
 		Metrics:                metricsServerOptions,
 		HealthProbeBindAddress: probeAddr,

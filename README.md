@@ -404,6 +404,7 @@ Common issues:
 - FeedGroup not updating — check `interval` and the operator logs.
 - Messages formatted wrong — check template placeholders against the [available fields](#message-template).
 - A feed that keeps returning a "permanent" error (e.g. HTTP 404/403) is retried with exponential backoff capped at 6h, so it recovers on its own once the source is back; editing the spec retries it immediately.
+- A deleted or regenerated Discord webhook (HTTP 404 on send) backs the feed off the same way. Putting the new webhook URL in the Secret named by `discordWebhookSecretRef` retries it immediately: the operator watches that Secret's metadata (never its data) and clears send backoffs when it changes.
 - An entry that can't be rendered is skipped (Warning Event `EntrySkipped`, `skipped` metric outcome) once the group's `retries` are exhausted, so it doesn't block newer entries — but only if other entries in the feed do render. If the template fails for every entry, they are held until you fix it.
 
 ## References

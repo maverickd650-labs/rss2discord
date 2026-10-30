@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -76,7 +77,7 @@ type FeedGroupReconciler struct {
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -126,11 +127,12 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// nothing actually changed.
 	statusSnapshot := feedGroup.Status.DeepCopy()
 
-	webhookURL, err := r.resolveWebhookURL(ctx, &feedGroup)
+	webhookURL, secretVersion, err := r.resolveWebhookURL(ctx, &feedGroup)
 	if err != nil {
 		log.Error(err, "failed to resolve Discord webhook URL")
 		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
 	}
+	noteWebhookSecretVersion(&feedGroup, secretVersion)
 
 	if webhookURL == "" {
 		err = fmt.Errorf("discord webhook URL is empty")
@@ -689,7 +691,7 @@ func (r *FeedGroupReconciler) recordConfigError(feedGroup *v1alpha1.FeedGroup, f
 	}
 }
 
-func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
+func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (webhookURL, resourceVersion string, err error) {
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Name:      feedGroup.Spec.DiscordWebhookSecretRef.Name,
@@ -697,15 +699,15 @@ func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *
 	}
 
 	if err := r.Get(ctx, secretKey, secret); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	value, ok := secret.Data[feedGroup.Spec.DiscordWebhookSecretRef.Key]
 	if !ok {
-		return "", fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
+		return "", "", fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
 	}
 
-	return strings.TrimSpace(string(value)), nil
+	return strings.TrimSpace(string(value)), secret.ResourceVersion, nil
 }
 
 // compileFilterRegex compiles a feed's filter regex once per feed per
@@ -790,6 +792,12 @@ func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// (generation bumps), creates and deletes matter; periodic work is
 		// driven by RequeueAfter.
 		For(&v1alpha1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// A replaced webhook Secret lets a feed backed off after a permanent
+		// send failure retry right away (see noteWebhookSecretVersion).
+		// Metadata only: the informer never holds Secret data, and the
+		// webhook URL itself is still read uncached in resolveWebhookURL.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.feedGroupsForSecret),
+			builder.OnlyMetadata, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Named("feedgroup").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.MaxConcurrentReconciles,

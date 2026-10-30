@@ -33,6 +33,14 @@ fetch errors may echo them. Don't put credentials or tokens in a feed URL's quer
 userinfo unless everyone who can read those surfaces is trusted with them. Only the Discord
 webhook URL (kept in a Secret) is redacted.
 
+Known trade-off: the operator's ClusterRole can `get`, `list` and `watch` Secrets cluster-wide,
+so it can retry a feed as soon as its webhook Secret is replaced. Only the watch is cached, and
+it is metadata-only: the operator holds names and resource versions in memory, with annotations
+and managedFields stripped (`kubectl apply` copies a Secret's data into an annotation). Secret
+data is only ever read uncached, by name, for the Secret a FeedGroup references. The RBAC grant
+itself would still allow listing Secret data, so treat the operator's service account as able to
+read Secrets.
+
 ## Supply Chain
 
 Dependencies are kept current via Renovate, GitHub Actions are pinned to commit SHAs, and the
