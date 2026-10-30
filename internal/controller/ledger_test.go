@@ -62,8 +62,10 @@ func TestDeliveryLedger_Resume(t *testing.T) {
 	}
 }
 
+// ledgerTestNow is the send timestamp the ledger tests record.
+const ledgerTestNow = "2026-01-02T03:04:05Z"
+
 func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
-	const now = "2026-01-02T03:04:05Z"
 	unique := linkEntry(legacyURLPrefix+"index/post?ref=a", 0)
 	rotated := linkEntry(legacyURLPrefix+"index/post?ref=b", 1)
 	siblingA := linkEntry(legacyURLPrefix+"index/post?ref=c", 2)
@@ -96,7 +98,7 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 			if ledger.sent(tc.handled) {
 				t.Fatal("entry reads as sent before being handled")
 			}
-			ledger.markHandled(tc.handled, now)
+			ledger.markHandled(tc.handled, ledgerTestNow)
 			if got := ledger.sent(tc.probe); got != tc.wantSent {
 				t.Fatalf("sent(probe) = %v, want %v", got, tc.wantSent)
 			}
@@ -104,8 +106,8 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 				t.Fatalf("LastSent has %d keys, want %d: %v", len(fs.LastSent), tc.wantKeys, fs.LastSent)
 			}
 			for key, at := range fs.LastSent {
-				if at != now {
-					t.Fatalf("LastSent[%s] = %q, want %q", key, at, now)
+				if at != ledgerTestNow {
+					t.Fatalf("LastSent[%s] = %q, want %q", key, at, ledgerTestNow)
 				}
 			}
 			if want := clampWatermark(entryIdentity(tc.handled)); fs.LastSeenEntry != want {
@@ -122,7 +124,7 @@ func TestDeliveryLedger_MarkHandledClampsLongIdentity(t *testing.T) {
 	long := rss.Entry{ID: strings.Repeat("y", maxStatusTextBytes*2)}
 	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
 	ledger := newDeliveryLedger(fs, []rss.Entry{long})
-	ledger.markHandled(long, "2026-01-02T03:04:05Z")
+	ledger.markHandled(long, ledgerTestNow)
 	if len(fs.LastSeenEntry) > maxStatusTextBytes {
 		t.Fatalf("LastSeenEntry is %d bytes, want <= %d", len(fs.LastSeenEntry), maxStatusTextBytes)
 	}
@@ -152,7 +154,7 @@ func TestDeliveryLedger_CountsCoverWholeFetch(t *testing.T) {
 	fetch := []rss.Entry{siblingA, siblingB}
 	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
 	ledger := newDeliveryLedger(fs, fetch)
-	ledger.markHandled(siblingB, "2026-01-02T03:04:05Z") // as if only the trimmed tail were scanned
+	ledger.markHandled(siblingB, ledgerTestNow) // as if only the trimmed tail were scanned
 	if ledger.sent(siblingA) {
 		t.Fatal("a sibling sharing the stripped identity was treated as sent")
 	}
