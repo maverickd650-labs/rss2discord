@@ -69,7 +69,7 @@ func TestNoteWebhookSecretVersion(t *testing.T) {
 		observed    string
 		wantCleared bool
 	}{
-		{"first observation only records", "", "100", false},
+		{"first observation clears send backoffs (Secret may have changed before the upgrade)", "", "100", true},
 		{"unchanged Secret keeps backoffs", "100", "100", false},
 		{"changed Secret clears send backoffs", "100", "101", true},
 	}

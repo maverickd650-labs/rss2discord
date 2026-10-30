@@ -55,12 +55,14 @@ func (r *FeedGroupReconciler) feedGroupsForSecret(ctx context.Context, secret cl
 // when it differs from the one recorded before, clears the backoff of every
 // feed backed off after a permanent send failure: the most likely fix for a
 // deleted or regenerated webhook is replacing the URL in its Secret, which
-// doesn't bump the FeedGroup's generation. The first version recorded clears
-// nothing, since there is no earlier Secret to compare against.
+// doesn't bump the FeedGroup's generation. The first version recorded (an
+// existing FeedGroup on its first reconcile by a release that tracks it)
+// counts as a change too: the Secret may have been fixed before the upgrade,
+// and the cost is at most one extra attempt per send-backed-off feed, once.
 func noteWebhookSecretVersion(feedGroup *v1alpha1.FeedGroup, resourceVersion string) {
 	previous := feedGroup.Status.WebhookSecretResourceVersion
 	feedGroup.Status.WebhookSecretResourceVersion = resourceVersion
-	if previous == "" || previous == resourceVersion {
+	if previous == resourceVersion {
 		return
 	}
 	clearSendBackoffs(feedGroup)
