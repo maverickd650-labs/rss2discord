@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -35,9 +36,9 @@ func TestTemplateFuncs_StringBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, overflow, err := renderTemplate(tmpl, rss.Entry{Author: tc.author}, maxDiscordMessageLength)
-			if err != nil || got != tc.want || overflow != 0 {
-				t.Fatalf("renderTemplate = %q, overflow=%d, err=%v; want %q without overflow", got, overflow, err, tc.want)
+			got, err := renderTemplate(tmpl, rss.Entry{Author: tc.author})
+			if err != nil || got != tc.want {
+				t.Fatalf("renderTemplate = %q, err=%v; want %q", got, err, tc.want)
 			}
 		})
 	}
@@ -51,12 +52,12 @@ func TestTemplateFuncs_DiscordTimeStylesAndUndatedValidation(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, unix := range []int64{-1, 1714979289} {
-				got, _, err := renderTemplate(tmpl, rss.Entry{Published: time.Unix(unix, 0)}, maxDiscordMessageLength)
+				got, err := renderTemplate(tmpl, rss.Entry{Published: time.Unix(unix, 0)})
 				if want := fmt.Sprintf("<t:%d:%s>", unix, style); err != nil || got != want {
 					t.Fatalf("timestamp = %q, err=%v; want %q", got, err, want)
 				}
 			}
-			if got, _, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength); err != nil || got != "" {
+			if got, err := renderTemplate(tmpl, rss.Entry{}); err != nil || got != "" {
 				t.Fatalf("undated timestamp = %q, err=%v; want empty", got, err)
 			}
 		})
@@ -67,9 +68,9 @@ func TestTemplateFuncs_DiscordTimeStylesAndUndatedValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, overflow, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength)
-	if err == nil || !strings.Contains(err.Error(), "discordTime: unknown style") || got != "" || overflow != 0 {
-		t.Fatalf("invalid undated timestamp = %q, overflow=%d, err=%v", got, overflow, err)
+	got, err := renderTemplate(tmpl, rss.Entry{})
+	if err == nil || !strings.Contains(err.Error(), "discordTime: unknown style") || got != "" {
+		t.Fatalf("invalid undated timestamp = %q, err=%v", got, err)
 	}
 }
 
@@ -91,7 +92,7 @@ func TestTemplateFuncs_ReplaceSizeLimit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, _, err := renderTemplate(tmpl, rss.Entry{Title: tc.title, Author: tc.author}, maxTemplateReplaceBytes)
+			got, err := renderTemplate(tmpl, rss.Entry{Title: tc.title, Author: tc.author})
 			if tc.wantError {
 				if err == nil || !strings.Contains(err.Error(), "replace: result exceeds maximum size") {
 					t.Fatalf("expected size error, got %v", err)
@@ -132,7 +133,7 @@ func TestTemplateFuncs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
-			got, _, err := renderTemplate(tmpl, tc.entry, maxDiscordMessageLength)
+			got, err := renderTemplate(tmpl, tc.entry)
 			if err != nil {
 				t.Fatalf("render: %v", err)
 			}
@@ -149,7 +150,7 @@ func TestTemplateFuncs_DiscordTimeRejectsUnknownStyle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		if _, _, err := renderTemplate(tmpl, rss.Entry{Published: time.Unix(1700000000, 0)}, maxDiscordMessageLength); err == nil {
+		if _, err := renderTemplate(tmpl, rss.Entry{Published: time.Unix(1700000000, 0)}); err == nil {
 			t.Errorf("style %q: expected a render error", style)
 		}
 	}
@@ -219,7 +220,7 @@ func TestCompileTemplate_RejectsUnboundedConstructs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := renderTemplate(tmpl, rss.Entry{Title: "a", Author: "b"}, maxDiscordMessageLength)
+	got, err := renderTemplate(tmpl, rss.Entry{Title: "a", Author: "b"})
 	if err != nil || got != "a/b" {
 		t.Fatalf("got %q, err=%v", got, err)
 	}
@@ -286,9 +287,9 @@ func TestCompileTemplate_SupportedConstructs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, overflow, err := renderTemplate(tmpl, tc.entry, maxDiscordMessageLength)
-			if err != nil || got != tc.want || overflow != 0 {
-				t.Fatalf("render = %q, overflow=%d, err=%v; want %q without overflow", got, overflow, err, tc.want)
+			got, err := renderTemplate(tmpl, tc.entry)
+			if err != nil || got != tc.want {
+				t.Fatalf("render = %q, err=%v; want %q", got, err, tc.want)
 			}
 		})
 	}
@@ -317,14 +318,16 @@ func TestRenderTemplate_OutputByteBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The byte cap applies before Discord's much smaller rune limit.
-			got, overflow, err := renderTemplate(tmpl, rss.Entry{Author: tc.author}, 8)
+			// The byte cap applies before any rune limit (here a stand-in
+			// 8-rune clamp applied to the raw output).
+			raw, err := renderTemplate(tmpl, rss.Entry{Author: tc.author})
 			if tc.wantError {
-				if err == nil || !strings.Contains(err.Error(), "template output exceeds") || got != "" || overflow != 0 {
-					t.Fatalf("render returned %d bytes, overflow=%d, err=%v; want output-limit error and no partial output", len(got), overflow, err)
+				if err == nil || !strings.Contains(err.Error(), "template output exceeds") || raw != "" {
+					t.Fatalf("render returned %d bytes, err=%v; want output-limit error and no partial output", len(raw), err)
 				}
 				return
 			}
+			got, overflow := discord.Truncate(raw, 8)
 			if err != nil || got != tc.want || overflow != tc.wantOverflow {
 				t.Fatalf("render = %q, overflow=%d, err=%v; want %q, overflow=%d", got, overflow, err, tc.want, tc.wantOverflow)
 			}
@@ -370,7 +373,7 @@ func TestRenderTemplate_OutputLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = renderTemplate(tmpl, rss.Entry{Title: strings.Repeat("x", maxTemplateOutputBytes/2+1)}, maxDiscordMessageLength)
+	_, err = renderTemplate(tmpl, rss.Entry{Title: strings.Repeat("x", maxTemplateOutputBytes/2+1)})
 	if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
 		t.Fatalf("expected output limit error, got %v", err)
 	}
@@ -399,9 +402,9 @@ func TestRenderTemplate_LinkSchemeFiltered(t *testing.T) {
 		"":                              "[]",
 	} {
 		t.Run(link, func(t *testing.T) {
-			got, overflow, err := renderTemplate(tmpl, rss.Entry{Link: link}, maxDiscordMessageLength)
-			if err != nil || got != want || overflow != 0 {
-				t.Fatalf("link %q rendered %q, overflow=%d, err=%v; want %q without overflow", link, got, overflow, err, want)
+			got, err := renderTemplate(tmpl, rss.Entry{Link: link})
+			if err != nil || got != want {
+				t.Fatalf("link %q rendered %q, err=%v; want %q", link, got, err, want)
 			}
 		})
 	}
@@ -414,9 +417,9 @@ func TestRenderTemplate_FilteredLinkIsEmptyInConditionalsAndHelpers(t *testing.T
 	}
 	for _, link := range []string{"javascript:alert(1)", "data:text/html,x", "//example.com/a"} {
 		t.Run(link, func(t *testing.T) {
-			got, overflow, err := renderTemplate(tmpl, rss.Entry{Link: link}, maxDiscordMessageLength)
-			if err != nil || got != "unlinked/none" || overflow != 0 {
-				t.Fatalf("filtered link rendered %q, overflow=%d, err=%v; want unlinked/none without overflow", got, overflow, err)
+			got, err := renderTemplate(tmpl, rss.Entry{Link: link})
+			if err != nil || got != "unlinked/none" {
+				t.Fatalf("filtered link rendered %q, err=%v; want unlinked/none", got, err)
 			}
 		})
 	}

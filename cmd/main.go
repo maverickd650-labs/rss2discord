@@ -249,7 +249,7 @@ func main() {
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		RSSClient: rssClient,
-		DiscordClientBuilder: func(webhookURL string) *discord.Client {
+		DiscordClientBuilder: func(webhookURL string) controller.MessageSender {
 			return discord.NewClientWithLimiter(webhookURL, discordHTTPClient, discordRateLimiter)
 		},
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,

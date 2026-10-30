@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -157,7 +158,9 @@ func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	// The send duration is observed by the timing adapter Reconcile wraps
+	// the client in, so processFeed is handed the same wrapping.
+	client := newTimedSender(discordServer.DiscordClientBuilder()(discordServer.URL()), ns, name)
 
 	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
 
@@ -249,7 +252,7 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 	fetchResult := rss.FetchResult{Entries: []rss.Entry{{
 		ID:          articleURL,
 		Title:       "Example entry",
-		Description: strings.Repeat("x", maxDiscordMessageLength+500),
+		Description: strings.Repeat("x", discord.MaxContentLength+500),
 		Link:        articleURL,
 	}}}
 
@@ -284,11 +287,9 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 // TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp asserts
 // that messageOverflowChars also counts truncation caused by Discord's
 // combined embed length limit (title+description+footer+author <= 6000),
-// which is enforced inside the discord package (clampEmbedTotalLength)
-// rather than by the per-field truncation buildDiscordMessage measures
-// directly. Title and Description here individually stay well under their
-// own limits, so only the combined-length clamp can be responsible for any
-// recorded overflow.
+// which discord.Fit enforces after the per-field truncation. Every field here
+// stays within its own limit (and the CRD's), so only the combined-length
+// clamp can be responsible for the recorded overflow.
 func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-embed-total-overflow", "fg-embed-total-overflow"
@@ -300,15 +301,23 @@ func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	feed.Embed = &v1alpha1.EmbedSpec{
 		Enabled:    true,
-		AuthorName: strings.Repeat("a", 3000),
-		FooterText: strings.Repeat("f", 3500),
+		AuthorName: strings.Repeat("a", discord.MaxEmbedAuthorNameLength),
+		FooterText: strings.Repeat("f", discord.MaxEmbedFooterTextLength),
 	}
+	fetch := oneEntryFetch()
+	fetch.Entries[0].Description = strings.Repeat("d", discord.MaxEmbedDescriptionLength)
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
+	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, fetch, nil, client, "2026-01-01T00:00:00Z")
 
 	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 1", got)
+	}
+	title := len([]rune(fetch.Entries[0].Title))
+	want := float64(title + discord.MaxEmbedDescriptionLength + discord.MaxEmbedFooterTextLength +
+		discord.MaxEmbedAuthorNameLength - discord.MaxEmbedTotalLength)
+	if got := messageOverflowSampleSum(t, ns, name); got != want {
+		t.Fatalf("messageOverflowChars sample sum = %v, want %v", got, want)
 	}
 }
 

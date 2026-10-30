@@ -291,8 +291,8 @@ func TestSendMessage_ClampsCombinedEmbedLength(t *testing.T) {
 	}
 	embed := payload.Embeds[0]
 	total := len([]rune(embed.Title)) + len([]rune(embed.Description)) + len([]rune(embed.Footer.Text)) + len([]rune(embed.Author.Name))
-	if total > maxEmbedTotalLength {
-		t.Fatalf("expected combined embed length <= %d, got %d", maxEmbedTotalLength, total)
+	if total > MaxEmbedTotalLength {
+		t.Fatalf("expected combined embed length <= %d, got %d", MaxEmbedTotalLength, total)
 	}
 }
 

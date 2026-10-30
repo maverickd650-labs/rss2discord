@@ -284,9 +284,9 @@ func (d *MockDiscordServer) DeliveryAttempts() int {
 
 // DiscordClientBuilder returns a DiscordClientBuilder whose clients send
 // every request, over TLS, to this mock server.
-func (d *MockDiscordServer) DiscordClientBuilder() func(webhookURL string) *discord.Client {
+func (d *MockDiscordServer) DiscordClientBuilder() func(webhookURL string) MessageSender {
 	httpClient := d.server.Client()
-	return func(webhookURL string) *discord.Client {
+	return func(webhookURL string) MessageSender {
 		return discord.NewClientWithHTTP(webhookURL, httpClient)
 	}
 }

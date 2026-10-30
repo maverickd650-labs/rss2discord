@@ -51,8 +51,8 @@ const maxConcurrentFetches = 10
 type FeedGroupReconciler struct {
 	client.Client
 	Scheme               *runtime.Scheme
-	RSSClient            *rss.Client
-	DiscordClientBuilder func(webhookURL string) *discord.Client
+	RSSClient            FeedFetcher
+	DiscordClientBuilder func(webhookURL string) MessageSender
 	Recorder             events.EventRecorder
 	// MaxConcurrentReconciles bounds how many FeedGroups this controller
 	// reconciles in parallel. Each reconcile only does outbound HTTP I/O
@@ -142,11 +142,16 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if rssClient == nil {
 		rssClient = rss.NewClient(nil)
 	}
-	discordBuilder := r.DiscordClientBuilder
-	if discordBuilder == nil {
-		discordBuilder = discord.NewClient
+	var discordClient MessageSender
+	if r.DiscordClientBuilder != nil {
+		discordClient = r.DiscordClientBuilder(webhookURL)
+	} else {
+		discordClient = discord.NewClient(webhookURL)
 	}
-	discordClient := discordBuilder(webhookURL)
+	// The request-duration histogram is owned by these timing adapters, not by
+	// the fetch goroutine or sendNewEntries.
+	rssClient = newTimedFetcher(rssClient, feedGroup.Namespace, feedGroup.Name)
+	discordClient = newTimedSender(discordClient, feedGroup.Namespace, feedGroup.Name)
 
 	// An unparsable Interval is reported by requeueWithStatus below; the plan
 	// only uses it for the due check.
@@ -175,10 +180,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				ETag:         fs.ETag,
 				LastModified: fs.LastModified,
 			}
-			start := time.Now()
 			fetched[i], fetchErrs[i] = rssClient.FetchEntries(ctx, feed.RSSUrl, validators)
-			feedRequestDuration.WithLabelValues(feedGroup.Namespace, feedGroup.Name, operationFetch).
-				Observe(time.Since(start).Seconds())
 		})
 	}
 	wg.Wait()
@@ -215,7 +217,7 @@ func (r *FeedGroupReconciler) processFeed(
 	feed v1alpha1.FeedSpec,
 	fetchResult rss.FetchResult,
 	fetchErr error,
-	discordClient *discord.Client,
+	discordClient MessageSender,
 	now string,
 ) attemptVerdict {
 	log := logf.FromContext(ctx)
@@ -286,7 +288,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 	renderer *feedRenderer,
 	syncer *feedSync,
 	attempt feedAttempt,
-	discordClient *discord.Client,
+	discordClient MessageSender,
 ) attemptVerdict {
 	log := logf.FromContext(ctx)
 	feed := renderer.feed
@@ -344,10 +346,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			messageOverflowChars.WithLabelValues(feedGroup.Namespace, feedGroup.Name).Observe(float64(overflow))
 		}
 
-		sendStart := time.Now()
 		err = discordClient.SendMessage(ctx, discordMessage)
-		feedRequestDuration.WithLabelValues(feedGroup.Namespace, feedGroup.Name, operationSend).
-			Observe(time.Since(sendStart).Seconds())
 		if err != nil {
 			log.Error(err, "failed to send Discord message", "url", feed.RSSUrl)
 			// Discord rate limits are per-webhook, so once one entry is

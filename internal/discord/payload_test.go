@@ -30,9 +30,6 @@ func TestDecodeErrorDetail(t *testing.T) {
 	}
 }
 
-// fiveRunes is reused across the truncateRunes test cases below.
-const fiveRunes = "abcde"
-
 // Retry-After header values shared by the parse and cooldown tables.
 const (
 	retryAfterDay    = "86400"
@@ -181,31 +178,6 @@ func TestRateLimitError_Error(t *testing.T) {
 	}
 }
 
-func TestTruncateRunes(t *testing.T) {
-	cases := []struct {
-		name  string
-		runes string
-		max   int
-		want  string
-	}{
-		{name: "under limit unchanged", runes: fiveRunes, max: 10, want: fiveRunes},
-		{name: "exactly at limit unchanged", runes: fiveRunes, max: 5, want: fiveRunes},
-		{name: "zero max yields empty", runes: fiveRunes, max: 0, want: ""},
-		{name: "negative max yields empty", runes: fiveRunes, max: -1, want: ""},
-		{name: "truncates with ellipsis", runes: "hello world", max: 5, want: "hell…"},
-		// The ellipsis is multi-byte but a single rune, so a multibyte body is
-		// trimmed by rune count, not byte count.
-		{name: "multibyte body trimmed by rune", runes: "日本語テスト", max: 3, want: "日本…"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := truncateRunes([]rune(tc.runes), tc.max); got != tc.want {
-				t.Fatalf("truncateRunes(%q, %d) = %q, want %q", tc.runes, tc.max, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestSendMessage_EmptyWebhookURL(t *testing.T) {
 	c := NewClient("")
 	err := c.SendMessageText(t.Context(), "empty webhook test")
@@ -273,37 +245,177 @@ func TestEmbedToPayload_OmitsUnsetMedia(t *testing.T) {
 	}
 }
 
-func TestClampEmbedTotalLength_UnderLimitUnchanged(t *testing.T) {
-	e := Embed{Title: "t", Description: "d", FooterText: "f", AuthorName: "a"}
-	got := clampEmbedTotalLength(e)
-	if got.Description != "d" {
-		t.Fatalf("expected description unchanged under limit, got %q", got.Description)
+func TestTruncate(t *testing.T) {
+	const (
+		short      = "short"
+		truncateMe = "truncate me"
+	)
+	cases := []struct {
+		name         string
+		content      string
+		max          int
+		want         string
+		wantOverflow int
+	}{
+		{name: "under limit unchanged", content: short, max: 10, want: short},
+		{name: "exactly at limit unchanged", content: short, max: 5, want: short},
+		{name: "truncated with ellipsis", content: truncateMe, max: 5, want: "trun…", wantOverflow: len([]rune(truncateMe)) - 5},
+		{name: "multibyte trimmed by rune", content: "日本語テスト", max: 3, want: "日本…", wantOverflow: 3},
+		{name: "multibyte under byte length but within rune limit", content: "日本語", max: 3, want: "日本語"},
+		{name: "max one keeps single rune without ellipsis", content: truncateMe, max: 1, want: "t", wantOverflow: len([]rune(truncateMe)) - 1},
+		{name: "max zero yields empty", content: truncateMe, max: 0, want: "", wantOverflow: len([]rune(truncateMe))},
+		{name: "negative max yields empty", content: truncateMe, max: -5, want: "", wantOverflow: len([]rune(truncateMe)) + 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, overflow := Truncate(tc.content, tc.max)
+			if got != tc.want {
+				t.Fatalf("Truncate(%q, %d) = %q, want %q", tc.content, tc.max, got, tc.want)
+			}
+			if overflow != tc.wantOverflow {
+				t.Fatalf("Truncate(%q, %d) overflow = %d, want %d", tc.content, tc.max, overflow, tc.wantOverflow)
+			}
+		})
 	}
 }
 
-// TestEmbedTotalLengthOverflow_MatchesClamp asserts the overflow reported by
-// the exported EmbedTotalLengthOverflow (which a caller uses purely for
-// metrics) is exactly how much clampEmbedTotalLength actually trims, so a
-// caller folding this into its own truncation count doesn't over- or
-// under-report.
-func TestEmbedTotalLengthOverflow_MatchesClamp(t *testing.T) {
-	e := Embed{Title: "t", Description: strings.Repeat("d", maxEmbedTotalLength), FooterText: "f", AuthorName: "a"}
-
-	overflow := EmbedTotalLengthOverflow(e)
-	if overflow == 0 {
-		t.Fatal("expected a non-zero overflow when combined fields exceed maxEmbedTotalLength")
+func TestFit_UnderLimitsUnchanged(t *testing.T) {
+	msg := Message{
+		Content:    "c",
+		ThreadName: "thread",
+		Embed:      &Embed{Title: "t", Description: "d", FooterText: "f", AuthorName: "a"},
 	}
-
-	clamped := clampEmbedTotalLength(e)
-	wantDescLen := len([]rune(e.Description)) - overflow
-	if got := len([]rune(clamped.Description)); got != wantDescLen {
-		t.Fatalf("clamped description length = %d, want %d (overflow %d)", got, wantDescLen, overflow)
+	got, trimmed := Fit(msg)
+	if trimmed != 0 || got.Content != "c" || got.ThreadName != "thread" || *got.Embed != *msg.Embed {
+		t.Fatalf("Fit changed an in-limit message: trimmed=%d got=%+v", trimmed, got)
 	}
 }
 
-func TestEmbedTotalLengthOverflow_UnderLimitIsZero(t *testing.T) {
-	e := Embed{Title: "t", Description: "d", FooterText: "f", AuthorName: "a"}
-	if got := EmbedTotalLengthOverflow(e); got != 0 {
-		t.Fatalf("expected 0 overflow under the limit, got %d", got)
+func TestFit_PerFieldLimits(t *testing.T) {
+	cases := []struct {
+		name    string
+		msg     Message
+		check   func(Message) int // returns the field's rune length
+		wantLen int
+		trimmed int
+	}{
+		{"content", Message{Content: strings.Repeat("x", MaxContentLength+7)}, func(m Message) int { return len([]rune(m.Content)) }, MaxContentLength, 7},
+		{"title", Message{Embed: &Embed{Title: strings.Repeat("x", MaxEmbedTitleLength+3)}}, func(m Message) int { return len([]rune(m.Embed.Title)) }, MaxEmbedTitleLength, 3},
+		{"description", Message{Embed: &Embed{Description: strings.Repeat("x", MaxEmbedDescriptionLength+11)}}, func(m Message) int { return len([]rune(m.Embed.Description)) }, MaxEmbedDescriptionLength, 11},
+		{"thread name", Message{ThreadName: strings.Repeat("x", MaxThreadNameLength+5)}, func(m Message) int { return len([]rune(m.ThreadName)) }, MaxThreadNameLength, 5},
+		{"username", Message{Username: strings.Repeat("x", MaxUsernameLength+2)}, func(m Message) int { return len([]rune(m.Username)) }, MaxUsernameLength, 2},
+		{"author name", Message{Embed: &Embed{AuthorName: strings.Repeat("x", MaxEmbedAuthorNameLength+4)}}, func(m Message) int { return len([]rune(m.Embed.AuthorName)) }, MaxEmbedAuthorNameLength, 4},
+		{"footer text", Message{Embed: &Embed{FooterText: strings.Repeat("x", MaxEmbedFooterTextLength+6)}}, func(m Message) int { return len([]rune(m.Embed.FooterText)) }, MaxEmbedFooterTextLength, 6},
+		{"username at limit", Message{Username: strings.Repeat("x", MaxUsernameLength)}, func(m Message) int { return len([]rune(m.Username)) }, MaxUsernameLength, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, trimmed := Fit(tc.msg)
+			if n := tc.check(got); n != tc.wantLen {
+				t.Fatalf("fitted length = %d, want %d", n, tc.wantLen)
+			}
+			if trimmed != tc.trimmed {
+				t.Fatalf("trimmed = %d, want %d", trimmed, tc.trimmed)
+			}
+		})
+	}
+}
+
+// TestFit_CombinedEmbedClamp checks the combined clamp is measured after the
+// per-field trims, trims only Description, and sums with the per-field counts.
+func TestFit_CombinedEmbedClamp(t *testing.T) {
+	e := &Embed{
+		Title:       strings.Repeat("t", 200),
+		Description: strings.Repeat("d", 3700),
+		FooterText:  strings.Repeat("f", MaxEmbedFooterTextLength),
+		AuthorName:  strings.Repeat("a", 252),
+	}
+	// Every field is within its own limit; 6200 combined: 200 over the cap,
+	// all taken from Description.
+	got, trimmed := Fit(Message{Embed: e})
+	if trimmed != 200 {
+		t.Fatalf("trimmed = %d, want 200", trimmed)
+	}
+	if n := len([]rune(got.Embed.Description)); n != 3500 {
+		t.Fatalf("description length = %d, want 3500", n)
+	}
+	if got.Embed.Title != e.Title || got.Embed.FooterText != e.FooterText || got.Embed.AuthorName != e.AuthorName {
+		t.Fatal("combined clamp must only trim Description")
+	}
+
+	// Per-field overflow (description 4096 -> 5000 runes, 904 over) is counted
+	// first; the combined overflow is then measured on what is left.
+	e2 := &Embed{
+		Title:       "t",
+		Description: strings.Repeat("d", 5000),
+		FooterText:  strings.Repeat("f", MaxEmbedFooterTextLength),
+		AuthorName:  strings.Repeat("a", MaxEmbedAuthorNameLength),
+	}
+	// After the per-field trim: 1+4096+2048+256 = 6401, 401 over the cap.
+	if _, trimmed := Fit(Message{Embed: e2}); trimmed != 904+401 {
+		t.Fatalf("trimmed = %d, want %d", trimmed, 904+401)
+	}
+}
+
+func TestFit_SumsEveryField(t *testing.T) {
+	msg := Message{
+		Content:    strings.Repeat("c", MaxContentLength+1),
+		ThreadName: strings.Repeat("n", MaxThreadNameLength+2),
+		Embed: &Embed{
+			Title:       strings.Repeat("t", MaxEmbedTitleLength+3),
+			Description: strings.Repeat("d", MaxEmbedDescriptionLength+4),
+		},
+	}
+	if _, trimmed := Fit(msg); trimmed != 1+2+3+4 {
+		t.Fatalf("trimmed = %d, want 10", trimmed)
+	}
+}
+
+func TestFit_Idempotent(t *testing.T) {
+	msg := Message{
+		Content:    strings.Repeat("c", MaxContentLength*2),
+		ThreadName: strings.Repeat("n", MaxThreadNameLength*2),
+		Embed: &Embed{
+			Title:       strings.Repeat("t", MaxEmbedTitleLength*2),
+			Description: strings.Repeat("d", MaxEmbedDescriptionLength*2),
+			FooterText:  strings.Repeat("f", 2000),
+			AuthorName:  strings.Repeat("a", 2000),
+		},
+	}
+	once, first := Fit(msg)
+	if first == 0 {
+		t.Fatal("expected the first Fit to trim")
+	}
+	twice, second := Fit(once)
+	if second != 0 || twice.Content != once.Content || twice.ThreadName != once.ThreadName || *twice.Embed != *once.Embed {
+		t.Fatalf("Fit is not idempotent: second trimmed %d", second)
+	}
+}
+
+func TestFit_DoesNotMutateCallerEmbed(t *testing.T) {
+	e := &Embed{Title: "t", Description: strings.Repeat("d", MaxEmbedDescriptionLength+100)}
+	got, trimmed := Fit(Message{Embed: e})
+	if trimmed != 100 {
+		t.Fatalf("trimmed = %d, want 100", trimmed)
+	}
+	if got.Embed == e {
+		t.Fatal("Fit must return a copy of the embed")
+	}
+	if len([]rune(e.Description)) != MaxEmbedDescriptionLength+100 {
+		t.Fatal("Fit mutated the caller's embed")
+	}
+}
+
+// TestClampEmbedTotalLength_OtherFieldsAloneOverCap covers the clamp's total
+// fallback directly: Fit's per-field limits keep title+footer+author under the
+// combined cap, so this case can't arise through Fit.
+func TestClampEmbedTotalLength_OtherFieldsAloneOverCap(t *testing.T) {
+	e := Embed{Description: "desc", FooterText: strings.Repeat("f", 4000), AuthorName: strings.Repeat("a", 4000)}
+	got, trimmed := clampEmbedTotalLength(e)
+	if got.Description != "" || trimmed != 4 {
+		t.Fatalf("description=%q trimmed=%d; want empty description and 4 trimmed", got.Description, trimmed)
+	}
+	if _, again := clampEmbedTotalLength(got); again != 0 {
+		t.Fatalf("second clamp trimmed %d, want 0", again)
 	}
 }

@@ -277,7 +277,7 @@ var _ = Describe("Webhook Secret watch", func() {
 			Client:    mgr.GetClient(),
 			Scheme:    mgr.GetScheme(),
 			RSSClient: testRSSClient(),
-			DiscordClientBuilder: func(webhookURL string) *discord.Client {
+			DiscordClientBuilder: func(webhookURL string) MessageSender {
 				return discord.NewClientWithHTTP(webhookURL, httpClient)
 			},
 			WatchWebhookSecrets: watchWebhookSecrets,

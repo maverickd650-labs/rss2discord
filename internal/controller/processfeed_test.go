@@ -30,6 +30,7 @@ import (
 	"unicode/utf8"
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1671,7 +1672,7 @@ func TestProcessFeed_LegacyEmptyFeedStatus(t *testing.T) {
 }
 
 // skipProbeTemplate fails only for the entry titled "bad", so any other entry
-// renders; a title over maxDiscordMessageLength makes that entry overflow.
+// renders; a title over discord.MaxContentLength makes that entry overflow.
 const (
 	probePoisonTitle = "bad"
 	probeKeepText    = "keep"
@@ -1713,7 +1714,7 @@ func runSkipProbe(
 // healthy entry behind a skipped poison entry is observed once, when it is
 // actually sent, not once more by the probe.
 func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {
-	long := strings.Repeat("g", maxDiscordMessageLength+100)
+	long := strings.Repeat("g", discord.MaxContentLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-bad", Title: probePoisonTitle, Seq: 1},
 		{ID: "https://example.com/probe-long", Title: long, Seq: 0},
@@ -1737,7 +1738,7 @@ func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {
 // entry is skipped) while its overflow is not observed, because it is never
 // sent again.
 func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
-	long := strings.Repeat("o", maxDiscordMessageLength+100)
+	long := strings.Repeat("o", discord.MaxContentLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-old", Title: long, Seq: 3},
 		{ID: "https://example.com/probe-bad2", Title: probePoisonTitle, Seq: 2},
@@ -1766,7 +1767,7 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 // for a filtered-out entry: it still counts as evidence, but is never sent, so
 // its overflow is not observed.
 func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
-	long := strings.Repeat("f", maxDiscordMessageLength+100)
+	long := strings.Repeat("f", discord.MaxContentLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-filtered", Title: long, Description: "drop", Seq: 3},
 		{ID: "https://example.com/probe-bad3", Title: probePoisonTitle, Description: probeKeepText, Seq: 2},
@@ -1803,7 +1804,7 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	fg.Spec.Retries = 5
 	fetch := rss.FetchResult{Entries: []rss.Entry{{
 		ID: "https://example.com/attempts", Title: "t", Link: "https://example.com/attempts",
-		Description: strings.Repeat("x", maxDiscordMessageLength+500),
+		Description: strings.Repeat("x", discord.MaxContentLength+500),
 	}}}
 	r := &FeedGroupReconciler{}
 	for range 3 {
