@@ -178,22 +178,8 @@ func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *
 	duration := decision.wait()
 
 	feedGroup.Status.ObservedGeneration = feedGroup.Generation
-	prevReady := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
-	prevReason, prevMessage := "", ""
-	if prevReady != nil {
-		prevReason, prevMessage = prevReady.Reason, prevReady.Message
-	}
-	setReadyCondition(feedGroup, webhookErr, invalidIntervalError(&feedGroup.Spec))
-	setFeedReachableCondition(feedGroup)
-
-	// Gate the Event on the condition's reason/message actually changing (as
-	// feedAttempt.record does for a feed's config error), not on every reconcile that still
-	// sees the bad value. ObservedGeneration is deliberately not compared, so
-	// an unrelated spec edit doesn't repeat the Event.
-	if ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); r.Recorder != nil &&
-		ready != nil && ready.Reason == reasonInvalidInterval &&
-		(ready.Reason != prevReason || ready.Message != prevMessage) {
-		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", ready.Message)
+	if warning, emit := summarizeGroup(feedGroup, webhookErr); emit && r.Recorder != nil {
+		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", warning)
 	}
 
 	// Before the no-op short-circuit below so the per-feed gauges are refreshed
@@ -267,6 +253,36 @@ func statusApplyConfiguration(status *v1alpha1.FeedGroupStatus) (*acv1alpha1.Fee
 		return nil, fmt.Errorf("converting FeedGroup status to an apply configuration: %w", err)
 	}
 	return ac, nil
+}
+
+// summarizeGroup sets the group-level Ready and FeedReachable conditions from
+// the group's spec and per-feed status, and decides whether the change warrants
+// a Warning Event. It does no I/O, so requeueWithStatus only has to emit the
+// Event it reports.
+//
+// The Event is gated on Ready's reason/message actually changing (as
+// feedAttempt.record does for a feed's config error), not on every reconcile
+// that still sees the bad value; ObservedGeneration is deliberately not
+// compared, so an unrelated spec edit doesn't repeat it. Only the
+// InvalidInterval reason produces one: warning is that condition's message and
+// emit is true exactly on the transition into it (or a change of its message).
+// webhookErr outranks the interval problem on Ready, so while it is set no
+// Event is emitted here.
+func summarizeGroup(feedGroup *v1alpha1.FeedGroup, webhookErr error) (warning string, emit bool) {
+	prevReason, prevMessage := "", ""
+	if prev := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); prev != nil {
+		prevReason, prevMessage = prev.Reason, prev.Message
+	}
+
+	setReadyCondition(feedGroup, webhookErr, invalidIntervalError(&feedGroup.Spec))
+	setFeedReachableCondition(feedGroup)
+
+	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
+	if ready != nil && ready.Reason == reasonInvalidInterval &&
+		(ready.Reason != prevReason || ready.Message != prevMessage) {
+		return ready.Message, true
+	}
+	return "", false
 }
 
 // setReadyCondition summarizes the outcome of a reconciliation into a single
