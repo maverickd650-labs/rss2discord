@@ -138,7 +138,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "validators-" + tc.name
 			fg, feed := newMetricsFeedGroup(settlementNS, name, "{{.Title}}")
-			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 			fg.Spec.Retries = 2
 			server := NewMockDiscordServer(t)
 			defer server.Close()
@@ -206,7 +206,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fg, feed := newMetricsFeedGroup(settlementNS, "skip-"+tc.name, skipProbeTemplate)
-			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
+			defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
 			fg.Spec.Retries = 2
 			server := NewMockDiscordServer(t)
 			defer server.Close()

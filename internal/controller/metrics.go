@@ -26,7 +26,7 @@ import (
 )
 
 // Metric label names, shared across the vectors below and
-// deleteFeedGroupMetrics so the strings live in exactly one place.
+// groupMetrics.forget so the strings live in exactly one place.
 const (
 	labelNamespace = "namespace"
 	labelName      = "name"
@@ -136,7 +136,7 @@ var feedLastSuccessTimestamp = prometheus.NewGaugeVec(
 // counter is flat for hours and any rate()-based alert resolves while the
 // feed is still dead. Reading the state from Status.Feeds instead keeps
 // reporting 0 for as long as the feed is broken (and across operator
-// restarts). Paused feeds have no series; see recordFeedStateMetrics.
+// restarts). Paused feeds have no series; see groupMetrics.syncFeedState.
 var feedHealthy = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "rss2discord_feed_healthy",
@@ -161,7 +161,7 @@ var feedLastCheckedTimestamp = prometheus.NewGaugeVec(
 // messageOverflowChars records how many characters were trimmed from a
 // rendered Discord message/embed-description/thread-name before it was
 // clamped to fit Discord's length limits (discord.Fit, called from
-// buildDiscordMessage in render.go), observed per send attempt. Only actual overflows are observed -- the vast
+// feedRenderer.build in render.go), observed per send attempt. Only actual overflows are observed -- the vast
 // majority of entries render under the limit -- so histogram_count(rate(...))
 // directly answers "how often does this FeedGroup's content get cut off,"
 // rather than burying that signal in a sea of zero observations.
@@ -199,35 +199,106 @@ var feedGroupReconcileDuration = prometheus.NewHistogramVec(
 	[]string{labelNamespace, labelName},
 )
 
-// deleteFeedGroupMetrics drops every series for a FeedGroup that no longer
-// exists. Without it a deleted FeedGroup's series linger in the registry
-// until the controller restarts -- harmless for the counters, but actively
-// misleading for feedLastSuccessTimestamp, which would otherwise report a
-// frozen "last checked" forever and trip any freshness alert built on it.
-func deleteFeedGroupMetrics(namespace, name string) {
-	labels := prometheus.Labels{labelNamespace: namespace, labelName: name}
-	feedOperationsTotal.DeletePartialMatch(labels)
-	feedRequestDuration.DeletePartialMatch(labels)
-	feedLastSuccessTimestamp.DeletePartialMatch(labels)
-	feedHealthy.DeletePartialMatch(labels)
-	feedLastCheckedTimestamp.DeletePartialMatch(labels)
-	messageOverflowChars.DeletePartialMatch(labels)
-	feedGroupReconcileDuration.DeletePartialMatch(labels)
+// metricScope says which labels identify a series in a vector.
+type metricScope int
+
+const (
+	// scopePerGroup vectors are keyed by namespace/name only.
+	scopePerGroup metricScope = iota
+	// scopePerFeed vectors also carry labelFeedURL, so a single feed's series
+	// can be dropped without touching the rest of its group.
+	scopePerFeed
+)
+
+// metricVec is what every vector here has in common: it can be registered and
+// can drop the series matching a subset of its labels.
+type metricVec interface {
+	prometheus.Collector
+	DeletePartialMatch(labels prometheus.Labels) int
 }
 
-// deleteFeedMetrics drops every series for a single feed within a FeedGroup,
-// for a feed removed from the group's spec. Only the per-feed vectors carry
-// labelFeedURL; the others are per-FeedGroup.
-func deleteFeedMetrics(namespace, name, rssURL string) {
-	labels := prometheus.Labels{
-		labelNamespace: namespace, labelName: name, labelFeedURL: rssURL,
+// allMetrics is the single list of this package's Prometheus vectors. Both
+// registration and cleanup loop over it, so a new vector is added in exactly
+// one place and cannot be registered but forgotten on group/feed removal.
+var allMetrics = []struct {
+	vec   metricVec
+	scope metricScope
+}{
+	{feedOperationsTotal, scopePerFeed},
+	{feedRequestDuration, scopePerGroup},
+	{feedLastSuccessTimestamp, scopePerGroup},
+	{feedHealthy, scopePerFeed},
+	{feedLastCheckedTimestamp, scopePerFeed},
+	{messageOverflowChars, scopePerGroup},
+	{feedGroupReconcileDuration, scopePerGroup},
+}
+
+// groupMetrics is the one handle through which a FeedGroup's metric series are
+// written and removed. Nothing else in the package touches the vectors, which
+// keeps label order and cleanup in one file.
+type groupMetrics struct {
+	namespace, name string
+}
+
+// metricsFor returns the handle for feedGroup.
+func metricsFor(feedGroup *v1alpha1.FeedGroup) groupMetrics {
+	return groupMetrics{namespace: feedGroup.Namespace, name: feedGroup.Name}
+}
+
+// operation counts one fetch/send outcome for a feed. feedAttempt.record is
+// its only caller, so every counted outcome goes through the retry policy.
+func (m groupMetrics) operation(rssURL, outcome string) {
+	feedOperationsTotal.WithLabelValues(m.namespace, m.name, rssURL, outcome).Inc()
+}
+
+// requestDuration records how long one outbound HTTP call took. Only the timed
+// port wrappers call it.
+func (m groupMetrics) requestDuration(operation string, d time.Duration) {
+	feedRequestDuration.WithLabelValues(m.namespace, m.name, operation).Observe(d.Seconds())
+}
+
+// checkSucceeded advances feedLastSuccessTimestamp: a feed in the group was
+// successfully checked, whether or not it had anything new to send.
+func (m groupMetrics) checkSucceeded(at time.Time) {
+	feedLastSuccessTimestamp.WithLabelValues(m.namespace, m.name).Set(float64(at.Unix()))
+}
+
+// overflow records the characters trimmed from one rendered message.
+func (m groupMetrics) overflow(chars int) {
+	messageOverflowChars.WithLabelValues(m.namespace, m.name).Observe(float64(chars))
+}
+
+// reconcileDuration records the wall-clock time of one full Reconcile.
+func (m groupMetrics) reconcileDuration(d time.Duration) {
+	feedGroupReconcileDuration.WithLabelValues(m.namespace, m.name).Observe(d.Seconds())
+}
+
+// forget drops every series for a FeedGroup that no longer exists. Without it
+// a deleted FeedGroup's series linger in the registry until the controller
+// restarts -- harmless for the counters, but actively misleading for
+// feedLastSuccessTimestamp, which would otherwise report a frozen "last
+// checked" forever and trip any freshness alert built on it.
+func (m groupMetrics) forget() {
+	labels := prometheus.Labels{labelNamespace: m.namespace, labelName: m.name}
+	for _, e := range allMetrics {
+		e.vec.DeletePartialMatch(labels)
 	}
-	feedOperationsTotal.DeletePartialMatch(labels)
-	feedHealthy.DeletePartialMatch(labels)
-	feedLastCheckedTimestamp.DeletePartialMatch(labels)
 }
 
-// recordFeedStateMetrics sets feedHealthy and feedLastCheckedTimestamp for
+// forgetFeed drops every series for a single feed within the group, for a feed
+// removed from the group's spec. Only the per-feed vectors carry labelFeedURL.
+func (m groupMetrics) forgetFeed(rssURL string) {
+	labels := prometheus.Labels{
+		labelNamespace: m.namespace, labelName: m.name, labelFeedURL: rssURL,
+	}
+	for _, e := range allMetrics {
+		if e.scope == scopePerFeed {
+			e.vec.DeletePartialMatch(labels)
+		}
+	}
+}
+
+// syncFeedState sets feedHealthy and feedLastCheckedTimestamp for
 // every feed from the FeedGroup's persisted Status.Feeds. It runs on every
 // reconcile (from requeueWithStatus), including ones that skip a feed as
 // not-due or in backoff, which is the point: the values describe what status
@@ -238,7 +309,7 @@ func deleteFeedMetrics(namespace, name, rssURL string) {
 // series are dropped (a feed paused while broken would otherwise alert
 // forever), and an empty or unparsable LastChecked yields no timestamp series
 // so a feed that simply hasn't been checked yet can't look 50 years stale.
-func recordFeedStateMetrics(feedGroup *v1alpha1.FeedGroup) {
+func (m groupMetrics) syncFeedState(feedGroup *v1alpha1.FeedGroup) {
 	paused := make(map[string]bool, len(feedGroup.Spec.Feeds))
 	for _, feed := range feedGroup.Spec.Feeds {
 		paused[feed.RSSUrl] = paused[feed.RSSUrl] || feed.Paused
@@ -248,7 +319,7 @@ func recordFeedStateMetrics(feedGroup *v1alpha1.FeedGroup) {
 		if fs.RSSUrl == "" {
 			continue
 		}
-		ns, name := feedGroup.Namespace, feedGroup.Name
+		ns, name := m.namespace, m.name
 		if paused[fs.RSSUrl] {
 			feedHealthy.DeleteLabelValues(ns, name, fs.RSSUrl)
 			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, fs.RSSUrl)
@@ -270,13 +341,7 @@ func recordFeedStateMetrics(feedGroup *v1alpha1.FeedGroup) {
 }
 
 func init() {
-	metrics.Registry.MustRegister(
-		feedOperationsTotal,
-		feedRequestDuration,
-		feedLastSuccessTimestamp,
-		feedHealthy,
-		feedLastCheckedTimestamp,
-		messageOverflowChars,
-		feedGroupReconcileDuration,
-	)
+	for _, e := range allMetrics {
+		metrics.Registry.MustRegister(e.vec)
+	}
 }

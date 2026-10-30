@@ -9,6 +9,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -703,17 +704,25 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 	})
 }
 
-// TestBuildDiscordMessage_EmbedTimestamp asserts an entry without a publish
+// mustBuild renders entry through newFeedRenderer(group, feed).build, the same
+// path processFeed uses, failing the test on a configuration error. The render
+// error (if any) is returned for tests that assert on it.
+func mustBuild(t *testing.T, group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec, entry rss.Entry) (discord.Message, error) {
+	t.Helper()
+	fr, err := newFeedRenderer(group, feed)
+	if err != nil {
+		t.Fatalf("newFeedRenderer: %v", err)
+	}
+	msg, _, err := fr.build(entry)
+	return msg, err
+}
+
+// TestFeedRendererBuild_EmbedTimestamp asserts an entry without a publish
 // date leaves the embed timestamp empty (discord.Embed omits it from the
 // payload) instead of sending year 0001, and that real dates are unchanged.
-func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
+func TestFeedRendererBuild_EmbedTimestamp(t *testing.T) {
 	feedGroup := &v1alpha1.FeedGroup{}
-	feed := &v1alpha1.FeedSpec{}
-	embedSpec := &v1alpha1.EmbedSpec{Enabled: true}
-	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	feed := &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: defaultDescriptionFormat}}
 
 	cases := []struct {
 		name      string
@@ -725,7 +734,7 @@ func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg, _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{Title: "T", Published: tc.published})
+			msg, err := mustBuild(t, feedGroup, feed, rss.Entry{Title: "T", Published: tc.published})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -739,14 +748,10 @@ func TestBuildDiscordMessage_EmbedTimestamp(t *testing.T) {
 	}
 }
 
-// TestBuildDiscordMessage_EmbedImageStyle asserts the entry image goes to the
+// TestFeedRendererBuild_EmbedImageStyle asserts the entry image goes to the
 // small thumbnail by default and to the large image slot for imageStyle
 // "image", and that non-http(s) image URLs are dropped either way.
-func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
-	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+func TestFeedRendererBuild_EmbedImageStyle(t *testing.T) {
 	cases := []struct {
 		name, style, image   string
 		wantThumb, wantLarge string
@@ -758,8 +763,8 @@ func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			spec := &v1alpha1.EmbedSpec{Enabled: true, ImageStyle: tc.style}
-			msg, _, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, spec, nil, descriptionTmpl, nil, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T", Image: tc.image})
+			feed := &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, ImageStyle: tc.style, DescriptionFormat: defaultDescriptionFormat}}
+			msg, err := mustBuild(t, &v1alpha1.FeedGroup{}, feed, rss.Entry{Title: "T", Image: tc.image})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -771,7 +776,7 @@ func TestBuildDiscordMessage_EmbedImageStyle(t *testing.T) {
 }
 
 func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
-	tmpl, err := compileTemplate("test", "{{.Title}}", "")
+	tmpl, err := compileTemplate("test", tmplTitle, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -786,18 +791,10 @@ func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	}
 }
 
-func TestBuildDiscordMessage_EmbedTitleStripsHTML(t *testing.T) {
-	feedGroup := &v1alpha1.FeedGroup{}
-	feed := &v1alpha1.FeedSpec{}
-	embedSpec := &v1alpha1.EmbedSpec{Enabled: true}
+func TestFeedRendererBuild_EmbedTitleStripsHTML(t *testing.T) {
+	feed := &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: defaultDescriptionFormat}}
 
-	descriptionTmpl, err := compileTemplate("description", "", "{{.Description}}")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	entry := rss.Entry{Title: "<b>Breaking</b> News"}
-	msg, _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, entry)
+	msg, err := mustBuild(t, &v1alpha1.FeedGroup{}, feed, rss.Entry{Title: "<b>Breaking</b> News"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -809,79 +806,56 @@ func TestBuildDiscordMessage_EmbedTitleStripsHTML(t *testing.T) {
 	}
 }
 
-// TestBuildDiscordMessage_EmbedDescriptionRenderError asserts a description
+// TestFeedRendererBuild_EmbedDescriptionRenderError asserts a description
 // template that parses but fails at execution (referencing a field absent
 // from renderTemplate's render data) surfaces as an error instead of a
 // blank/partial embed.
-func TestBuildDiscordMessage_EmbedDescriptionRenderError(t *testing.T) {
-	feedGroup := &v1alpha1.FeedGroup{}
-	feed := &v1alpha1.FeedSpec{}
-	embedSpec := &v1alpha1.EmbedSpec{Enabled: true}
+func TestFeedRendererBuild_EmbedDescriptionRenderError(t *testing.T) {
+	feed := &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: tmplMissingField}}
 
-	descriptionTmpl, err := compileTemplate("description", "", "{{.DoesNotExist}}")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, _, err := buildDiscordMessage(feedGroup, embedSpec, nil, descriptionTmpl, nil, feed, rss.Entry{}); err == nil {
+	if _, err := mustBuild(t, &v1alpha1.FeedGroup{}, feed, rss.Entry{}); err == nil {
 		t.Fatal("expected an error from a description template that fails at execution")
 	}
 }
 
-// TestBuildDiscordMessage_ForumThreadNameRenderError asserts a forum thread
+// TestFeedRendererBuild_ForumThreadNameRenderError asserts a forum thread
 // name template that parses but fails at execution surfaces as an error,
 // distinct from the content/description render-error paths.
-func TestBuildDiscordMessage_ForumThreadNameRenderError(t *testing.T) {
-	feedGroup := &v1alpha1.FeedGroup{}
-	feed := &v1alpha1.FeedSpec{ForumThreadName: "{{.DoesNotExist}}"}
+func TestFeedRendererBuild_ForumThreadNameRenderError(t *testing.T) {
+	feed := &v1alpha1.FeedSpec{Format: tmplTitle, ForumThreadName: tmplMissingField}
 
-	contentTmpl, err := compileTemplate("content", "{{.Title}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	threadNameTmpl, err := compileTemplate("threadName", "{{.DoesNotExist}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, _, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{}); err == nil {
+	if _, err := mustBuild(t, &v1alpha1.FeedGroup{}, feed, rss.Entry{}); err == nil {
 		t.Fatal("expected an error from a forum thread name template that fails at execution")
 	}
 }
 
-// TestBuildDiscordMessage_EmptyRenderIsError asserts a template that renders
+// TestFeedRendererBuild_EmptyRenderIsError asserts a template that renders
 // to blank content or a blank forum thread name (here: only {{.Published}},
 // for an entry with no date) is reported as a render error, so the
 // render-error path can skip the entry, rather than producing a message
 // Discord would reject on every retry.
-func TestBuildDiscordMessage_EmptyRenderIsError(t *testing.T) {
+func TestFeedRendererBuild_EmptyRenderIsError(t *testing.T) {
 	feedGroup := &v1alpha1.FeedGroup{}
-	publishedOnly, err := compileTemplate("content", " {{.Published}} ", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	title, err := compileTemplate("content", "{{.Title}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	entry := rss.Entry{Title: "T"}
 
 	t.Run("blank content", func(t *testing.T) {
-		if _, _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, entry); err == nil {
+		feed := &v1alpha1.FeedSpec{Format: " {{.Published}} "}
+		if _, err := mustBuild(t, feedGroup, feed, entry); err == nil {
 			t.Fatal("expected an error for content that renders blank")
 		}
 	})
 
 	t.Run("blank forum thread name", func(t *testing.T) {
-		feed := &v1alpha1.FeedSpec{ForumThreadName: "{{.Published}}"}
-		if _, _, err := buildDiscordMessage(feedGroup, nil, title, nil, publishedOnly, feed, entry); err == nil {
+		feed := &v1alpha1.FeedSpec{Format: tmplTitle, ForumThreadName: "{{.Published}}"}
+		if _, err := mustBuild(t, feedGroup, feed, entry); err == nil {
 			t.Fatal("expected an error for a forum thread name that renders blank")
 		}
 	})
 
 	t.Run("dated entry still renders", func(t *testing.T) {
 		dated := rss.Entry{Title: "T", Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
-		msg, _, err := buildDiscordMessage(feedGroup, nil, publishedOnly, nil, nil, &v1alpha1.FeedSpec{}, dated)
+		feed := &v1alpha1.FeedSpec{Format: " {{.Published}} "}
+		msg, err := mustBuild(t, feedGroup, feed, dated)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -891,24 +865,14 @@ func TestBuildDiscordMessage_EmptyRenderIsError(t *testing.T) {
 	})
 }
 
-// TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName asserts
+// TestFeedRendererBuild_ForumThreadIDTakesPrecedenceOverThreadName asserts
 // an explicit ForumThreadID (posting into an existing thread) wins over a
 // configured ForumThreadName template (which creates a new thread), even
 // when both are set.
-func TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName(t *testing.T) {
-	feedGroup := &v1alpha1.FeedGroup{}
-	feed := &v1alpha1.FeedSpec{ForumThreadID: "123456", ForumThreadName: "{{.Title}}"}
+func TestFeedRendererBuild_ForumThreadIDTakesPrecedenceOverThreadName(t *testing.T) {
+	feed := &v1alpha1.FeedSpec{Format: tmplTitle, ForumThreadID: "123456", ForumThreadName: tmplTitle}
 
-	contentTmpl, err := compileTemplate("content", "{{.Title}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	threadNameTmpl, err := compileTemplate("threadName", "{{.Title}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	msg, _, err := buildDiscordMessage(feedGroup, nil, contentTmpl, nil, threadNameTmpl, feed, rss.Entry{Title: "Hello"})
+	msg, err := mustBuild(t, &v1alpha1.FeedGroup{}, feed, rss.Entry{Title: "Hello"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -918,6 +882,47 @@ func TestBuildDiscordMessage_ForumThreadIDTakesPrecedenceOverThreadName(t *testi
 	if msg.ThreadName != "" {
 		t.Fatalf("expected ThreadName to stay empty when ForumThreadID is set, got %q", msg.ThreadName)
 	}
+}
+
+// TestFeedRendererBuild_EmbedResolution asserts a feed-level Embed replaces
+// the group-level one wholesale, and that a feed with none inherits the group's.
+func TestFeedRendererBuild_EmbedResolution(t *testing.T) {
+	group := &v1alpha1.FeedGroup{Spec: v1alpha1.FeedGroupSpec{
+		Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: "group:{{.Title}}", FooterText: "group-footer"},
+	}}
+	entry := rss.Entry{Title: "T"}
+
+	t.Run("feed embed overrides group embed", func(t *testing.T) {
+		feed := &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: "feed:{{.Title}}"}}
+		msg, err := mustBuild(t, group, feed, entry)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.Embed == nil || msg.Embed.Description != "feed:T" || msg.Embed.FooterText != "" {
+			t.Fatalf("embed = %+v, want the feed's embed only", msg.Embed)
+		}
+	})
+
+	t.Run("feed embed can disable group embed", func(t *testing.T) {
+		feed := &v1alpha1.FeedSpec{Format: "plain {{.Title}}", Embed: &v1alpha1.EmbedSpec{Enabled: false}}
+		msg, err := mustBuild(t, group, feed, entry)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.Embed != nil || msg.Content != "plain T" {
+			t.Fatalf("msg = %+v, want plain content without embed", msg)
+		}
+	})
+
+	t.Run("group embed inherited when feed has none", func(t *testing.T) {
+		msg, err := mustBuild(t, group, &v1alpha1.FeedSpec{}, entry)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.Embed == nil || msg.Embed.Description != "group:T" || msg.Embed.FooterText != "group-footer" {
+			t.Fatalf("embed = %+v, want the group's embed", msg.Embed)
+		}
+	})
 }
 
 // URL-looking IDs that don't parse, or parse to a non-http(s) scheme, are
@@ -932,17 +937,16 @@ func TestNormalizeIdentity_UnparsableOrNonHTTPURLUnchanged(t *testing.T) {
 
 // A forum thread-name template that fails at execution is a render error,
 // like a failing content template, so the entry goes through retry/skip.
-func TestBuildDiscordMessage_ThreadNameRenderError(t *testing.T) {
-	threadNameTmpl, err := compileTemplate("thread", "{{.DoesNotExist}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	contentTmpl, err := compileTemplate("content", "{{.Title}}", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	_, _, err = buildDiscordMessage(&v1alpha1.FeedGroup{}, nil, contentTmpl, nil, threadNameTmpl, &v1alpha1.FeedSpec{}, rss.Entry{Title: "T"})
-	if err == nil {
+func TestFeedRendererBuild_ThreadNameRenderError(t *testing.T) {
+	feed := &v1alpha1.FeedSpec{Format: tmplTitle, ForumThreadName: tmplMissingField}
+	if _, err := mustBuild(t, &v1alpha1.FeedGroup{}, feed, rss.Entry{Title: "T"}); err == nil {
 		t.Fatal("expected a render error from the thread name template")
 	}
 }
+
+// Template sources shared across tests.
+const (
+	tmplTitle        = "{{.Title}}"
+	tmplMissingField = "{{.DoesNotExist}}"
+	tmplSafeText     = "safe"
+)

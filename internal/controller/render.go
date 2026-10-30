@@ -415,7 +415,7 @@ func (d templateData) Content() string {
 }
 
 // renderTemplate executes tmpl against entry and returns the raw output. It
-// is not clamped to Discord's limits (buildDiscordMessage does that once, via
+// is not clamped to Discord's limits (feedRenderer.build does that once, via
 // discord.Fit); its size is already bounded by limitedBuffer
 // (maxTemplateOutputBytes). Execution errors, including helper errors, are
 // returned with empty text.
@@ -438,83 +438,6 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
-}
-
-// buildDiscordMessage renders entry into the message that should actually
-// be sent: an embed (colored bubble with title/description and an optional image) when
-// embedSpec is enabled, or plain text content otherwise. It also resolves
-// forum-channel thread targeting (ForumThreadID takes precedence over a
-// rendered ForumThreadName) and group-level webhook branding.
-// ImageStyle selects a large image or, by default, a thumbnail. Template execution
-// errors and blank plain-text content or rendered thread names return an empty
-// message and an error. The message is fitted to Discord's length limits by a
-// single discord.Fit call at the end; the second return value is how many
-// runes that trimmed (0 when nothing was); it is data only. The caller
-// that actually sends the message records it in messageOverflowChars, so
-// diagnostic renders (see otherEntryRenders) don't add samples.
-func buildDiscordMessage(
-	feedGroup *v1alpha1.FeedGroup,
-	embedSpec *v1alpha1.EmbedSpec,
-	contentTmpl, descriptionTmpl, threadNameTmpl *template.Template,
-	feed *v1alpha1.FeedSpec,
-	entry rss.Entry,
-) (discord.Message, int, error) {
-	msg := discord.Message{
-		Username:  feedGroup.Spec.Username,
-		AvatarURL: feedGroup.Spec.AvatarURL,
-	}
-
-	if embedSpec != nil && embedSpec.Enabled {
-		description, err := renderTemplate(descriptionTmpl, entry)
-		if err != nil {
-			return discord.Message{}, 0, err
-		}
-		msg.Embed = &discord.Embed{
-			Title:       stripHTML(entry.Title),
-			Description: description,
-			URL:         httpURLOrEmpty(entry.Link),
-			Color:       parseHexColor(embedSpec.Color),
-			Timestamp:   formatPublished(entry.Published),
-			AuthorName:  embedSpec.AuthorName,
-			FooterText:  embedSpec.FooterText,
-		}
-		if image := httpURLOrEmpty(entry.Image); embedSpec.ImageStyle == v1alpha1.EmbedImageStyleImage {
-			msg.Embed.ImageURL = image
-		} else {
-			msg.Embed.ThumbnailURL = image
-		}
-	} else {
-		content, err := renderTemplate(contentTmpl, entry)
-		if err != nil {
-			return discord.Message{}, 0, err
-		}
-		// Discord rejects a blank message, and a send failure holds the feed
-		// on this entry indefinitely. Failing here routes it through the
-		// render-error path instead, which skips the entry once retries are
-		// exhausted (e.g. "{{.Published}}" for an entry with no date).
-		if strings.TrimSpace(content) == "" {
-			return discord.Message{}, 0, errors.New("message template rendered empty content for this entry")
-		}
-		msg.Content = content
-	}
-
-	if strings.TrimSpace(feed.ForumThreadID) != "" {
-		msg.ThreadID = feed.ForumThreadID
-	} else if threadNameTmpl != nil {
-		threadName, err := renderTemplate(threadNameTmpl, entry)
-		if err != nil {
-			return discord.Message{}, 0, err
-		}
-		// Without a thread_name a forum webhook rejects the post; fail as a
-		// render error for the same reason as blank content above.
-		if strings.TrimSpace(threadName) == "" {
-			return discord.Message{}, 0, errors.New("forum thread name template rendered empty for this entry")
-		}
-		msg.ThreadName = threadName
-	}
-
-	fitted, overflow := discord.Fit(msg)
-	return fitted, overflow, nil
 }
 
 // feedRenderer turns one feed's entries into Discord messages. It owns the
@@ -565,10 +488,75 @@ func (fr *feedRenderer) matches(entry rss.Entry) bool {
 	return matchesFilter(fr.feed.Filter, entry, fr.filter)
 }
 
-// build renders entry into the message to send and the number of runes
-// trimmed from it; see buildDiscordMessage.
+// build renders entry into the message that should actually
+// be sent: an embed (colored bubble with title/description and an optional image) when
+// the resolved embed is enabled, or plain text content otherwise. It also resolves
+// forum-channel thread targeting (ForumThreadID takes precedence over a
+// rendered ForumThreadName) and group-level webhook branding.
+// ImageStyle selects a large image or, by default, a thumbnail. Template execution
+// errors and blank plain-text content or rendered thread names return an empty
+// message and an error. The message is fitted to Discord's length limits by a
+// single discord.Fit call at the end; the second return value is how many
+// runes that trimmed (0 when nothing was); it is data only. The caller
+// that actually sends the message records it in messageOverflowChars, so
+// diagnostic renders (see otherEntryRenders) don't add samples.
 func (fr *feedRenderer) build(entry rss.Entry) (discord.Message, int, error) {
-	return buildDiscordMessage(fr.group, fr.embed, fr.content, fr.description, fr.threadName, fr.feed, entry)
+	msg := discord.Message{
+		Username:  fr.group.Spec.Username,
+		AvatarURL: fr.group.Spec.AvatarURL,
+	}
+
+	if fr.embed != nil && fr.embed.Enabled {
+		description, err := renderTemplate(fr.description, entry)
+		if err != nil {
+			return discord.Message{}, 0, err
+		}
+		msg.Embed = &discord.Embed{
+			Title:       stripHTML(entry.Title),
+			Description: description,
+			URL:         httpURLOrEmpty(entry.Link),
+			Color:       parseHexColor(fr.embed.Color),
+			Timestamp:   formatPublished(entry.Published),
+			AuthorName:  fr.embed.AuthorName,
+			FooterText:  fr.embed.FooterText,
+		}
+		if image := httpURLOrEmpty(entry.Image); fr.embed.ImageStyle == v1alpha1.EmbedImageStyleImage {
+			msg.Embed.ImageURL = image
+		} else {
+			msg.Embed.ThumbnailURL = image
+		}
+	} else {
+		content, err := renderTemplate(fr.content, entry)
+		if err != nil {
+			return discord.Message{}, 0, err
+		}
+		// Discord rejects a blank message, and a send failure holds the feed
+		// on this entry indefinitely. Failing here routes it through the
+		// render-error path instead, which skips the entry once retries are
+		// exhausted (e.g. "{{.Published}}" for an entry with no date).
+		if strings.TrimSpace(content) == "" {
+			return discord.Message{}, 0, errors.New("message template rendered empty content for this entry")
+		}
+		msg.Content = content
+	}
+
+	if strings.TrimSpace(fr.feed.ForumThreadID) != "" {
+		msg.ThreadID = fr.feed.ForumThreadID
+	} else if fr.threadName != nil {
+		threadName, err := renderTemplate(fr.threadName, entry)
+		if err != nil {
+			return discord.Message{}, 0, err
+		}
+		// Without a thread_name a forum webhook rejects the post; fail as a
+		// render error for the same reason as blank content above.
+		if strings.TrimSpace(threadName) == "" {
+			return discord.Message{}, 0, errors.New("forum thread name template rendered empty for this entry")
+		}
+		msg.ThreadName = threadName
+	}
+
+	fitted, overflow := discord.Fit(msg)
+	return fitted, overflow, nil
 }
 
 // otherEntryRenders reports whether any entry other than skip renders

@@ -115,14 +115,14 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 			name:     "render_error",
 			outcome:  outcomeRenderError,
 			withFeed: true,
-			format:   "{{.DoesNotExist}}",
+			format:   tmplMissingField,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "metrics-"+tc.name, "fg-"+tc.name
-			defer deleteFeedGroupMetrics(ns, name)
+			defer groupMetrics{namespace: ns, name: name}.forget()
 
 			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
@@ -152,7 +152,7 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-sent-extra", "fg-sent-extra"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -191,7 +191,7 @@ func TestProcessFeed_QuietFetchAdvancesFreshness(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "metrics-quiet-"+tc.name, "fg-quiet-"+tc.name
-			defer deleteFeedGroupMetrics(ns, name)
+			defer groupMetrics{namespace: ns, name: name}.forget()
 
 			fg, feed := newMetricsFeedGroup(ns, name, "")
 			(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, tc.fetchResult, nil, nil, "2026-01-01T00:00:00Z")
@@ -240,7 +240,7 @@ func messageOverflowSampleSum(t *testing.T, namespace, name string) float64 {
 func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-overflow", "fg-overflow"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -269,7 +269,7 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-no-overflow", "fg-no-overflow"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -293,7 +293,7 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-embed-total-overflow", "fg-embed-total-overflow"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -356,7 +356,7 @@ func assertSeriesNativeOnly(t *testing.T, vec *prometheus.HistogramVec, labelVal
 // native histogram schema is populated.
 func TestFeedRequestDuration_NativeOnlyHistogram(t *testing.T) {
 	ns, name := "metrics-native-only", "fg-native-only"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	feedRequestDuration.WithLabelValues(ns, name, operationFetch).Observe(0.2)
 
@@ -367,7 +367,7 @@ func TestFeedRequestDuration_NativeOnlyHistogram(t *testing.T) {
 // TestFeedRequestDuration_NativeOnlyHistogram for feedGroupReconcileDuration.
 func TestFeedGroupReconcileDuration_NativeOnlyHistogram(t *testing.T) {
 	ns, name := "metrics-reconcile-native-only", "fg-reconcile-native-only"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	feedGroupReconcileDuration.WithLabelValues(ns, name).Observe(0.2)
 
@@ -378,66 +378,150 @@ func TestFeedGroupReconcileDuration_NativeOnlyHistogram(t *testing.T) {
 // TestFeedRequestDuration_NativeOnlyHistogram for messageOverflowChars.
 func TestMessageOverflowChars_NativeOnlyHistogram(t *testing.T) {
 	ns, name := "metrics-overflow-native-only", "fg-overflow-native-only"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	messageOverflowChars.WithLabelValues(ns, name).Observe(42)
 
 	assertSeriesNativeOnly(t, messageOverflowChars, ns, name)
 }
 
-// TestDeleteFeedGroupMetrics confirms a deleted FeedGroup's series are
-// dropped, so a removed group can't leave a stale freshness reading behind.
-func TestDeleteFeedGroupMetrics(t *testing.T) {
-	ns, name := "metrics-delete", "fg-delete"
-
-	feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent).Inc()
-	feedRequestDuration.WithLabelValues(ns, name, operationSend).Observe(0.1)
-	feedLastSuccessTimestamp.WithLabelValues(ns, name).Set(123)
-	feedHealthy.WithLabelValues(ns, name, exampleFeedURL).Set(1)
-	feedLastCheckedTimestamp.WithLabelValues(ns, name, exampleFeedURL).Set(123)
-	messageOverflowChars.WithLabelValues(ns, name).Observe(42)
-	feedGroupReconcileDuration.WithLabelValues(ns, name).Observe(0.5)
-
-	deleteFeedGroupMetrics(ns, name)
-
-	// After deletion, re-fetching a series via WithLabelValues recreates it at
-	// zero; a non-zero read would mean the original series was never removed.
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent)); got != 0 {
-		t.Fatalf("feedOperationsTotal after delete = %v, want 0", got)
+// touchSeries creates one series in vec for labels, whatever kind of vector it
+// is, so the forget test can cover every entry of allMetrics without naming
+// them.
+func touchSeries(t *testing.T, vec metricVec, labels prometheus.Labels) {
+	t.Helper()
+	switch v := vec.(type) {
+	case *prometheus.CounterVec:
+		v.With(labels).Inc()
+	case *prometheus.GaugeVec:
+		v.With(labels).Set(1)
+	case *prometheus.HistogramVec:
+		v.With(labels).Observe(1)
+	default:
+		t.Fatalf("touchSeries: unsupported vector type %T", vec)
 	}
-	if got := testutil.ToFloat64(feedLastSuccessTimestamp.WithLabelValues(ns, name)); got != 0 {
-		t.Fatalf("feedLastSuccessTimestamp after delete = %v, want 0", got)
-	}
-	// The per-feed gauges are checked by presence rather than value, since a
-	// recreated gauge reads 0 and 0 is a meaningful feedHealthy value.
-	if _, ok := feedGaugeValue(feedHealthy, ns, name, exampleFeedURL); ok {
-		t.Fatal("feedHealthy series still present after delete")
-	}
-	if _, ok := feedGaugeValue(feedLastCheckedTimestamp, ns, name, exampleFeedURL); ok {
-		t.Fatal("feedLastCheckedTimestamp series still present after delete")
-	}
-	if got := histogramSampleCount(t, ns, name, operationSend); got != 0 {
-		t.Fatalf("send duration sample count after delete = %d, want 0", got)
-	}
-	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
-		t.Fatalf("message overflow sample count after delete = %d, want 0", got)
-	}
-	if got := reconcileDurationSampleCount(t, ns, name); got != 0 {
-		t.Fatalf("reconcile duration sample count after delete = %d, want 0", got)
-	}
-	deleteFeedGroupMetrics(ns, name)
 }
 
-// TestEnsureFeedStatuses_DropsRemovedFeedMetrics confirms that removing a
-// feed from a FeedGroup's spec drops that feed's rss_url series, while the
-// series of feeds still in the spec are kept.
-func TestEnsureFeedStatuses_DropsRemovedFeedMetrics(t *testing.T) {
+// countSeries counts the series of vec whose labels include all of want,
+// without creating any (WithLabelValues would).
+func countSeries(vec prometheus.Collector, want map[string]string) int {
+	ch := make(chan prometheus.Metric, 64)
+	go func() {
+		vec.Collect(ch)
+		close(ch)
+	}()
+	count := 0
+	for metric := range ch {
+		var m dto.Metric
+		if err := metric.Write(&m); err != nil {
+			continue
+		}
+		got := map[string]string{}
+		for _, lp := range m.GetLabel() {
+			got[lp.GetName()] = lp.GetValue()
+		}
+		matches := true
+		for k, v := range want {
+			if got[k] != v {
+				matches = false
+			}
+		}
+		if matches {
+			count++
+		}
+	}
+	return count
+}
+
+// TestGroupMetrics_ForgetDropsEverySeries walks allMetrics, so a vector added
+// to the table is covered automatically: forget drops every vector's series for
+// the group, and forgetFeed drops exactly the per-feed vectors' series for one
+// feed while leaving the group's other series and the sibling feed's alone.
+func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
+	const otherURL = "https://other.example.com/feed.xml"
+	populate := func(t *testing.T, ns, name string) {
+		t.Helper()
+		for _, e := range allMetrics {
+			for _, url := range []string{exampleFeedURL, otherURL} {
+				labels := prometheus.Labels{labelNamespace: ns, labelName: name}
+				switch e.vec {
+				case feedOperationsTotal:
+					labels[labelFeedURL], labels[labelOutcome] = url, outcomeSent
+				case feedRequestDuration:
+					labels[labelOperation] = operationSend
+				default:
+					if e.scope == scopePerFeed {
+						labels[labelFeedURL] = url
+					}
+				}
+				touchSeries(t, e.vec, labels)
+			}
+		}
+	}
+	group := func(ns, name string) map[string]string {
+		return map[string]string{labelNamespace: ns, labelName: name}
+	}
+	feed := func(ns, name, url string) map[string]string {
+		return map[string]string{labelNamespace: ns, labelName: name, labelFeedURL: url}
+	}
+
+	t.Run("forget", func(t *testing.T) {
+		ns, name := "metrics-forget", "fg-forget"
+		defer groupMetrics{namespace: ns, name: name}.forget()
+		populate(t, ns, name)
+		for i, e := range allMetrics {
+			if countSeries(e.vec, group(ns, name)) == 0 {
+				t.Fatalf("allMetrics[%d] (%T): no series was created", i, e.vec)
+			}
+		}
+
+		groupMetrics{namespace: ns, name: name}.forget()
+
+		for i, e := range allMetrics {
+			if got := countSeries(e.vec, group(ns, name)); got != 0 {
+				t.Errorf("allMetrics[%d] (%T): %d series survive forget", i, e.vec, got)
+			}
+		}
+	})
+
+	t.Run("forgetFeed", func(t *testing.T) {
+		ns, name := "metrics-forget-feed", "fg-forget-feed"
+		defer groupMetrics{namespace: ns, name: name}.forget()
+		populate(t, ns, name)
+
+		groupMetrics{namespace: ns, name: name}.forgetFeed(exampleFeedURL)
+
+		for i, e := range allMetrics {
+			switch e.scope {
+			case scopePerFeed:
+				if got := countSeries(e.vec, feed(ns, name, exampleFeedURL)); got != 0 {
+					t.Errorf("allMetrics[%d] (%T): %d series for the forgotten feed survive", i, e.vec, got)
+				}
+				if countSeries(e.vec, feed(ns, name, otherURL)) == 0 {
+					t.Errorf("allMetrics[%d] (%T): the sibling feed's series were dropped", i, e.vec)
+				}
+			case scopePerGroup:
+				if countSeries(e.vec, group(ns, name)) == 0 {
+					t.Errorf("allMetrics[%d] (%T): per-group series were dropped by forgetFeed", i, e.vec)
+				}
+			}
+		}
+	})
+}
+
+// TestEnsureFeedStatuses_ReportsPrunedFeeds confirms that removing a feed from
+// a FeedGroup's spec is reported to the caller (which drops that feed's
+// rss_url series via forgetFeed), that ensureFeedStatuses itself leaves
+// Prometheus alone, and that forgetting the reported feed keeps the series of
+// feeds still in the spec.
+func TestEnsureFeedStatuses_ReportsPrunedFeeds(t *testing.T) {
 	ns, name := "metrics-prune", "fg-prune"
 	const removedURL = "https://removed.example.com/feed.xml"
-	defer deleteFeedGroupMetrics(ns, name)
+	handle := groupMetrics{namespace: ns, name: name}
+	defer handle.forget()
 
-	feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent).Inc()
-	feedOperationsTotal.WithLabelValues(ns, name, removedURL, outcomeSent).Inc()
+	handle.operation(exampleFeedURL, outcomeSent)
+	handle.operation(removedURL, outcomeSent)
 	for _, url := range []string{exampleFeedURL, removedURL} {
 		feedHealthy.WithLabelValues(ns, name, url).Set(0)
 		feedLastCheckedTimestamp.WithLabelValues(ns, name, url).Set(123)
@@ -451,7 +535,18 @@ func TestEnsureFeedStatuses_DropsRemovedFeedMetrics(t *testing.T) {
 			{RSSUrl: removedURL},
 		}},
 	}
-	ensureFeedStatuses(feedGroup)
+	pruned := ensureFeedStatuses(feedGroup)
+
+	if len(pruned) != 1 || pruned[0] != removedURL {
+		t.Fatalf("ensureFeedStatuses pruned = %v, want [%s]", pruned, removedURL)
+	}
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, removedURL); !ok {
+		t.Fatal("ensureFeedStatuses must not touch Prometheus, but dropped the pruned feed's series")
+	}
+
+	for _, url := range pruned {
+		handle.forgetFeed(url)
+	}
 
 	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, removedURL, outcomeSent)); got != 0 {
 		t.Fatalf("removed feed's series = %v, want 0 (dropped)", got)
@@ -514,7 +609,7 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 		checkedStamp = "2026-03-04T05:06:07Z"
 	)
 	ns, name := "metrics-feedstate", "fg-feedstate"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg := &v1alpha1.FeedGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
@@ -537,7 +632,7 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 	feedLastCheckedTimestamp.WithLabelValues(ns, name, pausedURL).Set(1)
 	feedLastCheckedTimestamp.WithLabelValues(ns, name, badStampURL).Set(1)
 
-	recordFeedStateMetrics(fg)
+	metricsFor(fg).syncFeedState(fg)
 
 	wantStamp := float64(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC).Unix())
 	cases := []struct {
@@ -569,7 +664,7 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 
 	// A feed that recovers flips back to 1 on the next pass.
 	fg.Status.Feeds[1].LastError = ""
-	recordFeedStateMetrics(fg)
+	metricsFor(fg).syncFeedState(fg)
 	if got, _ := feedGaugeValue(feedHealthy, ns, name, backoffURL); got != 1 {
 		t.Errorf("feedHealthy after recovery = %v, want 1", got)
 	}
@@ -581,7 +676,7 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 // they're populated after an operator restart without waiting for a change.
 func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	ns, name := "metrics-noop", "fg-noop"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, _ := newMetricsFeedGroup(ns, name, "")
 	fg.Status.Feeds[0].LastError = "http 410"
@@ -606,19 +701,8 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	}
 }
 
-// reconcileDurationSampleCount reads the observation count of a single
-// feedGroupReconcileDuration series.
-func reconcileDurationSampleCount(t *testing.T, namespace, name string) uint64 {
-	t.Helper()
-	count, err := reconcileDurationSampleCountErr(namespace, name)
-	if err != nil {
-		t.Fatalf(getHistogramMetricFmt, err)
-	}
-	return count
-}
-
-// reconcileDurationSampleCountErr is the error-returning core of
-// reconcileDurationSampleCount, usable from contexts (like Ginkgo specs)
+// reconcileDurationSampleCountErr reads the observation count of a single
+// feedGroupReconcileDuration series, usable from contexts (like Ginkgo specs)
 // that don't have a *testing.T to call Fatalf on.
 func reconcileDurationSampleCountErr(namespace, name string) (uint64, error) {
 	obs, err := feedGroupReconcileDuration.GetMetricWithLabelValues(namespace, name)
