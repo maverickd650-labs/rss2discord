@@ -106,6 +106,8 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 	fx := &v1alpha1.FeedStatus{RetryCount: 1}
 	a := (&FeedGroupReconciler{}).newFeedAttempt(&v1alpha1.FeedGroup{}, fx, "u")
 	a.announceExhaustion(1, "SendFailed", errors.New("x"))
+	fx.RetryCount = 7 // the first count whose backoff reaches the cap
+	a.backOff("SendFailed", errors.New("x"))
 }
 
 func TestFeedAttempt_BackOffAnnouncesTheCapOnce(t *testing.T) {
@@ -118,7 +120,7 @@ func TestFeedAttempt_BackOffAnnouncesTheCapOnce(t *testing.T) {
 		t.Fatalf("got %d Events, want exactly one when the backoff first reaches its cap", len(recorder.Events))
 	}
 	ev := <-recorder.Events
-	if !strings.Contains(ev, "still failing permanently") || strings.Contains(ev, "exhausting retries") {
+	if !strings.Contains(ev, "backoff now capped at 6h0m0s") || strings.Contains(ev, "exhausting retries") {
 		t.Errorf("Event %q should describe the capped backoff, not exhausted retries", ev)
 	}
 }
