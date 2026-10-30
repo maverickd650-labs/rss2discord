@@ -387,6 +387,7 @@ func TestChartManagerRoleRulesMatchConfig(t *testing.T) {
 // grant is never cluster-wide while the manager watches only some namespaces,
 // and that rbac.namespaced still means the release namespace alone.
 func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
+	const namespacedKind = "kind: Role\n"
 	for _, tc := range []struct {
 		name       string
 		values     []string
@@ -397,17 +398,17 @@ func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
 		{name: "cluster-wide by default", wantKind: "kind: ClusterRole\n"},
 		{
 			name: "release namespace", values: []string{"rbac.namespaced=true"},
-			wantArg: "--watch-namespaces=" + chartNamespace, wantKind: "kind: Role\n", namespaces: []string{chartNamespace},
+			wantArg: "--watch-namespaces=" + chartNamespace, wantKind: namespacedKind, namespaces: []string{chartNamespace},
 		},
 		{
 			name:    "blank entries never add a cluster-wide grant",
 			values:  []string{"rbac.watchNamespaces={team-a,, }"},
-			wantArg: "--watch-namespaces=team-a", wantKind: "kind: Role\n", namespaces: []string{"team-a"},
+			wantArg: "--watch-namespaces=team-a", wantKind: namespacedKind, namespaces: []string{"team-a"},
 		},
 		{
 			name:    "explicit list wins and is deduplicated",
 			values:  []string{"rbac.namespaced=true", "rbac.watchNamespaces={team-a,team-b,team-a}"},
-			wantArg: "--watch-namespaces=team-a,team-b", wantKind: "kind: Role\n", namespaces: []string{"team-a", "team-b"},
+			wantArg: "--watch-namespaces=team-a,team-b", wantKind: namespacedKind, namespaces: []string{"team-a", "team-b"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
