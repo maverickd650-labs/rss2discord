@@ -389,43 +389,28 @@ func (r *FeedGroupReconciler) processFeed(
 	// Built over the whole fetch, before any catch-up trim below, so an
 	// entry's stripped identity is only unique if it is across the feed.
 	ledger := newDeliveryLedger(fs, entries)
-	lastSeenID := fs.LastSeenEntry
-	hasSeenID := lastSeenID != ""
-	resumeAt := 0
-	if hasSeenID {
-		// A stored ID that has scrolled out of the feed's window (or that the
-		// feed changed how it identifies between fetches) is not found, and
-		// resumeAt stays 0: the forward-scan would never match it and would
-		// silently treat every entry as already sent, forever. Fall back to
-		// catch-up instead of going permanently silent.
-		index, found := ledger.resume(entries)
-		hasSeenID = found
-		resumeAt = index + 1
+	hadWatermark := fs.LastSeenEntry != ""
+	index, found := -1, false
+	if hadWatermark {
+		index, found = ledger.resume(entries)
 	}
-	if !hasSeenID {
-		if catchUpLimit == 0 && lastSeenID == "" {
-			// catchUpLimit: 0 with no watermark at all. On a true first sync
-			// (not yet initialized) that means "don't post the backlog":
-			// start from the newest entry. If the feed was already fetched
-			// while empty, everything in it was published after that first
-			// sync, so all of it is delivered rather than capped as a backlog.
-			// A watermark that merely scrolled out of the feed's window is
-			// not a first sync, so it falls through to limitCatchUp's default
-			// cap rather than silently dropping new entries. An ambiguous
-			// legacy status is capped the same way (see legacyState).
-			switch {
-			case legacy.ambiguous:
-				log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
-					"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
-				entries = limitCatchUp(entries, defaultCatchUpLimit)
-			case !wasInitialized:
-				skipBacklog(feedGroup, ledger, entries)
-				entries = nil
-			}
-		} else {
-			entries = limitCatchUp(entries, catchUpLimit)
-		}
+	plan := planDelivery(deliveryInputs{
+		entries:         entries,
+		hadWatermark:    hadWatermark,
+		watermarkIndex:  index,
+		found:           found,
+		catchUpLimit:    catchUpLimit,
+		legacyAmbiguous: legacy.ambiguous,
+		wasInitialized:  wasInitialized,
+	})
+	if plan.cappedAmbiguousLegacy {
+		log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
+			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
 	}
+	if plan.skipBacklog {
+		skipBacklog(feedGroup, ledger, entries)
+	}
+	entries, resumeAt := plan.scan, plan.resumeAt
 
 	var pending bool
 	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, ledger, resumeAt,
