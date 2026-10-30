@@ -160,8 +160,8 @@ var feedLastCheckedTimestamp = prometheus.NewGaugeVec(
 
 // messageOverflowChars records how many characters were trimmed from a
 // rendered Discord message/embed-description/thread-name before it was
-// clamped to fit Discord's length limits (truncateMessage in
-// render.go), observed per send attempt. Only actual overflows are observed -- the vast
+// clamped to fit Discord's length limits (discord.Fit, called from
+// buildDiscordMessage in render.go), observed per send attempt. Only actual overflows are observed -- the vast
 // majority of entries render under the limit -- so histogram_count(rate(...))
 // directly answers "how often does this FeedGroup's content get cut off,"
 // rather than burying that signal in a sea of zero observations.

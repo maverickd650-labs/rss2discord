@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -249,7 +250,7 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 	fetchResult := rss.FetchResult{Entries: []rss.Entry{{
 		ID:          articleURL,
 		Title:       "Example entry",
-		Description: strings.Repeat("x", maxDiscordMessageLength+500),
+		Description: strings.Repeat("x", discord.MaxContentLength+500),
 		Link:        articleURL,
 	}}}
 
@@ -284,9 +285,7 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 // TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp asserts
 // that messageOverflowChars also counts truncation caused by Discord's
 // combined embed length limit (title+description+footer+author <= 6000),
-// which is enforced inside the discord package (clampEmbedTotalLength)
-// rather than by the per-field truncation buildDiscordMessage measures
-// directly. Title and Description here individually stay well under their
+// which discord.Fit enforces after the per-field truncation. Title and Description here individually stay well under their
 // own limits, so only the combined-length clamp can be responsible for any
 // recorded overflow.
 func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.T) {

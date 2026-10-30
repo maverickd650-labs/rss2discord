@@ -45,11 +45,6 @@ import (
 // channel-wide pings.
 const defaultMessageFormat = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
 
-// maxDiscordMessageLength is Discord's hard cap on webhook message content;
-// the API rejects anything longer. Full article bodies in a feed's
-// description can easily exceed this once stripped to plain text.
-const maxDiscordMessageLength = 2000
-
 // maxTemplateReplaceBytes bounds each replace result before allocating it,
 // including intermediate values in pipelines, well above Discord's limits.
 const maxTemplateReplaceBytes = 1024 * 1024
@@ -200,7 +195,7 @@ var templateFuncs = template.FuncMap{
 	// truncate clamps s to n runes, ending in an ellipsis when it cuts and n > 1.
 	// Non-positive limits return empty text.
 	"truncate": func(n int, s string) string {
-		out, _ := truncateMessage(s, n)
+		out, _ := discord.Truncate(s, n)
 		return out
 	},
 	// default returns def when v is blank.
@@ -374,14 +369,6 @@ func finishStrippedText(text string) string {
 // the feed nor the group set EmbedSpec.DescriptionFormat.
 const defaultDescriptionFormat = "{{.Description}}"
 
-// Discord's embed and forum API limits; messages exceeding these are
-// rejected outright rather than truncated server-side.
-const (
-	maxEmbedTitleLength       = 256
-	maxEmbedDescriptionLength = 4096
-	maxForumThreadNameLength  = 100
-)
-
 // formatPublished renders t as RFC 3339 UTC, or "" for the zero time. Feeds
 // that omit dates leave Entry.Published zero; formatting that verbatim would
 // show "0001-01-01T00:00:00Z" in templates and a "1/1/0001" embed footer
@@ -427,11 +414,12 @@ func (d templateData) Content() string {
 	return stripHTML(d.content)
 }
 
-// renderTemplate executes tmpl against entry and clamps the result to max
-// runes. The second return value is how many runes were trimmed off (0 if
-// the rendered text already fit), as reported by truncateMessage.
-// Execution errors, including helper errors, are returned with empty text and zero overflow.
-func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, int, error) {
+// renderTemplate executes tmpl against entry and returns the raw output. It
+// is not clamped to Discord's limits (buildDiscordMessage does that once, via
+// discord.Fit); its size is already bounded by limitedBuffer
+// (maxTemplateOutputBytes). Execution errors, including helper errors, are
+// returned with empty text.
+func renderTemplate(tmpl *template.Template, entry rss.Entry) (string, error) {
 	data := templateData{
 		Title:         stripHTML(entry.Title),
 		Description:   stripHTML(entry.Description),
@@ -447,11 +435,9 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 
 	var buf limitedBuffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", 0, err
+		return "", err
 	}
-
-	content, overflow := truncateMessage(buf.String(), max)
-	return content, overflow, nil
+	return buf.String(), nil
 }
 
 // buildDiscordMessage renders entry into the message that should actually
@@ -461,8 +447,9 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry, max int) (string, 
 // rendered ForumThreadName) and group-level webhook branding.
 // ImageStyle selects a large image or, by default, a thumbnail. Template execution
 // errors and blank plain-text content or rendered thread names return an empty
-// message and an error. The second return value is how many runes were trimmed
-// to fit Discord's limits (0 when nothing was); it is data only. The caller
+// message and an error. The message is fitted to Discord's length limits by a
+// single discord.Fit call at the end; the second return value is how many
+// runes that trimmed (0 when nothing was); it is data only. The caller
 // that actually sends the message records it in messageOverflowChars, so
 // diagnostic renders (see otherEntryRenders) don't add samples.
 func buildDiscordMessage(
@@ -477,17 +464,13 @@ func buildDiscordMessage(
 		AvatarURL: feedGroup.Spec.AvatarURL,
 	}
 
-	var overflow int
-
 	if embedSpec != nil && embedSpec.Enabled {
-		description, descOverflow, err := renderTemplate(descriptionTmpl, entry, maxEmbedDescriptionLength)
+		description, err := renderTemplate(descriptionTmpl, entry)
 		if err != nil {
 			return discord.Message{}, 0, err
 		}
-		title, titleOverflow := truncateMessage(stripHTML(entry.Title), maxEmbedTitleLength)
-		overflow += descOverflow + titleOverflow
 		msg.Embed = &discord.Embed{
-			Title:       title,
+			Title:       stripHTML(entry.Title),
 			Description: description,
 			URL:         httpURLOrEmpty(entry.Link),
 			Color:       parseHexColor(embedSpec.Color),
@@ -500,15 +483,8 @@ func buildDiscordMessage(
 		} else {
 			msg.Embed.ThumbnailURL = image
 		}
-		// SendMessage clamps title+description+footer+author to Discord's
-		// combined 6000-char embed budget, trimming Description further
-		// still if the per-field truncation above wasn't enough. That clamp
-		// happens inside the discord package, after this function returns,
-		// so without folding it in here it would silently undercount actual
-		// truncation.
-		overflow += discord.EmbedTotalLengthOverflow(*msg.Embed)
 	} else {
-		content, contentOverflow, err := renderTemplate(contentTmpl, entry, maxDiscordMessageLength)
+		content, err := renderTemplate(contentTmpl, entry)
 		if err != nil {
 			return discord.Message{}, 0, err
 		}
@@ -519,14 +495,13 @@ func buildDiscordMessage(
 		if strings.TrimSpace(content) == "" {
 			return discord.Message{}, 0, errors.New("message template rendered empty content for this entry")
 		}
-		overflow += contentOverflow
 		msg.Content = content
 	}
 
 	if strings.TrimSpace(feed.ForumThreadID) != "" {
 		msg.ThreadID = feed.ForumThreadID
 	} else if threadNameTmpl != nil {
-		threadName, threadOverflow, err := renderTemplate(threadNameTmpl, entry, maxForumThreadNameLength)
+		threadName, err := renderTemplate(threadNameTmpl, entry)
 		if err != nil {
 			return discord.Message{}, 0, err
 		}
@@ -535,45 +510,11 @@ func buildDiscordMessage(
 		if strings.TrimSpace(threadName) == "" {
 			return discord.Message{}, 0, errors.New("forum thread name template rendered empty for this entry")
 		}
-		overflow += threadOverflow
 		msg.ThreadName = threadName
 	}
 
-	return msg, overflow, nil
-}
-
-// truncateMessage trims content to at most max characters (by rune), since
-// Discord rejects webhook messages over its content length limit outright
-// rather than truncating them itself. The second return value is how many
-// runes were cut (0 if content already fit), so callers can report how
-// often/how severely truncation actually happens.
-// A cut ends in an ellipsis when max > 1; max == 1 keeps the first rune and
-// max <= 0 returns empty text. Overflow is the original rune count minus max,
-// floored at zero, so a negative max increases the reported count.
-func truncateMessage(content string, max int) (string, int) {
-	// len(content) >= rune count, so a byte length within max can't overflow;
-	// this skips the []rune allocation for the overwhelmingly common case.
-	if len(content) <= max {
-		return content, 0
-	}
-	runes := []rune(content)
-	if len(runes) <= max {
-		return content, 0
-	}
-	overflow := len(runes) - max
-
-	const ellipsis = "…"
-	// Guard against a max too small to even hold the ellipsis: slicing to a
-	// negative bound would panic. No live caller passes a max this small (the
-	// limits are all Discord's hundreds/thousands), but keep it total so a
-	// future caller can't trip it.
-	if max <= 0 {
-		return "", overflow
-	}
-	if max <= len([]rune(ellipsis)) {
-		return string(runes[:max]), overflow
-	}
-	return string(runes[:max-len([]rune(ellipsis))]) + ellipsis, overflow
+	fitted, overflow := discord.Fit(msg)
+	return fitted, overflow, nil
 }
 
 // feedRenderer turns one feed's entries into Discord messages. It owns the

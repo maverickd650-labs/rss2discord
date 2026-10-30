@@ -19,6 +19,8 @@ package controller
 import (
 	"strings"
 	"testing"
+
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 )
 
 // Entry identity runs several times per entry on every reconcile whose feed
@@ -43,17 +45,17 @@ func BenchmarkNormalizeIdentity(b *testing.B) {
 
 func BenchmarkTruncateMessage(b *testing.B) {
 	fits := strings.Repeat("x", 500)
-	over := strings.Repeat("x", maxDiscordMessageLength*2)
+	over := strings.Repeat("x", discord.MaxContentLength*2)
 	b.Run("fits", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			truncateMessage(fits, maxDiscordMessageLength)
+			discord.Truncate(fits, discord.MaxContentLength)
 		}
 	})
 	b.Run("overflows", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			truncateMessage(over, maxDiscordMessageLength)
+			discord.Truncate(over, discord.MaxContentLength)
 		}
 	})
 }

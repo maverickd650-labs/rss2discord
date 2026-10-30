@@ -7,8 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-// FuzzEmbedPayload exercises embedToPayload/clampEmbedTotalLength/
-// truncateRunes -- and the json.Marshal of the resulting payload -- against
+// FuzzEmbedPayload exercises Fit/embedToPayload/Truncate -- and the json.Marshal of the resulting payload -- against
 // arbitrary embed field strings. Feed entry titles/descriptions/authors are
 // untrusted external text (the same threat model as FuzzParseFeed in
 // internal/rss), so these fields must never panic or defeat Discord's
@@ -25,8 +24,8 @@ func FuzzEmbedPayload(f *testing.F) {
 		"data:text/html,<script>alert(1)</script>",
 		"\x00\x00\x00",
 		"\xff\xfe\x80", // invalid UTF-8 byte sequence
-		strings.Repeat("x", maxEmbedTotalLength*2),
-		strings.Repeat("\U0001F600", maxEmbedTotalLength), // 4-byte emoji straddling the clamp boundary
+		strings.Repeat("x", MaxEmbedTotalLength*2),
+		strings.Repeat("\U0001F600", MaxEmbedTotalLength), // 4-byte emoji straddling the clamp boundary
 		"é́́",    // base char with combining acute accents
 		"日本語テスト", // multibyte (Japanese) text
 	}
@@ -39,40 +38,46 @@ func FuzzEmbedPayload(f *testing.F) {
 	f.Fuzz(func(t *testing.T, title, description, author, footer, url string) {
 		e := Embed{Title: title, Description: description, AuthorName: author, FooterText: footer, URL: url}
 
-		clamped := clampEmbedTotalLength(e)
-		if overflow := EmbedTotalLengthOverflow(clamped); overflow != 0 {
-			// clampEmbedTotalLength only ever trims Description (see its doc
-			// comment: title/footer/author are "short in practice" for real
-			// callers -- feedgroup_controller.go pre-truncates title to 256
-			// runes, and footer/author are CRD MaxLength-capped). So the one
-			// case where overflow can legitimately remain is title+footer+
-			// author alone already exceeding the cap with nothing left in
-			// Description to cut -- anything else is a real clamp bug.
-			nonDescRunes := len([]rune(e.Title)) + len([]rune(e.FooterText)) + len([]rune(e.AuthorName))
-			if clamped.Description != "" {
-				t.Fatalf("clampEmbedTotalLength left an overflow of %d without trimming Description to empty: %+v", overflow, clamped)
-			}
-			if nonDescRunes <= maxEmbedTotalLength {
-				t.Fatalf("clampEmbedTotalLength left an overflow of %d even though title+footer+author alone (%d runes) fit within the limit: %+v", overflow, nonDescRunes, e)
-			}
+		fitted, trimmed := Fit(Message{Content: description, ThreadName: title, Embed: &e})
+		if trimmed < 0 {
+			t.Fatalf("Fit reported negative trimmed count %d", trimmed)
+		}
+		if n := len([]rune(fitted.Content)); n > MaxContentLength {
+			t.Fatalf("fitted content has %d runes, want <= %d", n, MaxContentLength)
+		}
+		if n := len([]rune(fitted.ThreadName)); n > MaxThreadNameLength {
+			t.Fatalf("fitted thread name has %d runes, want <= %d", n, MaxThreadNameLength)
+		}
+		fe := fitted.Embed
+		if n := len([]rune(fe.Title)); n > MaxEmbedTitleLength {
+			t.Fatalf("fitted title has %d runes, want <= %d", n, MaxEmbedTitleLength)
+		}
+		if n := len([]rune(fe.Description)); n > MaxEmbedDescriptionLength {
+			t.Fatalf("fitted description has %d runes, want <= %d", n, MaxEmbedDescriptionLength)
+		}
+		// Fit only ever trims Description for the combined cap, so the total
+		// can exceed it only when the other fields alone do, with Description
+		// already empty.
+		total := len([]rune(fe.Title)) + len([]rune(fe.Description)) + len([]rune(fe.FooterText)) + len([]rune(fe.AuthorName))
+		if total > MaxEmbedTotalLength && fe.Description != "" {
+			t.Fatalf("Fit left a combined length of %d without emptying Description", total)
+		}
+		if _, again := Fit(fitted); again != 0 {
+			t.Fatalf("Fit is not idempotent: second pass trimmed %d runes", again)
 		}
 
-		// truncateRunes itself is unconditionally UTF-8-safe: it operates on
-		// an already-decoded []rune (which replaces any invalid input bytes
-		// with U+FFFD during the string->[]rune conversion), so re-encoding
-		// via string(runes) is always valid regardless of how filthy the
-		// original bytes were. clampEmbedTotalLength's pass-through branch
-		// (no overflow, nothing trimmed) does *not* go through that
-		// round-trip, so it carries no such guarantee -- this checks the
-		// helper directly rather than asserting UTF-8 validity on
-		// clampEmbedTotalLength's untouched pass-through output.
-		descRunes := []rune(description)
-		truncated := truncateRunes(descRunes, maxEmbedTotalLength)
-		if got := len([]rune(truncated)); got > maxEmbedTotalLength {
-			t.Fatalf("truncateRunes(%d runes, %d) returned %d runes", len(descRunes), maxEmbedTotalLength, got)
+		// Truncate re-encodes through []rune, so whenever it cuts, its output
+		// is valid UTF-8 even for invalid input bytes. The pass-through branch
+		// returns the input untouched and carries no such guarantee.
+		truncated, overflow := Truncate(description, MaxEmbedTotalLength)
+		if got := len([]rune(truncated)); got > MaxEmbedTotalLength {
+			t.Fatalf("Truncate(%d runes, %d) returned %d runes", len([]rune(description)), MaxEmbedTotalLength, got)
 		}
-		if !utf8.ValidString(truncated) {
-			t.Fatalf("truncateRunes output is not valid UTF-8: %q", truncated)
+		if want := max(len([]rune(description))-MaxEmbedTotalLength, 0); overflow != want {
+			t.Fatalf("Truncate overflow = %d, want %d", overflow, want)
+		}
+		if overflow > 0 && !utf8.ValidString(truncated) {
+			t.Fatalf("Truncate output is not valid UTF-8: %q", truncated)
 		}
 
 		payload := embedToPayload(e)

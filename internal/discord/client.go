@@ -253,6 +253,10 @@ func (c *Client) SendMessage(ctx context.Context, msg Message) error {
 	if strings.TrimSpace(c.webhookURL) == "" {
 		return fmt.Errorf("discord webhook URL is empty")
 	}
+	// Apply every Discord length limit here so SendMessage is safe for any
+	// caller; callers that already fitted the message pay almost nothing
+	// because Fit is idempotent.
+	msg, _ = Fit(msg)
 	if strings.TrimSpace(msg.Content) == "" && msg.Embed == nil {
 		return fmt.Errorf("discord message content is empty")
 	}
@@ -396,18 +400,10 @@ func (c *Client) SendMessageText(ctx context.Context, content string) error {
 	return c.SendMessage(ctx, Message{Content: content})
 }
 
-// maxEmbedTotalLength is Discord's cap on the combined character count of
-// title + description + footer.text + author.name (+ field name/value, which
-// this package doesn't use) across all embeds in a single message. Discord
-// rejects the whole webhook call with a 400 if exceeded, even though each
-// field individually stays under its own per-field limit.
-const maxEmbedTotalLength = 6000
-
-// embedToPayload converts e to the webhook payload, clamping its description
-// to the combined embed text budget and omitting empty media, author, and footer
-// fields. ThumbnailURL and ImageURL are included independently when set.
+// embedToPayload converts e to the webhook payload, omitting empty media,
+// author, and footer fields. ThumbnailURL and ImageURL are included
+// independently when set. Length limits are applied beforehand, by Fit.
 func embedToPayload(e Embed) discordEmbed {
-	e = clampEmbedTotalLength(e)
 	payload := discordEmbed{
 		Title:       e.Title,
 		Description: e.Description,
@@ -428,49 +424,4 @@ func embedToPayload(e Embed) discordEmbed {
 		payload.Footer = &discordEmbedFooter{Text: e.FooterText}
 	}
 	return payload
-}
-
-// EmbedTotalLengthOverflow reports how many runes of e.Description
-// SendMessage will trim to satisfy Discord's combined embed length limit
-// (maxEmbedTotalLength), without performing the trim. Exported so a caller
-// that already measures its own per-field truncation for metrics (see
-// internal/controller/feedgroup_controller.go's messageOverflowChars) can
-// fold this clamp into the same count -- otherwise it happens invisibly
-// inside SendMessage, after the caller has already taken its measurement.
-func EmbedTotalLengthOverflow(e Embed) int {
-	total := len([]rune(e.Title)) + len([]rune(e.Description)) + len([]rune(e.FooterText)) + len([]rune(e.AuthorName))
-	if total <= maxEmbedTotalLength {
-		return 0
-	}
-	return total - maxEmbedTotalLength
-}
-
-// clampEmbedTotalLength shrinks Description, the field with the most slack,
-// until title+description+footer+author fits within maxEmbedTotalLength.
-// Title/footer/author come from feed config and entry titles, which are
-// short in practice, so trimming the (often long) description is the least
-// surprising way to enforce the limit.
-func clampEmbedTotalLength(e Embed) Embed {
-	overflow := EmbedTotalLengthOverflow(e)
-	if overflow == 0 {
-		return e
-	}
-
-	descRunes := []rune(e.Description)
-	newLen := max(len(descRunes)-overflow, 0)
-	e.Description = truncateRunes(descRunes, newLen)
-	return e
-}
-
-// truncateRunes trims runes to at most max, appending an ellipsis in place
-// of the last truncated rune when anything was actually cut.
-func truncateRunes(runes []rune, max int) string {
-	if len(runes) <= max {
-		return string(runes)
-	}
-	if max <= 0 {
-		return ""
-	}
-	const ellipsis = "…"
-	return string(runes[:max-len([]rune(ellipsis))]) + ellipsis
 }

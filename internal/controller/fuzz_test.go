@@ -20,13 +20,16 @@ import (
 	neturl "net/url"
 	"strings"
 	"testing"
+
 	"unicode/utf8"
+
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 )
 
 // FuzzControllerSanitizers exercises the two pure text-sanitizing helpers
 // feed entry content passes through before becoming a Discord message:
 // httpURLOrEmpty (strips any non-http(s) scheme -- javascript:/data: URIs
-// included) and truncateMessage (Discord's message length clamp). Neither
+// included) and discord.Truncate (Discord's message length clamp). Neither
 // touches the network or the SSRF/webhook-host guards in internal/rss or
 // internal/discord (see CLAUDE.md) -- this fuzz target is deliberately
 // scoped to the pure helpers only, per ground rule 1 in
@@ -44,8 +47,8 @@ func FuzzControllerSanitizers(f *testing.F) {
 		"@here",
 		"\x00\x00\x00",
 		"\xff\xfe\x80", // invalid UTF-8 byte sequence
-		strings.Repeat("x", maxDiscordMessageLength*2),
-		strings.Repeat("\U0001F600", maxDiscordMessageLength), // 4-byte emoji straddling the clamp boundary
+		strings.Repeat("x", discord.MaxContentLength*2),
+		strings.Repeat("\U0001F600", discord.MaxContentLength), // 4-byte emoji straddling the clamp boundary
 		"é́́",    // base char with combining acute accents
 		"日本語テスト", // multibyte (Japanese) text
 	}
@@ -67,22 +70,22 @@ func FuzzControllerSanitizers(f *testing.F) {
 			}
 		}
 
-		truncated, overflow := truncateMessage(input, maxDiscordMessageLength)
-		if got := len([]rune(truncated)); got > maxDiscordMessageLength {
-			t.Fatalf("truncateMessage(%q, %d) returned %d runes, want <= %d", input, maxDiscordMessageLength, got, maxDiscordMessageLength)
+		truncated, overflow := discord.Truncate(input, discord.MaxContentLength)
+		if got := len([]rune(truncated)); got > discord.MaxContentLength {
+			t.Fatalf("discord.Truncate(%q, %d) returned %d runes, want <= %d", input, discord.MaxContentLength, got, discord.MaxContentLength)
 		}
-		wantOverflow := max(len([]rune(input))-maxDiscordMessageLength, 0)
+		wantOverflow := max(len([]rune(input))-discord.MaxContentLength, 0)
 		if overflow != wantOverflow {
-			t.Fatalf("truncateMessage(%q, %d) overflow = %d, want %d", input, maxDiscordMessageLength, overflow, wantOverflow)
+			t.Fatalf("discord.Truncate(%q, %d) overflow = %d, want %d", input, discord.MaxContentLength, overflow, wantOverflow)
 		}
-		// Like clampEmbedTotalLength in internal/discord, truncateMessage
+		// discord.Truncate
 		// passes its input through unchanged when no truncation is needed
 		// (overflow == 0) rather than round-tripping it through []rune, so
 		// UTF-8 validity is only guaranteed for the branch that actually
 		// truncates (fuzz-generated strings, unlike literals, aren't
 		// required to be valid UTF-8 to begin with).
 		if overflow > 0 && !utf8.ValidString(truncated) {
-			t.Fatalf("truncateMessage(%q, %d) produced invalid UTF-8: %q", input, maxDiscordMessageLength, truncated)
+			t.Fatalf("discord.Truncate(%q, %d) produced invalid UTF-8: %q", input, discord.MaxContentLength, truncated)
 		}
 	})
 }

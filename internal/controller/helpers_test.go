@@ -19,7 +19,7 @@ const (
 	notParsable         = "nope"
 )
 
-// shortContent is reused across truncation test cases below.
+// shortContent is reused across test cases below.
 const shortContent = "short"
 
 // Shared fixtures that several tests below (and fuzz_test.go) repeat.
@@ -28,7 +28,6 @@ const (
 	discordRelativeTS = "<t:1714979289:R>"
 	imageFixtureURL   = "https://x/a.png"
 )
-const truncateMe = "truncate me"
 
 // excerptText is reused across the "continue reading" stripHTML test cases
 // below.
@@ -114,35 +113,6 @@ func TestStripHTML(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := stripHTML(tc.input); got != tc.want {
 				t.Fatalf("stripHTML(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestTruncateMessage(t *testing.T) {
-	cases := []struct {
-		name         string
-		content      string
-		max          int
-		want         string
-		wantOverflow int
-	}{
-		{name: "under limit unchanged", content: shortContent, max: 10, want: shortContent, wantOverflow: 0},
-		{name: "exactly at limit unchanged", content: shortContent, max: 5, want: shortContent, wantOverflow: 0},
-		{name: "truncated with ellipsis", content: truncateMe, max: 5, want: "trun…", wantOverflow: len([]rune(truncateMe)) - 5},
-		{name: "multibyte trimmed by rune", content: "日本語テスト", max: 3, want: "日本…", wantOverflow: 3},
-		{name: "max one keeps single rune without ellipsis", content: truncateMe, max: 1, want: "t", wantOverflow: len([]rune(truncateMe)) - 1},
-		{name: "max zero yields empty", content: truncateMe, max: 0, want: "", wantOverflow: len([]rune(truncateMe))},
-		{name: "negative max yields empty", content: truncateMe, max: -5, want: "", wantOverflow: len([]rune(truncateMe)) + 5},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, overflow := truncateMessage(tc.content, tc.max)
-			if got != tc.want {
-				t.Fatalf("truncateMessage(%q, %d) = %q, want %q", tc.content, tc.max, got, tc.want)
-			}
-			if overflow != tc.wantOverflow {
-				t.Fatalf("truncateMessage(%q, %d) overflow = %d, want %d", tc.content, tc.max, overflow, tc.wantOverflow)
 			}
 		})
 	}
@@ -601,7 +571,7 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 	}
 
 	entry := rss.Entry{Author: "Jane Doe", Categories: []string{"Go", "Kubernetes"}}
-	got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+	got, err := renderTemplate(tmpl, entry)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -610,7 +580,7 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 	}
 
 	t.Run("empty author and categories render blank", func(t *testing.T) {
-		got, _, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength)
+		got, err := renderTemplate(tmpl, rss.Entry{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -630,7 +600,7 @@ func TestRenderTemplate_Published(t *testing.T) {
 	}
 
 	t.Run("zero published renders empty", func(t *testing.T) {
-		got, _, err := renderTemplate(tmpl, rss.Entry{}, maxDiscordMessageLength)
+		got, err := renderTemplate(tmpl, rss.Entry{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -641,7 +611,7 @@ func TestRenderTemplate_Published(t *testing.T) {
 
 	t.Run("non-zero published unchanged", func(t *testing.T) {
 		entry := rss.Entry{Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
-		got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+		got, err := renderTemplate(tmpl, entry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -660,7 +630,7 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+		got, err := renderTemplate(tmpl, entry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -807,7 +777,7 @@ func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	}
 
 	entry := rss.Entry{Title: "<b>Breaking</b> News &amp; Views"}
-	got, _, err := renderTemplate(tmpl, entry, maxDiscordMessageLength)
+	got, err := renderTemplate(tmpl, entry)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
