@@ -53,7 +53,8 @@ rules:
 {{- $namespaces := include "rss2discord-operator.watchNamespaces" . }}
 {{- $targets := list "" }}
 {{- if $namespaces }}
-{{- $targets = splitList "," $namespaces }}
+{{- /* compact: an empty name means cluster-wide, so never derive one from the list. */}}
+{{- $targets = splitList "," $namespaces | compact }}
 {{- end }}
 {{- range $ns := $targets }}
 ---

@@ -85,15 +85,19 @@ else empty (every namespace, via a ClusterRole). manager.yaml passes the same
 list as --watch-namespaces and rbac/manager-role(binding).yaml render a Role
 and RoleBinding per entry, so the watch scope and the grant always match:
 narrowing only the watch would leave a stolen token able to read every Secret.
-Blank entries are dropped (each would otherwise render a cluster-wide grant
-next to the Roles), and a list with nothing else in it fails the render rather
-than silently falling back to cluster-wide.
+Blank entries are dropped, any other entry must be a valid namespace name (a
+DNS-1123 label, so never a comma that would split into an extra, empty target),
+and a list with nothing valid in it fails the render rather than silently
+falling back to cluster-wide.
 */}}
 {{- define "rss2discord-operator.watchNamespaces" -}}
 {{- if .Values.rbac.watchNamespaces }}
 {{- $watch := list }}
 {{- range .Values.rbac.watchNamespaces }}
 {{- with toString . | trim }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .) }}
+{{- fail (printf "rbac.watchNamespaces entry %q is not a valid namespace name" .) }}
+{{- end }}
 {{- $watch = append $watch . }}
 {{- end }}
 {{- end }}

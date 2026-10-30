@@ -433,6 +433,18 @@ func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
 	}
 }
 
+// TestChartWatchNamespacesRejectsInvalidNames pins that an entry which is not a
+// namespace name -- above all one with a comma, which would split into an
+// extra, empty target, i.e. a cluster-wide grant -- fails the render.
+func TestChartWatchNamespacesRejectsInvalidNames(t *testing.T) {
+	for _, entry := range []string{`team-a\,`, `team-a\,team-b`, "Team-A", "team_a", strings.Repeat("a", 64)} {
+		out, err := runHelmTemplate(t, managerRoleTemplate, "rbac.watchNamespaces[0]="+entry)
+		if err == nil || !strings.Contains(out, "is not a valid namespace name") {
+			t.Errorf("entry %q: want a render failure, got err=%v:\n%s", entry, err, out)
+		}
+	}
+}
+
 // TestChartWatchNamespacesRejectsAnAllBlankList pins that a list with no real
 // namespace fails the render instead of falling back to a ClusterRole.
 func TestChartWatchNamespacesRejectsAnAllBlankList(t *testing.T) {
