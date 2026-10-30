@@ -39,7 +39,7 @@ const (
 	attemptNow        = "2026-03-04T05:06:07Z"
 	attemptGeneration = 3
 	attemptOld        = "old"
-	attemptBoom       = "boom"
+	testBoom          = "boom"
 
 	// The outcome labels more than one row expects, spelled out here rather
 	// than derived so a rename shows up as a failure.
@@ -101,7 +101,7 @@ type attemptWant struct {
 // permanent and transient classes, and the RetryCount boundaries around the
 // retry limit and the backoff cap.
 func attemptCases() []attemptCase {
-	boom := errors.New(attemptBoom)
+	boom := errors.New(testBoom)
 	rateLimited := &discord.RateLimitError{RetryAfter: 7 * time.Second}
 	const interval = "5m" // backoff = 5m * 2^RetryCount, capped at 6h from RetryCount 7
 	retry := attemptVerdict{retry: true}
@@ -128,38 +128,38 @@ func attemptCases() []attemptCase {
 		{
 			name: "transient fetch failure retries", outcome: fetchFailed, class: classServerError, err: boom, retries: 3,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, label: labelFetchErrorServerError, verdict: retry,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, label: labelFetchErrorServerError, verdict: retry,
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
 			name: "transient fetch failure below the limit is quiet", outcome: fetchFailed, class: classTimeout, err: boom, retries: 3, retryCount: 1,
 			want: attemptWant{
-				retryCount: 2, lastError: attemptBoom, label: "fetch_error_timeout", verdict: retry,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTimeout, message: attemptBoom,
+				retryCount: 2, lastError: testBoom, label: "fetch_error_timeout", verdict: retry,
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
 			name: "transient fetch failure announces exhaustion once, at the limit", outcome: fetchFailed, class: classServerError, err: boom,
 			retries: 3, retryCount: 2,
 			want: attemptWant{
-				retryCount: 3, lastError: attemptBoom, label: labelFetchErrorServerError, warnings: eventNamed(eventFetchFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: attemptBoom,
+				retryCount: 3, lastError: testBoom, label: labelFetchErrorServerError, warnings: eventNamed(eventFetchFailed, exhausted),
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
 			name: "transient fetch failure past the limit is quiet again", outcome: fetchFailed, class: classServerError, err: boom,
 			retries: 3, retryCount: 3,
 			want: attemptWant{
-				retryCount: 4, lastError: attemptBoom, label: labelFetchErrorServerError,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: attemptBoom,
+				retryCount: 4, lastError: testBoom, label: labelFetchErrorServerError,
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
 			name: "a retry limit below one counts as one", outcome: fetchFailed, class: classDNSFailure, err: boom, retries: 0,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, label: "fetch_error_dns_failure", warnings: eventNamed(eventFetchFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonDNSFailure, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, label: "fetch_error_dns_failure", warnings: eventNamed(eventFetchFailed, exhausted),
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonDNSFailure, message: testBoom,
 			},
 		},
 
@@ -169,56 +169,56 @@ func attemptCases() []attemptCase {
 			name: "permanent fetch failure backs off at once", outcome: fetchFailed, class: classNotFound, err: boom,
 			retries: 3, retryInterval: interval,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, backoff: 10 * time.Minute, label: labelFetchErrorNotFound,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: labelFetchErrorNotFound,
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
 			},
 		},
 		{
 			name: "permanent fetch failure ignores the retry limit", outcome: fetchFailed, class: classGone, err: boom,
 			retries: 1, retryInterval: interval, retryCount: 1,
 			want: attemptWant{
-				retryCount: 2, lastError: attemptBoom, backoff: 20 * time.Minute, label: "fetch_error_gone",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP410, message: attemptBoom,
+				retryCount: 2, lastError: testBoom, backoff: 20 * time.Minute, label: "fetch_error_gone",
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP410, message: testBoom,
 			},
 		},
 		{
 			name: "permanent fetch failure just below the cap is quiet", outcome: fetchFailed, class: classParseError, err: boom,
 			retries: 3, retryInterval: interval, retryCount: 5,
 			want: attemptWant{
-				retryCount: 6, lastError: attemptBoom, backoff: 320 * time.Minute, label: "fetch_error_parse_error",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonParseError, message: attemptBoom,
+				retryCount: 6, lastError: testBoom, backoff: 320 * time.Minute, label: "fetch_error_parse_error",
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonParseError, message: testBoom,
 			},
 		},
 		{
 			name: "permanent fetch failure announces the cap the first time it is reached", outcome: fetchFailed, class: classNotFound, err: boom,
 			retries: 3, retryInterval: interval, retryCount: 6,
 			want: attemptWant{
-				retryCount: 7, lastError: attemptBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
+				retryCount: 7, lastError: testBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
 				warnings:  eventNamed(eventFetchFailed, capped),
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: attemptBoom,
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
 			},
 		},
 		{
 			name: "permanent fetch failure at the cap stays quiet", outcome: fetchFailed, class: classNotFound, err: boom,
 			retries: 3, retryInterval: interval, retryCount: 7,
 			want: attemptWant{
-				retryCount: 8, lastError: attemptBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: attemptBoom,
+				retryCount: 8, lastError: testBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
 			},
 		},
 		{
 			name: "permanent failure with an enormous RetryCount is capped, not wrapped", outcome: fetchFailed, class: classTLSError, err: boom,
 			retries: 3, retryInterval: interval, retryCount: 100,
 			want: attemptWant{
-				retryCount: 101, lastError: attemptBoom, backoff: maxPermanentBackoff, label: "fetch_error_tls_error",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTLSError, message: attemptBoom,
+				retryCount: 101, lastError: testBoom, backoff: maxPermanentBackoff, label: "fetch_error_tls_error",
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTLSError, message: testBoom,
 			},
 		},
 		{
 			name: "an unset RetryInterval backs off from the 5m fallback", outcome: fetchFailed, class: classBlockedAddress, err: boom, retries: 3,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, backoff: 10 * time.Minute, label: "fetch_error_blocked_address",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonBlockedAddress, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: "fetch_error_blocked_address",
+				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonBlockedAddress, message: testBoom,
 			},
 		},
 
@@ -227,41 +227,41 @@ func attemptCases() []attemptCase {
 		{
 			name: "transient send failure retries and stays pending", outcome: sendFailed, class: classServerError, err: boom, retries: 3,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, label: "send_error_server_error", verdict: retryPending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonServerError, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, label: "send_error_server_error", verdict: retryPending,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
 			name: "transient send failure announces exhaustion once, at the limit", outcome: sendFailed, class: classTimeout, err: boom,
 			retries: 3, retryCount: 2,
 			want: attemptWant{
-				retryCount: 3, lastError: attemptBoom, label: labelSendErrorTimeout, verdict: pending, warnings: eventNamed(eventSendFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: attemptBoom,
+				retryCount: 3, lastError: testBoom, label: labelSendErrorTimeout, verdict: pending, warnings: eventNamed(eventSendFailed, exhausted),
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
 			name: "transient send failure past the limit is quiet and still pending", outcome: sendFailed, class: classTimeout, err: boom,
 			retries: 3, retryCount: 3,
 			want: attemptWant{
-				retryCount: 4, lastError: attemptBoom, label: labelSendErrorTimeout, verdict: pending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: attemptBoom,
+				retryCount: 4, lastError: testBoom, label: labelSendErrorTimeout, verdict: pending,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
 			name: "permanent send failure backs off at once without asking for a retry", outcome: sendFailed, class: classWebhookInvalid, err: boom,
 			retries: 3, retryInterval: interval,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, backoff: 10 * time.Minute, label: "send_error_webhook_invalid", verdict: pending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonWebhookInvalid, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: "send_error_webhook_invalid", verdict: pending,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonWebhookInvalid, message: testBoom,
 			},
 		},
 		{
 			name: "permanent send failure announces the cap the first time it is reached", outcome: sendFailed, class: classClientError, err: boom,
 			retries: 3, retryInterval: interval, retryCount: 6,
 			want: attemptWant{
-				retryCount: 7, lastError: attemptBoom, backoff: maxPermanentBackoff, label: "send_error_client_error", verdict: pending,
+				retryCount: 7, lastError: testBoom, backoff: maxPermanentBackoff, label: "send_error_client_error", verdict: pending,
 				warnings:  eventNamed(eventSendFailed, capped),
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonClientError, message: attemptBoom,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonClientError, message: testBoom,
 			},
 		},
 
@@ -270,29 +270,29 @@ func attemptCases() []attemptCase {
 		{
 			name: "render failure retries", outcome: renderFailed, err: boom, retries: 3,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, label: labelRenderError, verdict: retryPending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, label: labelRenderError, verdict: retryPending,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 		{
 			name: "render failure never backs off, whatever class it is handed", outcome: renderFailed, class: classNotFound, err: boom, retries: 3,
 			want: attemptWant{
-				retryCount: 1, lastError: attemptBoom, label: labelRenderError, verdict: retryPending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: attemptBoom,
+				retryCount: 1, lastError: testBoom, label: labelRenderError, verdict: retryPending,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 		{
 			name: "render failure announces exhaustion once, at the limit", outcome: renderFailed, err: boom, retries: 3, retryCount: 2,
 			want: attemptWant{
-				retryCount: 3, lastError: attemptBoom, label: labelRenderError, verdict: pending, warnings: eventNamed(eventRenderFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: attemptBoom,
+				retryCount: 3, lastError: testBoom, label: labelRenderError, verdict: pending, warnings: eventNamed(eventRenderFailed, exhausted),
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 		{
 			name: "render failure past the limit is quiet and still pending", outcome: renderFailed, err: boom, retries: 3, retryCount: 3,
 			want: attemptWant{
-				retryCount: 4, lastError: attemptBoom, label: labelRenderError, verdict: pending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: attemptBoom,
+				retryCount: 4, lastError: testBoom, label: labelRenderError, verdict: pending,
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 
@@ -336,8 +336,8 @@ func attemptCases() []attemptCase {
 		{
 			name: "a config error is not counted or retried, and warns", outcome: attemptOutcome{kind: attemptConfigError}, err: boom, retries: 3,
 			want: attemptWant{
-				lastError: attemptBoom, warnings: []string{reasonConfigError, attemptBoom},
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonConfigError, message: attemptBoom,
+				lastError: testBoom, warnings: []string{reasonConfigError, testBoom},
+				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonConfigError, message: testBoom,
 			},
 		},
 	}
@@ -613,7 +613,7 @@ func TestSendFailureOutcome(t *testing.T) {
 		{name: "a 429 status is a counted failure", err: &discord.HTTPStatusError{StatusCode: 429}, wantKind: attemptSendFailed, wantClass: classRateLimited},
 		{name: "deleted webhook", err: &discord.HTTPStatusError{StatusCode: 404}, wantKind: attemptSendFailed, wantClass: classWebhookInvalid},
 		{name: "server error", err: &discord.HTTPStatusError{StatusCode: 502}, wantKind: attemptSendFailed, wantClass: classServerError},
-		{name: "anything else", err: errors.New(attemptBoom), wantKind: attemptSendFailed, wantClass: classOther},
+		{name: "anything else", err: errors.New(testBoom), wantKind: attemptSendFailed, wantClass: classOther},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outcome, class := sendFailureOutcome(tc.err)

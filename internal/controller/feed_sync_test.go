@@ -39,6 +39,8 @@ const (
 	// when a legacy status was last checked.
 	syncTestTitle         = "Sync Feed"
 	syncTestLegacyChecked = "2025-12-29T00:00:00Z"
+	// scrolledOutWatermark is a LastSeenEntry that no longer appears in the feed.
+	scrolledOutWatermark = "scrolled-out"
 )
 
 // syncEntries returns n GUID entries, oldest first.
@@ -101,7 +103,7 @@ func ambiguousLegacyStatus() *v1alpha1.FeedStatus {
 
 // failing marks fs as stuck on a failure that a settled sync would clear.
 func failing(fs *v1alpha1.FeedStatus) *v1alpha1.FeedStatus {
-	fs.LastError, fs.RetryCount, fs.BackoffUntil = "boom", 3, "2031-02-03T04:05:06Z"
+	fs.LastError, fs.RetryCount, fs.BackoffUntil = testBoom, 3, "2031-02-03T04:05:06Z"
 	return fs
 }
 
@@ -333,7 +335,7 @@ func TestFeedSync_CatchUp(t *testing.T) {
 	}{
 		{name: "no watermark keeps the newest", limit: 3, want: all[5:]},
 		{name: "a limit above the feed size keeps everything", limit: 20, want: all},
-		{name: "a watermark that scrolled out falls back to the cap", watermark: "scrolled-out", limit: 2, want: all[6:]},
+		{name: "a watermark that scrolled out falls back to the cap", watermark: scrolledOutWatermark, limit: 2, want: all[6:]},
 		{name: "a watermark in the feed resumes after it, uncapped", watermark: all[1].ID, limit: 2, want: all[2:]},
 		{name: "limit 0 on an initialized status delivers everything", limit: 0, want: all},
 	} {

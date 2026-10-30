@@ -516,7 +516,7 @@ func TestFeedDue(t *testing.T) {
 		{name: "checked recently", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:45:00Z"}, want: false},
 		{name: "interval elapsed", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:30:00Z"}, want: true},
 		{name: "malformed LastChecked", fs: v1alpha1.FeedStatus{LastChecked: "garbage"}, want: true},
-		{name: "recent but failing", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, LastError: "boom"}, want: true},
+		{name: "recent but failing", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, LastError: testBoom}, want: true},
 		{name: "recent but retrying", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, RetryCount: 1}, want: true},
 		{name: "recent but spec changed", fs: v1alpha1.FeedStatus{LastChecked: recentCheck}, force: true, want: true},
 	}
@@ -993,8 +993,8 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 	}{
 		{name: "omitted limit uses default", wantStart: 4},
 		{name: "positive limit keeps most recent", limit: new(int32(3)), wantStart: 6},
-		{name: "zero with missing watermark uses default cap", limit: new(int32(0)), lastSeen: "scrolled-out", initialized: true, wantStart: 4},
-		{name: "legacy missing watermark uses default cap", limit: new(int32(0)), lastSeen: "scrolled-out", wantStart: 4},
+		{name: "zero with missing watermark uses default cap", limit: new(int32(0)), lastSeen: scrolledOutWatermark, initialized: true, wantStart: 4},
+		{name: "legacy missing watermark uses default cap", limit: new(int32(0)), lastSeen: scrolledOutWatermark, wantStart: 4},
 		{name: "legacy matching watermark resumes", limit: new(int32(0)), lastSeen: "entry-1", wantStart: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
