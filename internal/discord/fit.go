@@ -1,7 +1,8 @@
 package discord
 
-// Discord's webhook length limits. Discord rejects a message exceeding any of
-// them outright rather than truncating, so Fit enforces all of them.
+// Discord's webhook length limits for the fields rendered from feed content.
+// Discord rejects a message exceeding any of them outright rather than
+// truncating, so Fit enforces all of them.
 const (
 	// MaxContentLength is the cap on a message's plain-text content.
 	MaxContentLength = 2000
@@ -19,10 +20,13 @@ const (
 	MaxEmbedTotalLength = 6000
 )
 
-// Fit applies every Discord length limit to msg and returns the fitted message
-// plus the total number of runes trimmed (0 when nothing was). Order: Content,
+// Fit applies the limits above to msg and returns the fitted message plus the
+// total number of runes trimmed (0 when nothing was). Order: Content,
 // Embed.Title, Embed.Description, then the combined embed clamp (which trims
 // Description further, measured after the per-field trims), then ThreadName.
+// Embed.AuthorName, Embed.FooterText and Username come from FeedGroup config,
+// which CRD validation already caps at Discord's limits, so Fit leaves them
+// alone (they still count toward the combined embed clamp).
 // Fit is idempotent and never mutates msg.Embed: the embed is copied.
 func Fit(msg Message) (Message, int) {
 	var trimmed, n int
