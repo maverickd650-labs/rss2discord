@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -45,14 +46,14 @@ func TestFetchEntries_RejectsInvalidURLs(t *testing.T) {
 
 func TestFetchEntries_EnforcesSizeCap(t *testing.T) {
 	oversized := strings.Repeat("a", maxFeedResponseBytes+1024)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(oversized))
 	}))
-	defer srv.Close()
 
-	// Use a plain client so loopback test servers aren't rejected by the
-	// SSRF guard, isolating this test to the size-cap behavior.
-	c := NewClient(&http.Client{})
+	// Use the test server's in-memory client rather than the default one, so
+	// the SSRF guard (which has its own tests) doesn't get in the way and
+	// this test stays isolated to the size-cap behavior.
+	c := NewClient(srv.Client())
 	_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err == nil {
 		t.Fatal("expected error for oversized response, got nil")
@@ -63,12 +64,11 @@ func TestFetchEntries_EnforcesSizeCap(t *testing.T) {
 }
 
 func TestFetchEntries_ParsesValidRSS(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(sampleRSS))
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	result, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,12 +79,13 @@ func TestFetchEntries_ParsesValidRSS(t *testing.T) {
 }
 
 func TestFetchEntries_ReturnsFeedTitle(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<rss><channel><title>Example Blog</title><item><title>Hello</title></item></channel></rss>`))
 	}))
-	defer srv.Close()
 
-	result, err := NewClient(&http.Client{}).FetchEntries(t.Context(), srv.URL, CacheValidators{})
+	// Client must be called before srv.URL is read: it sets URL.
+	c := NewClient(srv.Client())
+	result, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,14 +96,13 @@ func TestFetchEntries_ReturnsFeedTitle(t *testing.T) {
 
 func TestFetchEntries_SendsETagAndLastModifiedValidators(t *testing.T) {
 	var gotIfNoneMatch, gotIfModifiedSince string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotIfNoneMatch = r.Header.Get("If-None-Match")
 		gotIfModifiedSince = r.Header.Get("If-Modified-Since")
 		_, _ = w.Write([]byte(sampleRSS))
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{
 		ETag:         testETag,
 		LastModified: testLastModified,
@@ -120,13 +120,12 @@ func TestFetchEntries_SendsETagAndLastModifiedValidators(t *testing.T) {
 
 func TestFetchEntries_SendsUserAgent(t *testing.T) {
 	var gotUserAgent string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserAgent = r.Header.Get("User-Agent")
 		_, _ = w.Write([]byte(sampleRSS))
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -137,14 +136,13 @@ func TestFetchEntries_SendsUserAgent(t *testing.T) {
 }
 
 func TestFetchEntries_StoresValidatorsFromSuccessfulResponse(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"new-etag"`)
 		w.Header().Set("Last-Modified", "Thu, 22 Oct 2015 07:28:00 GMT")
 		_, _ = w.Write([]byte(sampleRSS))
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	result, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -161,16 +159,15 @@ func TestFetchEntries_StoresValidatorsFromSuccessfulResponse(t *testing.T) {
 }
 
 func TestFetchEntries_HandlesNotModifiedResponse(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("If-None-Match") == testETag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		t.Fatal("expected request to carry the previously stored ETag")
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	result, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{ETag: testETag})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -187,13 +184,12 @@ func TestFetchEntries_HandlesNotModifiedResponse(t *testing.T) {
 }
 
 func TestFetchEntries_ReturnsErrorOnNon2xxStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("upstream feed is down"))
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err == nil {
 		t.Fatal("expected error for non-2xx response, got nil")
@@ -207,12 +203,11 @@ func TestFetchEntries_ReturnsErrorOnNon2xxStatus(t *testing.T) {
 }
 
 func TestFetchEntries_ReturnsErrorOnMalformedXML(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("<rss><channel><item><title>Unclosed"))
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
 	if err == nil {
 		t.Fatal("expected error for malformed XML body, got nil")
@@ -220,7 +215,7 @@ func TestFetchEntries_ReturnsErrorOnMalformedXML(t *testing.T) {
 }
 
 func TestFetchEntries_RefreshesValidatorsOnNotModified(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A 304 can still carry a refreshed ETag/Last-Modified (e.g. when a
 		// CDN rotates a weak validator without the underlying content
 		// changing); the caller should store the refreshed validators rather
@@ -229,9 +224,8 @@ func TestFetchEntries_RefreshesValidatorsOnNotModified(t *testing.T) {
 		w.Header().Set("Last-Modified", "Fri, 23 Oct 2015 07:28:00 GMT")
 		w.WriteHeader(http.StatusNotModified)
 	}))
-	defer srv.Close()
 
-	c := NewClient(&http.Client{})
+	c := NewClient(srv.Client())
 	result, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{
 		ETag:         `"v1"`,
 		LastModified: testLastModified,
@@ -309,17 +303,23 @@ func TestParseFeed_ExtractsImage(t *testing.T) {
 }
 
 func TestFetchEntries_RespectsTimeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
-		_, _ = w.Write([]byte(sampleRSS))
-	}))
-	defer srv.Close()
+	// The handler's sleep and the client's timeout both run on the bubble's
+	// fake clock, so this is instant and deterministic. The in-memory server
+	// has to be created inside the bubble to be part of it.
+	synctest.Test(t, func(t *testing.T) {
+		srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(100 * time.Millisecond)
+			_, _ = w.Write([]byte(sampleRSS))
+		}))
 
-	c := NewClient(&http.Client{Timeout: 10 * time.Millisecond})
-	_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
+		client := srv.Client()
+		client.Timeout = 10 * time.Millisecond
+		c := NewClient(client)
+		_, err := c.FetchEntries(t.Context(), srv.URL, CacheValidators{})
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+	})
 }
 
 func TestDefaultClient_RejectsLoopbackTarget(t *testing.T) {

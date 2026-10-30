@@ -33,10 +33,11 @@ func TestSetup_BuildsWorkingProvider(t *testing.T) {
 }
 
 func TestHTTPTransportWrap_InstrumentsWithoutBreakingRequests(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
+	// Client must be called before srv.URL is read: it sets URL.
+	base := srv.Client().Transport
 
 	tp, shutdown, err := Setup(t.Context(), "127.0.0.1:0")
 	if err != nil {
@@ -49,7 +50,7 @@ func TestHTTPTransportWrap_InstrumentsWithoutBreakingRequests(t *testing.T) {
 	}()
 
 	wrap := HTTPTransportWrap(tp)
-	client := &http.Client{Transport: wrap(http.DefaultTransport)}
+	client := &http.Client{Transport: wrap(base)}
 
 	resp, err := client.Get(srv.URL)
 	if err != nil {
