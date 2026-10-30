@@ -9,8 +9,33 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+// testWebhookHost is the host of every mock webhook URL: Discord's own, so the
+// URL passes the production allowlist unchanged.
+const testWebhookHost = "discord.com"
+
+// testWebhookPath is the path of the webhook newWebhookServer serves.
+const testWebhookPath = "/api/webhooks/123456789/mock-token"
+
+// newWebhookServer starts h on httptest's in-memory network, shut down when
+// the test ends, and returns a real https://discord.com webhook URL plus the
+// client that reaches it. The client routes every request to the server
+// regardless of host, so tests never register a host in AllowedWebhookHosts.
+// h only sees requests for that webhook -- anything else gets a 404, as it
+// would from Discord -- so a send to the wrong URL still fails.
+func newWebhookServer(t testing.TB, h http.Handler) (webhookURL string, client *http.Client) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != testWebhookHost || r.URL.Path != testWebhookPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	return "https://" + testWebhookHost + testWebhookPath, srv.Client()
+}
 
 func TestSendMessage_RejectsNonDiscordHost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,27 +80,26 @@ func TestNewHTTPClientWithTransportWrap_NilWrapMatchesNewHTTPClient(t *testing.T
 }
 
 func TestSendMessage_DoesNotFollowRedirect(t *testing.T) {
-	attackerHit := false
-	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attackerHit = true
-	}))
-	defer attacker.Close()
-
 	// An allowlisted host redirecting to an arbitrary attacker-controlled
-	// server. NewHTTPClient's CheckRedirect must stop http.Client from
+	// host. NewHTTPClient's CheckRedirect must stop http.Client from
 	// transparently following it and replaying the message content there.
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, attacker.URL, http.StatusFound)
+	//
+	// The in-memory client routes every host to this one server, so a
+	// followed redirect would land back in the handler with the attacker's
+	// Host -- that is how the test sees the attacker being reached.
+	const attackerHost = "attacker.example"
+	attackerHit := false
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == attackerHost {
+			attackerHit = true
+			return
+		}
+		http.Redirect(w, r, "https://"+attackerHost+"/steal", http.StatusFound)
 	}))
-	defer srv.Close()
-
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
 	client := srv.Client()
 	client.CheckRedirect = NewHTTPClient().CheckRedirect
 
-	c := NewClientWithHTTP(srv.URL, client)
+	c := NewClientWithHTTP("https://"+testWebhookHost+testWebhookPath, client)
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected the unfollowed redirect's 3xx status to surface as an error")
@@ -85,33 +109,29 @@ func TestSendMessage_DoesNotFollowRedirect(t *testing.T) {
 	}
 }
 
-// newRateLimitedServer starts a TLS server that always answers 429 with
-// Retry-After: 60, allows its host for webhooks for the test's duration, and
-// returns a pointer to the count of requests it has served.
-func newRateLimitedServer(t *testing.T) (*httptest.Server, *int) {
+// newRateLimitedServer starts a webhook server that always answers 429 with
+// Retry-After: 60 and returns its webhook URL, a client for it and a pointer
+// to the count of requests it has served.
+func newRateLimitedServer(t *testing.T) (webhookURL string, httpClient *http.Client, requests *int) {
 	t.Helper()
-	requests := new(int)
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	requests = new(int)
+	webhookURL, httpClient = newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*requests++
 		w.Header().Set("Retry-After", "60")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
-	t.Cleanup(srv.Close)
-
-	AllowedWebhookHosts["127.0.0.1"] = true
-	t.Cleanup(func() { delete(AllowedWebhookHosts, "127.0.0.1") })
-	return srv, requests
+	return webhookURL, httpClient, requests
 }
 
 func TestSendMessage_SharedRateLimiterCooldownSkipsRequest(t *testing.T) {
-	srv, requests := newRateLimitedServer(t)
+	webhookURL, httpClient, requests := newRateLimitedServer(t)
 
 	limiter := NewRateLimiter()
 	// Two separate *Client instances for the same webhook, as
 	// DiscordClientBuilder constructs one per FeedGroup reconcile -- sharing
 	// a limiter is what makes one FeedGroup's 429 also hold off another.
-	c1 := NewClientWithLimiter(srv.URL, srv.Client(), limiter)
-	c2 := NewClientWithLimiter(srv.URL, srv.Client(), limiter)
+	c1 := NewClientWithLimiter(webhookURL, httpClient, limiter)
+	c2 := NewClientWithLimiter(webhookURL, httpClient, limiter)
 
 	// First send actually hits the server and gets 429'd, which records the
 	// cooldown.
@@ -138,11 +158,11 @@ func TestSendMessage_SharedRateLimiterCooldownSkipsRequest(t *testing.T) {
 }
 
 func TestSendMessage_NilRateLimiterDoesNotCooldown(t *testing.T) {
-	srv, requests := newRateLimitedServer(t)
+	webhookURL, httpClient, requests := newRateLimitedServer(t)
 
 	// NewClientWithHTTP (no limiter) must behave exactly as before this
 	// change: every send reaches the server, with no cross-Client cooldown.
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	_, _ = c.SendMessageText(t.Context(), "first"), c.SendMessageText(t.Context(), "second")
 	if *requests != 2 {
 		t.Fatalf("expected both sends to reach the server without a shared limiter, got %d requests", *requests)
@@ -159,20 +179,16 @@ func TestSendMessage_RejectsHTTPScheme(t *testing.T) {
 
 func TestSendMessage_AcceptsDiscordHost(t *testing.T) {
 	requestReceived := false
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestReceived = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
 
 	// NewClientWithHTTP lets the test supply a client trusting the
 	// httptest TLS cert. The httptest server resolves to 127.0.0.1, so we
 	// temporarily add it to the allow-list to exercise the "happy path"
 	// without depending on a real discord.com endpoint.
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	if err := c.SendMessageText(t.Context(), "hello"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,17 +199,13 @@ func TestSendMessage_AcceptsDiscordHost(t *testing.T) {
 
 func TestSendMessage_SuppressesMentionsByDefault(t *testing.T) {
 	var receivedBody string
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessageText(t.Context(), "@everyone breaking news")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -204,19 +216,23 @@ func TestSendMessage_SuppressesMentionsByDefault(t *testing.T) {
 }
 
 func TestSendMessage_RedactsWebhookURLOnTransportError(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("server should not receive a request once closed")
+	// Aborting the response mid-request forces a transport error (the
+	// in-memory network has no refused connections to dial into).
+	reached := false
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		panic(http.ErrAbortHandler)
 	}))
-	webhookURL := srv.URL + "/api/webhooks/123456789/SUPER-SECRET-TOKEN"
-	srv.Close() // closing first forces a dial/connection-refused error below
+	httpClient := srv.Client()
+	webhookURL := "https://" + testWebhookHost + "/api/webhooks/123456789/SUPER-SECRET-TOKEN"
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(webhookURL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected a transport error, got nil")
+	}
+	if !reached {
+		t.Fatal("expected the request to reach the server before the connection was aborted")
 	}
 	if strings.Contains(err.Error(), "SUPER-SECRET-TOKEN") {
 		t.Fatalf("error leaked webhook token: %v", err)
@@ -236,17 +252,13 @@ func TestSendMessage_RedactsWebhookURLOnParseError(t *testing.T) {
 
 func TestSendMessage_ClampsCombinedEmbedLength(t *testing.T) {
 	var receivedBody string
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessage(t.Context(), Message{
 		Embed: &Embed{
 			Title:       strings.Repeat("t", 256),
@@ -286,17 +298,13 @@ func TestSendMessage_ClampsCombinedEmbedLength(t *testing.T) {
 
 func TestSendMessage_SendsEmbedWithColorAndThumbnail(t *testing.T) {
 	var receivedBody string
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessage(t.Context(), Message{
 		Embed: &Embed{
 			Title:        "Breaking News",
@@ -327,17 +335,13 @@ func TestSendMessage_SendsEmbedWithColorAndThumbnail(t *testing.T) {
 
 func TestSendMessage_SetsThreadNameForForumChannel(t *testing.T) {
 	var receivedBody string
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessage(t.Context(), Message{Content: "hello", ThreadName: "New Post Title"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -349,16 +353,12 @@ func TestSendMessage_SetsThreadNameForForumChannel(t *testing.T) {
 
 func TestSendMessage_SetsThreadIDQueryParamForExistingThread(t *testing.T) {
 	var receivedQuery string
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedQuery = r.URL.RawQuery
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessage(t.Context(), Message{Content: "hello", ThreadID: "123456789"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -369,16 +369,12 @@ func TestSendMessage_SetsThreadIDQueryParamForExistingThread(t *testing.T) {
 }
 
 func TestSendMessage_SurfacesDiscordErrorDetail(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"message":"Invalid Webhook Token","code":50027}`))
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected error for 400 response, got nil")
@@ -391,15 +387,11 @@ func TestSendMessage_SurfacesDiscordErrorDetail(t *testing.T) {
 }
 
 func TestSendMessage_ErrorWithoutBodyStillReturnsStatus(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
@@ -410,40 +402,38 @@ func TestSendMessage_ErrorWithoutBodyStillReturnsStatus(t *testing.T) {
 }
 
 func TestSendMessage_RespectsTimeout(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
+	// The handler's sleep and the client's timeout both run on the bubble's
+	// fake clock, so this is instant and deterministic. The in-memory server
+	// has to be created inside the bubble to be part of it.
+	synctest.Test(t, func(t *testing.T) {
+		webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(100 * time.Millisecond)
+			w.WriteHeader(http.StatusNoContent)
+		}))
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	client := srv.Client()
-	client.Timeout = 10 * time.Millisecond
-	c := NewClientWithHTTP(srv.URL, client)
-	err := c.SendMessageText(t.Context(), "hello")
-	if err == nil {
-		t.Fatal("expected timeout-related error, got nil")
-	}
+		client := httpClient
+		client.Timeout = 10 * time.Millisecond
+		c := NewClientWithHTTP(webhookURL, client)
+		err := c.SendMessageText(t.Context(), "hello")
+		if err == nil {
+			t.Fatal("expected timeout-related error, got nil")
+		}
+	})
 }
 
-// newBucketServer starts a TLS webhook server that answers 204 with the given
-// rate-limit headers, allows its host for the test's duration, and returns the
+// newBucketServer starts a webhook server that answers 204 with the given
+// rate-limit headers and returns its webhook URL, a client for it and the
 // arrival time of each request it has served.
-func newBucketServer(t *testing.T, remaining, resetAfter string) (*httptest.Server, *[]time.Time) {
+func newBucketServer(t *testing.T, remaining, resetAfter string) (webhookURL string, httpClient *http.Client, arrivals *[]time.Time) {
 	t.Helper()
-	var arrivals []time.Time
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		arrivals = append(arrivals, time.Now())
+	arrivals = new([]time.Time)
+	webhookURL, httpClient = newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*arrivals = append(*arrivals, time.Now())
 		w.Header().Set("X-RateLimit-Remaining", remaining)
 		w.Header().Set("X-RateLimit-Reset-After", resetAfter)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	t.Cleanup(srv.Close)
-	AllowedWebhookHosts["127.0.0.1"] = true
-	t.Cleanup(func() { delete(AllowedWebhookHosts, "127.0.0.1") })
-	return srv, &arrivals
+	return webhookURL, httpClient, arrivals
 }
 
 // TestSendMessage_PacesWhenBucketEmpty asserts that a success response
@@ -451,9 +441,9 @@ func newBucketServer(t *testing.T, remaining, resetAfter string) (*httptest.Serv
 // through the same limiter wait for Reset-After rather than hit the server
 // early and get 429'd -- and that it does so without returning an error.
 func TestSendMessage_PacesWhenBucketEmpty(t *testing.T) {
-	srv, arrivals := newBucketServer(t, "0", "0.2")
+	webhookURL, httpClient, arrivals := newBucketServer(t, "0", "0.2")
 
-	c := NewClientWithLimiter(srv.URL, srv.Client(), NewRateLimiter())
+	c := NewClientWithLimiter(webhookURL, httpClient, NewRateLimiter())
 	for _, text := range []string{"one", "two"} {
 		if err := c.SendMessageText(t.Context(), text); err != nil {
 			t.Fatalf("send %q: %v", text, err)
@@ -470,9 +460,9 @@ func TestSendMessage_PacesWhenBucketEmpty(t *testing.T) {
 // TestSendMessage_LongResetBecomesCooldown asserts a bucket that won't refill
 // within maxPaceWait is surfaced as a RateLimitError instead of blocking.
 func TestSendMessage_LongResetBecomesCooldown(t *testing.T) {
-	srv, arrivals := newBucketServer(t, "0", "30")
+	webhookURL, httpClient, arrivals := newBucketServer(t, "0", "30")
 
-	c := NewClientWithLimiter(srv.URL, srv.Client(), NewRateLimiter())
+	c := NewClientWithLimiter(webhookURL, httpClient, NewRateLimiter())
 	if err := c.SendMessageText(t.Context(), "one"); err != nil {
 		t.Fatal(err)
 	}
@@ -545,11 +535,11 @@ func TestNotePacing_NilLimiterIsNoop(t *testing.T) {
 // pacing delay returns the context's error promptly and never reaches the
 // server.
 func TestSendMessage_ContextCanceledWhilePaced(t *testing.T) {
-	srv, arrivals := newBucketServer(t, "5", "1")
+	webhookURL, httpClient, arrivals := newBucketServer(t, "5", "1")
 
 	limiter := NewRateLimiter()
-	limiter.pace(srv.URL, maxPaceWait)
-	c := NewClientWithLimiter(srv.URL, srv.Client(), limiter)
+	limiter.pace(webhookURL, maxPaceWait)
+	c := NewClientWithLimiter(webhookURL, httpClient, limiter)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()

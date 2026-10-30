@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -232,16 +231,12 @@ func TestSendMessage_InvalidWebhookURL(t *testing.T) {
 }
 
 func TestSendMessage_ReturnsRateLimitError(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "2")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessageText(t.Context(), "rate limited test")
 
 	rle, ok := errors.AsType[*RateLimitError](err)
@@ -254,16 +249,12 @@ func TestSendMessage_ReturnsRateLimitError(t *testing.T) {
 }
 
 func TestSendMessage_ReturnsErrorOnNon2xx(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webhookURL, httpClient := newWebhookServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"message":"bad"}`))
 	}))
-	defer srv.Close()
 
-	AllowedWebhookHosts["127.0.0.1"] = true
-	defer delete(AllowedWebhookHosts, "127.0.0.1")
-
-	c := NewClientWithHTTP(srv.URL, srv.Client())
+	c := NewClientWithHTTP(webhookURL, httpClient)
 	err := c.SendMessageText(t.Context(), "non-2xx test")
 	if err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("expected 400 error, got %v", err)

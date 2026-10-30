@@ -84,10 +84,11 @@ func TestRedactWebhookURL(t *testing.T) {
 // URL carrying a Discord-shaped webhook token must not leak that token into
 // an exported span's URL attribute.
 func TestRedactingExporter_StripsTokenFromExportedSpan(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
+	// Client must be called before srv.URL is read: it sets URL.
+	base := srv.Client().Transport
 
 	exporter := tracetest.NewInMemoryExporter()
 	tp := trace.NewTracerProvider(
@@ -96,7 +97,7 @@ func TestRedactingExporter_StripsTokenFromExportedSpan(t *testing.T) {
 	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	client := &http.Client{
-		Transport: otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithTracerProvider(tp)),
+		Transport: otelhttp.NewTransport(base, otelhttp.WithTracerProvider(tp)),
 	}
 
 	webhookURL := srv.URL + "/api/webhooks/123456789/super-secret-token"
