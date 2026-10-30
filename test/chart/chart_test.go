@@ -400,6 +400,11 @@ func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
 			wantArg: "--watch-namespaces=" + chartNamespace, wantKind: "kind: Role\n", namespaces: []string{chartNamespace},
 		},
 		{
+			name:    "blank entries never add a cluster-wide grant",
+			values:  []string{"rbac.watchNamespaces={team-a,, }"},
+			wantArg: "--watch-namespaces=team-a", wantKind: "kind: Role\n", namespaces: []string{"team-a"},
+		},
+		{
 			name:    "explicit list wins and is deduplicated",
 			values:  []string{"rbac.namespaced=true", "rbac.watchNamespaces={team-a,team-b,team-a}"},
 			wantArg: "--watch-namespaces=team-a,team-b", wantKind: "kind: Role\n", namespaces: []string{"team-a", "team-b"},
@@ -424,5 +429,14 @@ func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestChartWatchNamespacesRejectsAnAllBlankList pins that a list with no real
+// namespace fails the render instead of falling back to a ClusterRole.
+func TestChartWatchNamespacesRejectsAnAllBlankList(t *testing.T) {
+	out, err := runHelmTemplate(t, managerRoleTemplate, `rbac.watchNamespaces={,}`)
+	if err == nil || !strings.Contains(out, "rbac.watchNamespaces must list at least one non-empty namespace") {
+		t.Fatalf("want a render failure for an all-blank rbac.watchNamespaces, got err=%v:\n%s", err, out)
 	}
 }

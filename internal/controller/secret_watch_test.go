@@ -134,12 +134,17 @@ func TestWatchNamespaces(t *testing.T) {
 
 var _ = Describe("Webhook Secret watch", func() {
 	It("maps a Secret to the FeedGroups in its namespace that reference it", func() {
-		const watched = "secret-watch-a"
+		const (
+			watched     = "secret-watch-a"
+			referencesA = "secret-watch-a1"
+			alsoA       = "secret-watch-a2"
+			referencesB = "secret-watch-b"
+		)
 		createWebhookSecret(ctx, watched, "https://discord.com/api/webhooks/1/a")
 		for name, secret := range map[string]string{
-			"secret-watch-a1": watched, "secret-watch-a2": watched, "secret-watch-b": "secret-watch-other",
+			referencesA: watched, alsoA: watched, referencesB: "secret-watch-other",
 		} {
-			Expect(k8sClient.Create(ctx, newTestFeedGroup(name, secret, "https://example.com/feed.xml"))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newTestFeedGroup(name, secret, exampleFeedURL))).To(Succeed())
 		}
 
 		r := &FeedGroupReconciler{Client: k8sClient}
@@ -150,7 +155,7 @@ var _ = Describe("Webhook Secret watch", func() {
 			Expect(req.Namespace).To(Equal(testNamespace))
 			names = append(names, req.Name)
 		}
-		Expect(names).To(ConsistOf("secret-watch-a1", "secret-watch-a2"))
+		Expect(names).To(ConsistOf(referencesA, alsoA))
 	})
 
 	It("retries a feed backed off after a permanent send failure once its webhook Secret changes", func() {
