@@ -70,7 +70,7 @@ func TestProcessFeed_AmbiguousCapSurvivesFailedFirstSend(t *testing.T) {
 	}
 	fg, feed, _ := newLegacyFeedGroup(t, "ambiguous-failed-first-send", "{{.Title}}")
 	fg.Spec.CatchUpLimit = new(int32(0))
-	server := NewMockDiscordServer()
+	server := NewMockDiscordServer(t)
 	defer server.Close()
 	client := server.DiscordClientBuilder()(server.URL())
 	server.FailNextRequests(1, http.StatusInternalServerError)
@@ -140,7 +140,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			fg, feed := newMetricsFeedGroup(settlementNS, name, "{{.Title}}")
 			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
 			fg.Spec.Retries = 2
-			server := NewMockDiscordServer()
+			server := NewMockDiscordServer(t)
 			defer server.Close()
 			client := server.DiscordClientBuilder()(server.URL())
 
@@ -208,7 +208,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 			fg, feed := newMetricsFeedGroup(settlementNS, "skip-"+tc.name, skipProbeTemplate)
 			defer deleteFeedGroupMetrics(fg.Namespace, fg.Name)
 			fg.Spec.Retries = 2
-			server := NewMockDiscordServer()
+			server := NewMockDiscordServer(t)
 			defer server.Close()
 			client := server.DiscordClientBuilder()(server.URL())
 			r := &FeedGroupReconciler{Recorder: events.NewFakeRecorder(20)}

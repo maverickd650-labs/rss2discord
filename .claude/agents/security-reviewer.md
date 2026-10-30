@@ -18,7 +18,7 @@ You are a security reviewer for a Kubernetes operator that fetches RSS feeds and
 - The allowlist must not be broadened without explicit justification
 
 **Test helpers — watch for guard bypasses:**
-- `testRSSClient()` and `discord.AllowedWebhookHosts[...] = true` are the only sanctioned bypass points, and only in `*_test.go` files
+- `testRSSClient()` and `discord.AllowedWebhookHosts[...] = true` (now only in `internal/discord`'s own tests; controller tests use `MockDiscordServer` on `httptest.NewTestServer`'s in-memory network with a real `https://discord.com/...` URL instead) are the only sanctioned bypass points, and only in `*_test.go` files
 - Guard bypasses must never appear in non-test code
 
 ## Report format
