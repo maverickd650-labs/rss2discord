@@ -237,3 +237,43 @@ func TestBackoffAddsNoWakeTime(t *testing.T) {
 		t.Fatalf("active=%v wait=%v, want no fetch and the full 30m Interval", activeURLs(plan), d.bound(30*time.Minute))
 	}
 }
+
+// wait parses the interval (falling back when it is empty or unparsable),
+// jitters it only when asked, and then applies the nextDue bound.
+func TestRequeueDecisionWait(t *testing.T) {
+	const (
+		waitInterval    = "20m"
+		waitIntervalDur = 20 * time.Minute
+		waitFallback    = 7 * time.Minute
+		waitShort       = time.Minute
+	)
+	for _, tc := range []struct {
+		name     string
+		decision requeueDecision
+		want     time.Duration
+	}{
+		{name: "parsed interval", decision: requeueDecision{interval: waitInterval, fallback: waitShort}, want: waitIntervalDur},
+		{name: "empty interval uses fallback", decision: requeueDecision{fallback: waitFallback}, want: waitFallback},
+		{name: "unparsable interval uses fallback", decision: requeueDecision{interval: "bogus", fallback: waitFallback}, want: waitFallback},
+		{name: "sub-floor interval is floored", decision: requeueDecision{interval: "2s", fallback: time.Hour}, want: minParsedInterval},
+		{name: "bounded by nextDue", decision: requeueDecision{interval: waitInterval, fallback: waitShort, nextDue: 3 * time.Minute}, want: 3 * time.Minute},
+		{name: "nextDue never below the floor", decision: requeueDecision{interval: waitInterval, fallback: waitShort, nextDue: time.Second}, want: minParsedInterval},
+		{name: "nextDue longer than the wait is ignored", decision: requeueDecision{fallback: waitShort, nextDue: time.Hour}, want: waitShort},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.decision.wait(); got != tc.want {
+				t.Fatalf("wait = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("jitter only lengthens", func(t *testing.T) {
+		base := waitIntervalDur
+		for range 50 {
+			got := (requeueDecision{interval: waitInterval, jitter: true}).wait()
+			if got < base || got > base+time.Duration(float64(base)*requeueJitterMaxFactor) {
+				t.Fatalf("wait = %v, want within [%v, +%.0f%%]", got, base, requeueJitterMaxFactor*100)
+			}
+		}
+	})
+}

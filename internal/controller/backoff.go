@@ -127,8 +127,10 @@ func planFeeds(feedGroup *v1alpha1.FeedGroup, now time.Time, force bool) feedPla
 	return plan
 }
 
-// requeueDecision is how long to wait before the next reconcile, in the terms
-// requeueWithStatus takes, plus the bound a not-yet-due feed puts on it.
+// requeueDecision is how long to wait before the next reconcile, as the inputs
+// wait turns into a duration: an interval (with the fallback for one that is
+// empty or unparsable), whether to jitter it, and the bound a not-yet-due feed
+// puts on it.
 type requeueDecision struct {
 	interval string
 	fallback time.Duration
@@ -158,6 +160,15 @@ func (p feedPlan) requeue(spec *v1alpha1.FeedGroupSpec, wantRetry bool, rateLimi
 		return d
 	}
 	return requeueDecision{interval: spec.Interval, fallback: fallbackInterval, jitter: true, nextDue: p.nextDue}
+}
+
+// wait is the final wait before the next reconcile: interval parsed (falling
+// back to fallback when it is empty or unparsable; the parse error itself is
+// reported on the Ready condition, see invalidIntervalError), jittered when
+// d.jitter is set, then bounded by d.nextDue.
+func (d requeueDecision) wait() time.Duration {
+	delay, _ := parseDurationWithDefault(d.interval, d.fallback)
+	return d.bound(jitterDuration(delay, d.jitter))
 }
 
 // bound shortens delay to the soonest not-yet-due feed, never below

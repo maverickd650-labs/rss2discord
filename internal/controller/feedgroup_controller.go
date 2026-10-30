@@ -129,15 +129,13 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	webhookURL, err := r.resolveWebhookURL(ctx, &feedGroup)
 	if err != nil {
 		log.Error(err, "failed to resolve Discord webhook URL")
-		retry := retryRequeue(&feedGroup.Spec)
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retry.interval, retry.fallback, err, retry.jitter)
+		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
 	}
 
 	if webhookURL == "" {
 		err = fmt.Errorf("discord webhook URL is empty")
 		log.Error(err, "invalid webhook secret")
-		retry := retryRequeue(&feedGroup.Spec)
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retry.interval, retry.fallback, err, retry.jitter)
+		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -206,11 +204,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	decision := plan.requeue(&feedGroup.Spec, wantRetry, discordRetryAfter)
-	result, err := r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, decision.interval, decision.fallback, nil, decision.jitter)
-	if err == nil {
-		result.RequeueAfter = decision.bound(result.RequeueAfter)
-	}
-	return result, err
+	return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, decision, nil)
 }
 
 // processFeed handles a completed fetch for a single feed: it records the
