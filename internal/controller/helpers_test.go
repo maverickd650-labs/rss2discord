@@ -230,7 +230,7 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 		return c.Reason
 	}
 
-	failing := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u", LastError: "boom"}}}}
+	failing := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u", LastError: testBoom}}}}
 	setReadyCondition(failing, nil, intervalErr)
 	if got := readyReason(failing); got != reasonInvalidInterval {
 		t.Fatalf("with a failing feed and a bad interval: reason = %q, want %q", got, reasonInvalidInterval)

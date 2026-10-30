@@ -48,7 +48,11 @@ var allFailureClasses = []failureClass{
 
 // expectedOutcomes is every outcome label value feedOperationsTotal can ever
 // be incremented with in production -- the "reality" side of the contract
-// that the dashboard and alerts in dist/chart are checked against.
+// that the dashboard and alerts in dist/chart are checked against. It is listed
+// independently of attemptOutcome.metricLabel, the only place a label is
+// chosen, so TestAttemptOutcome_MetricLabels checks metricLabel against this
+// list rather than against its own output: a kind that starts counting under a
+// label missing here fails that test instead of passing it.
 func expectedOutcomes() []string {
 	outcomes := make([]string, 0, 4+2*len(allFailureClasses))
 	outcomes = append(outcomes, outcomeSent, outcomeRenderError, outcomeRateLimited, outcomeSkipped)
