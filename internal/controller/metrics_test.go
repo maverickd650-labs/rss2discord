@@ -158,7 +158,9 @@ func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	// The send duration is observed by the timing adapter Reconcile wraps
+	// the client in, so processFeed is handed the same wrapping.
+	client := newTimedSender(discordServer.DiscordClientBuilder()(discordServer.URL()), ns, name)
 
 	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
 

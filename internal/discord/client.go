@@ -22,7 +22,8 @@ const defaultTimeout = 10 * time.Second
 // hosts. The webhook URL is read from a Secret the operator can `get`
 // cluster-wide, so without this guard a misconfigured or malicious secret
 // could redirect message content (and implicitly, an SSRF-style POST) to an
-// arbitrary host. Exported so tests can register a mock server's host.
+// arbitrary host. Tests must never widen it: mock servers are addressed as
+// real https://discord.com/... URLs on an in-memory network instead.
 var AllowedWebhookHosts = map[string]bool{
 	"discord.com":    true,
 	"discordapp.com": true,
