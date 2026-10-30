@@ -36,5 +36,5 @@ if ! sha256sum --check --status "$hashes" 2>/dev/null; then
   mise run golangci-lint-custom
   go mod download
 
-  sha256sum .claude/hooks/session-start.sh .mise/config.toml .custom-gcl.yml go.mod go.sum > "$hashes" || rm -f "$hashes"
+  sha256sum .claude/hooks/session-start.sh .mise/config.toml .mise/mise.lock .custom-gcl.yml go.mod go.sum > "$hashes" || rm -f "$hashes"
 fi
