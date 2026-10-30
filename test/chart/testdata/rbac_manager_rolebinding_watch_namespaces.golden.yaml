@@ -1,0 +1,40 @@
+---
+# Source: rss2discord-operator/templates/rbac/manager-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: "team-a"
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: rss2discord-operator
+    helm.sh/chart: SCRUBBED
+    app.kubernetes.io/instance: chart-golden-test
+  name: chart-golden-test-rss2discord-operator-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chart-golden-test-rss2discord-operator-manager-role
+subjects:
+- kind: ServiceAccount
+  name: chart-golden-test-rss2discord-operator
+  namespace: chart-golden-test-ns
+---
+# Source: rss2discord-operator/templates/rbac/manager-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: "team-b"
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: rss2discord-operator
+    helm.sh/chart: SCRUBBED
+    app.kubernetes.io/instance: chart-golden-test
+  name: chart-golden-test-rss2discord-operator-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chart-golden-test-rss2discord-operator-manager-role
+subjects:
+- kind: ServiceAccount
+  name: chart-golden-test-rss2discord-operator
+  namespace: chart-golden-test-ns

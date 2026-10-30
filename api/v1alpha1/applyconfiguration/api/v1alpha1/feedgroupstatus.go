@@ -35,6 +35,11 @@ type FeedGroupStatusApplyConfiguration struct {
 	// observedGeneration is the most recent generation observed for this FeedGroup
 	// by the controller.
 	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
+	// webhookSecretResourceVersion is the resourceVersion of the webhook
+	// Secret the controller last read. When the Secret changes (e.g. a deleted
+	// webhook is replaced), feeds backed off after a permanent send failure
+	// get an immediate fresh attempt instead of waiting out their backoff.
+	WebhookSecretResourceVersion *string `json:"webhookSecretResourceVersion,omitempty"`
 }
 
 // FeedGroupStatusApplyConfiguration constructs a declarative configuration of the FeedGroupStatus type for use with
@@ -74,5 +79,13 @@ func (b *FeedGroupStatusApplyConfiguration) WithFeeds(values ...*FeedStatusApply
 // If called multiple times, the ObservedGeneration field is set to the value of the last call.
 func (b *FeedGroupStatusApplyConfiguration) WithObservedGeneration(value int64) *FeedGroupStatusApplyConfiguration {
 	b.ObservedGeneration = &value
+	return b
+}
+
+// WithWebhookSecretResourceVersion sets the WebhookSecretResourceVersion field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the WebhookSecretResourceVersion field is set to the value of the last call.
+func (b *FeedGroupStatusApplyConfiguration) WithWebhookSecretResourceVersion(value string) *FeedGroupStatusApplyConfiguration {
+	b.WebhookSecretResourceVersion = &value
 	return b
 }

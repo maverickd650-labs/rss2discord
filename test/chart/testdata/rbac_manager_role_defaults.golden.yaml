@@ -1,0 +1,47 @@
+---
+# Source: rss2discord-operator/templates/rbac/manager-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chart-golden-test-rss2discord-operator-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - rss2discord.maverickd650.dev
+  resources:
+  - feedgroups
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rss2discord.maverickd650.dev
+  resources:
+  - feedgroups/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - rss2discord.maverickd650.dev
+  resources:
+  - feedgroups/status
+  verbs:
+  - get
+  - patch
+  - update

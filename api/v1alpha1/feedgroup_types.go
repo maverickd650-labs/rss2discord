@@ -387,6 +387,14 @@ type FeedGroupStatus struct {
 	// +optional
 	//nolint:kubeapilinter // plain int64 matches the universal k8s status convention (Deployment, StatefulSet, ...); not worth deviating from for one field.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// webhookSecretResourceVersion is the resourceVersion of the webhook
+	// Secret the controller last read. When the Secret changes (e.g. a deleted
+	// webhook is replaced), feeds backed off after a permanent send failure
+	// get an immediate fresh attempt instead of waiting out their backoff.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	WebhookSecretResourceVersion string `json:"webhookSecretResourceVersion,omitempty"`
 }
 
 // ConditionTypeReady indicates whether the FeedGroup's most recent

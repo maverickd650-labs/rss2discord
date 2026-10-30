@@ -616,6 +616,14 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
+              webhookSecretResourceVersion:
+                description: |-
+                  webhookSecretResourceVersion is the resourceVersion of the webhook
+                  Secret the controller last read. When the Secret changes (e.g. a deleted
+                  webhook is replaced), feeds backed off after a permanent send failure
+                  get an immediate fresh attempt instead of waiting out their backoff.
+                maxLength: 128
+                type: string
             type: object
         type: object
     served: true

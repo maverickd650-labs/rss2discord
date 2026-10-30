@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -71,6 +72,14 @@ type FeedGroupReconciler struct {
 	// zero value, controller-runtime defaults this to 1, preserving the
 	// historical single-worker behavior.
 	MaxConcurrentReconciles int
+	// WatchWebhookSecrets wakes a FeedGroup as soon as its webhook Secret
+	// changes (see noteWebhookSecretVersion), via a metadata-only Secret
+	// watch. It needs list/watch on Secrets, so it is off unless that grant is
+	// wanted: the Helm chart turns it on with a namespace-scoped install
+	// (rbac.watchNamespaces), where the grant is scoped to those namespaces
+	// too. Without it the change is still noticed, on the group's next
+	// scheduled reconcile, with only get on Secrets.
+	WatchWebhookSecrets bool
 }
 
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups,verbs=get;list;watch;create;update;patch;delete
@@ -126,11 +135,12 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// nothing actually changed.
 	statusSnapshot := feedGroup.Status.DeepCopy()
 
-	webhookURL, err := r.resolveWebhookURL(ctx, &feedGroup)
+	webhookURL, secretVersion, err := r.resolveWebhookURL(ctx, &feedGroup)
 	if err != nil {
 		log.Error(err, "failed to resolve Discord webhook URL")
 		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
 	}
+	noteWebhookSecretVersion(&feedGroup, secretVersion)
 
 	if webhookURL == "" {
 		err = fmt.Errorf("discord webhook URL is empty")
@@ -551,24 +561,27 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				class := classifySendError(err)
 				attempt.fail(v1alpha1.FeedConditionTypeDelivered, sendErrorOutcome(class), class.conditionReason, err)
 
-				// See the matching comment on the render-error branch above:
-				// fire the persistent-failure Event only the reconcile
-				// RetryCount first reaches maxRetries, not on every
-				// subsequent reconcile of an entry stuck failing to send.
-				maxRetries := maxRetryCount(feedGroup.Spec.Retries)
-				if fs.RetryCount < maxRetries {
-					wantRetry = true
-				} else {
-					attempt.announceExhaustion(maxRetries, "SendFailed", err)
+				if class.permanent {
 					// A permanent classification (e.g. a deleted webhook, or
 					// a malformed message Discord will keep rejecting) won't
-					// recover on its own, so back off exponentially the same
-					// way a permanent fetch failure does instead of retrying
-					// at full Interval cadence forever. A transient
-					// classification (5xx, timeout) keeps retrying at that
-					// cadence since it's expected to recover on its own.
-					if class.permanent {
-						attempt.backOff("SendFailed", err)
+					// recover on its own, so back off exponentially right
+					// away, exactly as a permanent fetch failure does: no
+					// wantRetry, so it doesn't pull the whole group onto the
+					// faster RetryInterval, and the persistent-failure Event
+					// comes from the backoff reaching its cap.
+					attempt.backOff("SendFailed", err)
+				} else {
+					// A transient classification (5xx, timeout) keeps
+					// retrying since it's expected to recover on its own. See
+					// the matching comment on the render-error branch above:
+					// fire the persistent-failure Event only the reconcile
+					// RetryCount first reaches maxRetries, not on every
+					// subsequent reconcile of an entry stuck failing to send.
+					maxRetries := maxRetryCount(feedGroup.Spec.Retries)
+					if fs.RetryCount < maxRetries {
+						wantRetry = true
+					} else {
+						attempt.announceExhaustion(maxRetries, "SendFailed", err)
 					}
 				}
 			}
@@ -635,7 +648,7 @@ func (r *FeedGroupReconciler) applyPermanentBackoff(feedGroup *v1alpha1.FeedGrou
 		firstCapped := fs.RetryCount <= 1 ||
 			permanentBackoffDuration(int(fs.RetryCount)-1, base) < maxPermanentBackoff
 		if firstCapped {
-			r.recordPersistentFailure(feedGroup, rssURL, reason, err)
+			r.recordBackoffCapped(feedGroup, rssURL, reason, err)
 		}
 		backoff = maxPermanentBackoff
 	}
@@ -653,6 +666,19 @@ func (r *FeedGroupReconciler) recordPersistentFailure(feedGroup *v1alpha1.FeedGr
 	}
 	r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reason, "RetriesExhausted",
 		"feed %s: giving up after exhausting retries: %v", url, err)
+}
+
+// recordBackoffCapped emits the Warning Event for a permanent failure the
+// first time its exponential backoff reaches maxPermanentBackoff. Unlike
+// recordPersistentFailure it doesn't speak of exhausted retries: a permanent
+// failure never spends them, and the feed keeps being retried, waiting at
+// most the cap between attempts (or longer if the group's Interval is longer).
+func (r *FeedGroupReconciler) recordBackoffCapped(feedGroup *v1alpha1.FeedGroup, url, reason string, err error) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reason, "BackoffCapped",
+		"feed %s: still failing permanently, backoff now capped at %s: %v", url, maxPermanentBackoff, err)
 }
 
 // recordConfigError updates fs to reflect a deterministic FeedSpec
@@ -673,7 +699,7 @@ func (r *FeedGroupReconciler) recordConfigError(feedGroup *v1alpha1.FeedGroup, f
 	}
 }
 
-func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
+func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (webhookURL, resourceVersion string, err error) {
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Name:      feedGroup.Spec.DiscordWebhookSecretRef.Name,
@@ -681,15 +707,15 @@ func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *
 	}
 
 	if err := r.Get(ctx, secretKey, secret); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	value, ok := secret.Data[feedGroup.Spec.DiscordWebhookSecretRef.Key]
 	if !ok {
-		return "", fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
+		return "", "", fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
 	}
 
-	return strings.TrimSpace(string(value)), nil
+	return strings.TrimSpace(string(value)), secret.ResourceVersion, nil
 }
 
 // compileFilterRegex compiles a feed's filter regex once per feed per
@@ -766,14 +792,23 @@ func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("feedgroup-controller")
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		// Status is written by this controller, so reacting to those writes
 		// would re-enqueue every reconcile that changed anything (and, for a
 		// failing feed whose RetryCount ticks up each pass, loop at
 		// API-round-trip speed instead of RetryInterval). Only spec changes
 		// (generation bumps), creates and deletes matter; periodic work is
 		// driven by RequeueAfter.
-		For(&v1alpha1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&v1alpha1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	if r.WatchWebhookSecrets {
+		// A replaced webhook Secret lets a feed backed off after a permanent
+		// send failure retry right away (see noteWebhookSecretVersion).
+		// Metadata only: the informer never holds Secret data, and the
+		// webhook URL itself is still read uncached in resolveWebhookURL.
+		b = b.Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.feedGroupsForSecret),
+			builder.OnlyMetadata, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}))
+	}
+	return b.
 		Named("feedgroup").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.MaxConcurrentReconciles,

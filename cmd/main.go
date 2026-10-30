@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -119,6 +120,8 @@ func main() {
 	var enableHTTP2 bool
 	var maxConcurrentFeedGroupReconciles int
 	var otlpEndpoint string
+	var watchNamespaces string
+	var watchWebhookSecrets bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -139,6 +142,15 @@ func main() {
 	flag.StringVar(&otlpEndpoint, "otlp-endpoint", "",
 		"OTLP/gRPC endpoint (host:port) to export traces to for outbound RSS fetch and Discord webhook "+
 			"requests. Leave empty to disable tracing entirely.")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", "",
+		"Comma-separated namespaces to watch for FeedGroups and their webhook Secrets. Empty watches every "+
+			"namespace. When set, grant the manager's RBAC as a Role in exactly these namespaces instead of a "+
+			"ClusterRole: limiting the watch alone does not limit what the service account may read.")
+	flag.BoolVar(&watchWebhookSecrets, "watch-webhook-secrets", false,
+		"Watch webhook Secrets (metadata only) so a FeedGroup backed off after a permanent send failure "+
+			"retries as soon as its Secret changes, instead of on its next scheduled reconcile. Requires list "+
+			"and watch on Secrets in every watched namespace; the Helm chart enables it, and that grant, only "+
+			"for namespace-scoped installs unless rbac.clusterWideSecretWatch is set.")
 	// Development defaults to false so production deployments get
 	// structured JSON logs at info level rather than zap's human-oriented
 	// console encoder with debug-level and stack-traced warnings. Pass
@@ -172,14 +184,20 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Client: client.Options{
-			// Secrets are only ever fetched by name (the webhook URL secret
-			// referenced by a FeedGroup), so route them around the informer
-			// cache. Caching them would make the client list/watch *all*
-			// Secrets cluster-wide, which needs RBAC far beyond the `get`
-			// the operator actually requires.
+			// The webhook URL Secret is only ever read by name, so route full
+			// Secret reads around the informer cache: caching them would hold
+			// every Secret's data in memory, cluster-wide. Changes are noticed
+			// through a separate metadata-only watch (see SetupWithManager).
 			Cache: &client.CacheOptions{
 				DisableFor: []client.Object{&corev1.Secret{}},
 			},
+		},
+		Cache: cache.Options{
+			// Empty (every namespace) unless --watch-namespaces is set.
+			DefaultNamespaces: controller.WatchNamespaces(watchNamespaces),
+			// Keeps Secret data that kubectl copies into an annotation out of
+			// the metadata-only Secret watch's cache.
+			DefaultTransform: controller.StripMetadataOnlyAnnotations(),
 		},
 		Metrics:                metricsServerOptions,
 		HealthProbeBindAddress: probeAddr,
@@ -235,6 +253,7 @@ func main() {
 			return discord.NewClientWithLimiter(webhookURL, discordHTTPClient, discordRateLimiter)
 		},
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
+		WatchWebhookSecrets:     watchWebhookSecrets,
 	}).SetupWithManager(mgr)
 	exitOnError(err, "Failed to create controller", "controller", "feedgroup")
 	// +kubebuilder:scaffold:builder

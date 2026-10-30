@@ -1,14 +1,14 @@
-apiVersion: rbac.authorization.k8s.io/v1
-{{- if .Values.rbac.namespaced }}
-kind: Role
-{{- else }}
-kind: ClusterRole
-{{- end }}
-metadata:
-{{- if .Values.rbac.namespaced }}
-  namespace: {{ .Release.Namespace }}
-{{- end }}
-  name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+{{- /*
+Hand-tuned (preserved by mise run helm-chart-refresh): a ClusterRole, or a Role
+in each namespace from rss2discord-operator.watchNamespaces (see _helpers.tpl).
+The managerRoleRules must match config/rbac/role.yaml, which is generated from
+the +kubebuilder:rbac markers; test/chart's TestChartManagerRoleRulesMatchConfig
+fails when they drift. secretWatchRule (list/watch on Secrets) is added on top
+only when the manager runs with --watch-webhook-secrets
+(rss2discord-operator.watchWebhookSecrets), so the default cluster-wide install
+keeps get-only Secret access.
+*/}}
+{{- define "rss2discord-operator.managerRoleRules" }}
 rules:
 - apiGroups:
   - ""
@@ -50,3 +50,30 @@ rules:
   - get
   - patch
   - update
+{{- if include "rss2discord-operator.watchWebhookSecrets" . }}
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - list
+  - watch
+{{- end }}
+{{- end }}
+{{- $namespaces := include "rss2discord-operator.watchNamespaces" . }}
+{{- $targets := list "" }}
+{{- if $namespaces }}
+{{- /* compact: an empty name means cluster-wide, so never derive one from the list. */}}
+{{- $targets = splitList "," $namespaces | compact }}
+{{- end }}
+{{- range $ns := $targets }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if $ns }}Role{{ else }}ClusterRole{{ end }}
+metadata:
+  {{- with $ns }}
+  namespace: {{ . | quote }}
+  {{- end }}
+  name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+{{- include "rss2discord-operator.managerRoleRules" $ }}
+{{- end }}

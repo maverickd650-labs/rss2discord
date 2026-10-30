@@ -77,3 +77,54 @@ the operator's RBAC to every pod in the namespace that runs under it.
 {{- .Values.serviceAccount.name | default "" | trim | default $default }}
 {{- end }}
 {{- end }}
+
+{{/*
+Namespaces the manager watches and is granted its RBAC in, comma-separated:
+rbac.watchNamespaces if set, else the release namespace when rbac.namespaced,
+else empty (every namespace, via a ClusterRole). manager.yaml passes the same
+list as --watch-namespaces and rbac/manager-role(binding).yaml render a Role
+and RoleBinding per entry, so the watch scope and the grant always match:
+narrowing only the watch would leave a stolen token able to read every Secret.
+Blank entries are dropped, any other entry must be a valid namespace name (a
+DNS-1123 label, so never a comma that would split into an extra, empty target),
+and a list with nothing valid in it fails the render rather than silently
+falling back to cluster-wide.
+*/}}
+{{- define "rss2discord-operator.watchNamespaces" -}}
+{{- if .Values.rbac.watchNamespaces }}
+{{- $watch := list }}
+{{- range .Values.rbac.watchNamespaces }}
+{{- with toString . | trim }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .) }}
+{{- fail (printf "rbac.watchNamespaces entry %q is not a valid namespace name" .) }}
+{{- end }}
+{{- $watch = append $watch . }}
+{{- end }}
+{{- end }}
+{{- if not $watch }}
+{{- fail "rbac.watchNamespaces must list at least one non-empty namespace" }}
+{{- end }}
+{{- $watch | uniq | join "," }}
+{{- else if .Values.rbac.namespaced }}
+{{- .Release.Namespace }}
+{{- end }}
+{{- end }}
+
+{{/*
+"true" when the manager runs with --watch-webhook-secrets (and manager-role
+gains list/watch on Secrets): always for a namespace-scoped install, where the
+grant is scoped to those namespaces, and cluster-wide only when
+rbac.clusterWideSecretWatch opts in to that wider grant. Empty otherwise. The
+opt-in must be a real boolean: `--set-string rbac.clusterWideSecretWatch=false`
+yields the non-empty (so truthy) string "false", which would otherwise grant
+cluster-wide list/watch against the operator's intent.
+*/}}
+{{- define "rss2discord-operator.watchWebhookSecrets" -}}
+{{- $clusterWide := .Values.rbac.clusterWideSecretWatch | default false }}
+{{- if not (kindIs "bool" $clusterWide) }}
+{{- fail (printf "rbac.clusterWideSecretWatch must be a boolean, got %T %q" $clusterWide (toString $clusterWide)) }}
+{{- end }}
+{{- if or (include "rss2discord-operator.watchNamespaces" .) $clusterWide -}}
+true
+{{- end }}
+{{- end }}
