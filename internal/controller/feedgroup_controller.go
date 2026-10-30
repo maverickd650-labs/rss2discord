@@ -392,12 +392,18 @@ func (r *FeedGroupReconciler) processFeed(
 	legacy.migrate(fs, entries, catchUpLimit)
 	migratePreviousIdentities(fs, entries)
 
-	// Counted over the whole fetch, before any catch-up trim below, so an
+	// Built over the whole fetch, before any catch-up trim below, so an
 	// entry's stripped identity is only unique if it is across the feed.
-	counts := countStripped(entries)
+	ledger := newDeliveryLedger(fs, entries)
 	lastSeenID := fs.LastSeenEntry
 	hasSeenID := lastSeenID != ""
-	if hasSeenID && watermarkIndex(entries, lastSeenID, counts) < 0 {
+	resumeAt := 0
+	if hasSeenID {
+		index, found := ledger.resume(entries)
+		hasSeenID = found
+		resumeAt = index + 1
+	}
+	if lastSeenID != "" && !hasSeenID {
 		// The stored ID has scrolled out of the feed's window (or the feed
 		// changed how it identifies this entry between fetches), so the
 		// forward-scan below would never match it and would silently treat
@@ -422,7 +428,7 @@ func (r *FeedGroupReconciler) processFeed(
 					"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
 				entries = limitCatchUp(entries, defaultCatchUpLimit)
 			case !wasInitialized:
-				skipBacklog(feedGroup, fs, entries)
+				skipBacklog(feedGroup, ledger, entries)
 				entries = nil
 			}
 		} else {
@@ -431,7 +437,7 @@ func (r *FeedGroupReconciler) processFeed(
 	}
 
 	var pending bool
-	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, counts, hasSeenID, lastSeenID,
+	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, ledger, resumeAt,
 		discordClient, now)
 
 	pruneLastSent(fs.LastSent, maxLastSentPerFeed)
@@ -464,12 +470,12 @@ func (r *FeedGroupReconciler) processFeed(
 	return wantRetry, rateLimitRetryAfter
 }
 
-// sendNewEntries scans entries in order, skipping forward past lastSeenID
-// (if hasSeenID is set) before sending anything, then sends each not-yet-sent
-// entry that passes the filter and updates fs (feed's FeedStatus) as it goes.
+// sendNewEntries scans entries in order, starting at resumeAt (the index just
+// past the watermark, from ledger.resume; 0 when there is none), sending each
+// not-yet-sent entry that passes the filter and updates fs (feed's FeedStatus)
+// as it goes.
 // entries must be sorted oldest-to-newest; now is an RFC3339 send timestamp.
-// counts must cover the entire fetch before any catch-up trimming. If lastSeenID
-// has no match, the scan starts at the first entry.
+// ledger must have been built over the entire fetch before any catch-up trimming.
 // Rendering and delivery failures update status and stop the scan unless a
 // render failure qualifies for skipping. The results indicate whether to retry
 // sooner, the rate-limit wait, and whether an unresolved entry remains pending
@@ -480,22 +486,16 @@ func (r *FeedGroupReconciler) sendNewEntries(
 	fs *v1alpha1.FeedStatus,
 	renderer *feedRenderer,
 	entries []rss.Entry,
-	counts strippedCounts,
-	hasSeenID bool,
-	lastSeenID string,
+	ledger *deliveryLedger,
+	resumeAt int,
 	discordClient *discord.Client,
 	now string,
 ) (wantRetry bool, rateLimitRetryAfter time.Duration, pending bool) {
 	log := logf.FromContext(ctx)
 	feed := renderer.feed
-	resumeAt := 0
-	if hasSeenID {
-		resumeAt = watermarkIndex(entries, lastSeenID, counts) + 1
-	}
 
 	for _, entry := range entries[resumeAt:] {
-		identity := entryIdentity(entry)
-		if entrySent(fs.LastSent, entry, counts) {
+		if ledger.sent(entry) {
 			continue
 		}
 
@@ -530,7 +530,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				// block every newer entry behind it forever. Drop it and carry
 				// on. If no entry renders, the templates themselves are broken
 				// and skipping would just drain the feed, so keep holding.
-				r.skipEntry(ctx, feedGroup, fs, *feed, entry, counts, "RenderFailed", err, now)
+				r.skipEntry(ctx, feedGroup, fs, *feed, entry, ledger, "RenderFailed", err, now)
 				continue
 			}
 			if fs.RetryCount < maxRetries {
@@ -623,8 +623,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			break
 		}
 
-		recordSent(fs.LastSent, entry, counts, now)
-		fs.LastSeenEntry = clampWatermark(identity)
+		ledger.markHandled(entry, now)
 		fs.LastError = ""
 		fs.RetryCount = 0
 		fs.BackoffUntil = ""
@@ -647,7 +646,7 @@ func (r *FeedGroupReconciler) skipEntry(
 	fs *v1alpha1.FeedStatus,
 	feed v1alpha1.FeedSpec,
 	entry rss.Entry,
-	counts strippedCounts,
+	ledger *deliveryLedger,
 	reason string,
 	cause error,
 	now string,
@@ -655,8 +654,7 @@ func (r *FeedGroupReconciler) skipEntry(
 	identity := entryIdentity(entry)
 	logf.FromContext(ctx).Error(cause, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", identity)
 
-	recordSent(fs.LastSent, entry, counts, now)
-	fs.LastSeenEntry = clampWatermark(identity)
+	ledger.markHandled(entry, now)
 	fs.LastError = ""
 	fs.RetryCount = 0
 	fs.BackoffUntil = ""
@@ -788,9 +786,9 @@ func matchesFilter(filter *v1alpha1.Filter, entry rss.Entry, filterRegex *regexp
 // comparing publication times. The identity is the same one sendNewEntries would
 // have stored after sending that entry, so the next forward-scan resumes
 // right behind it.
-func skipBacklog(feedGroup *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, entries []rss.Entry) {
-	fs.LastSeenEntry = clampWatermark(entryIdentity(entries[len(entries)-1]))
-	setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
+func skipBacklog(feedGroup *v1alpha1.FeedGroup, ledger *deliveryLedger, entries []rss.Entry) {
+	ledger.markNewest(entries)
+	setFeedCondition(ledger.fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
 		reasonBacklogSkipped, fmt.Sprintf("catchUpLimit is 0: skipped %d existing entries", len(entries)), feedGroup.Generation)
 }
 

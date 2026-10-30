@@ -699,7 +699,7 @@ func TestEnsureFeedStatuses_NormalizesOversizedStoredValues(t *testing.T) {
 	if len(fs.LastSeenEntry) > maxStatusTextBytes {
 		t.Errorf("LastSeenEntry is %d bytes after load, want <= %d", len(fs.LastSeenEntry), maxStatusTextBytes)
 	}
-	if !entriesContainID([]rss.Entry{{ID: longID}}, fs.LastSeenEntry) {
+	if !ledgerResumes([]rss.Entry{{ID: longID}}, fs.LastSeenEntry) {
 		t.Error("normalized watermark no longer matches the entry it was derived from")
 	}
 	// A watermark freshly stored for the same entry is the same value.
@@ -962,7 +962,7 @@ func assertSkippedBacklogStatus(t *testing.T, fg *v1alpha1.FeedGroup, fs *v1alph
 	t.Helper()
 	if !fs.Initialized || fs.LastChecked != testReconcileTime || fs.LastError != "" || fs.RetryCount != 0 || fs.BackoffUntil != "" ||
 		fs.ETag != fetch.ETag || fs.LastModified != fetch.LastModified || len(fs.LastSeenEntry) > maxStatusTextBytes ||
-		!entriesContainID([]rss.Entry{{ID: newestID}}, fs.LastSeenEntry) {
+		!ledgerResumes([]rss.Entry{{ID: newestID}}, fs.LastSeenEntry) {
 		t.Fatalf("unexpected status after skipped backlog: %+v", fs)
 	}
 	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
@@ -1355,8 +1355,9 @@ func TestWatermarkIndex_LinkFallback(t *testing.T) {
 		{name: "no match", entries: []rss.Entry{other}, want: -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := watermarkIndex(tc.entries, watermark, countStripped(tc.entries)); got != tc.want {
-				t.Fatalf("watermarkIndex = %d, want %d", got, tc.want)
+			fs := &v1alpha1.FeedStatus{LastSeenEntry: watermark}
+			if got, found := newDeliveryLedger(fs, tc.entries).resume(tc.entries); got != tc.want || found != (tc.want >= 0) {
+				t.Fatalf("resume = (%d, %v), want index %d", got, found, tc.want)
 			}
 		})
 	}
@@ -1517,7 +1518,7 @@ func TestProcessFeed_EmptyIdentityEntriesKeepWatermark(t *testing.T) {
 
 	processTwice(t, fg, feed, backlog)
 	fs := feedStatusFor(fg, feed.RSSUrl)
-	if fs.LastSeenEntry == "" || !entriesContainID(backlog, fs.LastSeenEntry) {
+	if fs.LastSeenEntry == "" || !ledgerResumes(backlog, fs.LastSeenEntry) {
 		t.Fatalf("backlog skip stored watermark %q", fs.LastSeenEntry)
 	}
 	fresh := contentEntry("new", 2)
