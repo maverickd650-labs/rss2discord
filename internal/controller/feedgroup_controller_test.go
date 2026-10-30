@@ -185,6 +185,10 @@ type MockDiscordServer struct {
 	failRetryAfter   string
 }
 
+// mockWebhookHost is the host of every mock webhook URL: Discord's own, so
+// the URL passes the production allowlist.
+const mockWebhookHost = "discord.com"
+
 // mockWebhookIDs numbers the webhook URL of each MockDiscordServer so no two
 // servers share one, as no two real webhooks do.
 var mockWebhookIDs atomic.Int64
@@ -198,14 +202,14 @@ var mockWebhookIDs atomic.Int64
 func NewMockDiscordServer(tb testing.TB) *MockDiscordServer {
 	webhookPath := fmt.Sprintf("/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1))
 	d := &MockDiscordServer{
-		webhookURL: "https://discord.com" + webhookPath,
+		webhookURL: "https://" + mockWebhookHost + webhookPath,
 	}
 
 	d.server = httptest.NewTestServer(tb, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The client routes every host here, so answer only this server's
 		// own webhook -- as Discord would -- and a send to the wrong URL
 		// still fails.
-		if r.Host != "discord.com" || r.URL.Path != webhookPath {
+		if r.Host != mockWebhookHost || r.URL.Path != webhookPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

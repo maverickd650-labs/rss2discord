@@ -238,16 +238,18 @@ var _ = Describe("Webhook Secret watch", func() {
 		var delivered atomic.Int32
 		failing.Store(true)
 		// In-memory, like MockDiscordServer: its client sends webhookURL's
-		// discord.com host here, so the production allowlist is unchanged.
-		discordServer := httptest.NewTestServer(GinkgoTB(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			if failing.Load() {
+		// discord.com host here, so the production allowlist is unchanged. It
+		// routes every host here, so only webhookURL counts as a delivery.
+		webhookPath := fmt.Sprintf("/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1))
+		webhookURL := "https://" + mockWebhookHost + webhookPath
+		discordServer := httptest.NewTestServer(GinkgoTB(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if failing.Load() || r.Host != mockWebhookHost || r.URL.Path != webhookPath {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 			delivered.Add(1)
 			w.WriteHeader(http.StatusNoContent)
 		}))
-		webhookURL := fmt.Sprintf("https://discord.com/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1))
 		rssServer := NewMockRSSServer(createRSSFeed(testEntry{
 			title:   "Delivered After Rotation Under A Manager",
 			link:    "https://example.com/delivered-after-rotation-manager",
