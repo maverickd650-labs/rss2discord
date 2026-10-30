@@ -115,7 +115,7 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 			name:     "render_error",
 			outcome:  outcomeRenderError,
 			withFeed: true,
-			format:   "{{.DoesNotExist}}",
+			format:   tmplMissingField,
 		},
 	}
 

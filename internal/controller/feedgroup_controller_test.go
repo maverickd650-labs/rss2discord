@@ -908,7 +908,7 @@ var _ = Describe("FeedGroup Controller", func() {
 					guid:        "html-article",
 				},
 			), withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
-				fg.Spec.Format = "{{.Description}}"
+				fg.Spec.Format = defaultDescriptionFormat
 			})
 
 			By("Running reconciliation")
@@ -954,7 +954,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			By("Creating FeedGroup resource with embed and forum thread config")
 			feedGroup := newTestFeedGroupFeeds(feedGroupName, "discord-webhook-embed", []rss2discordv1alpha1.FeedSpec{
-				{RSSUrl: rssServer.URL(), ForumThreadName: "{{.Title}}"},
+				{RSSUrl: rssServer.URL(), ForumThreadName: tmplTitle},
 			}, withRetries("5m", 3), func(fg *rss2discordv1alpha1.FeedGroup) {
 				fg.Spec.Embed = &rss2discordv1alpha1.EmbedSpec{
 					Enabled: true,

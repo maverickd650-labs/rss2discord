@@ -280,7 +280,7 @@ func TestCompileTemplate_SupportedConstructs(t *testing.T) {
 		{name: "comment only", format: `{{/* {{range 100000000000}}{{end}} */}}`},
 		{name: "empty template"},
 		{name: "safe fallback", format: " \t\n", fallback: `{{if .Title}}{{.Title}}{{else}}none{{end}}`, want: "none"},
-		{name: "unused unsafe fallback", format: `{{ .Title }}`, fallback: `{{range 2}}{{end}}`, entry: rss.Entry{Title: "safe"}, want: "safe"},
+		{name: "unused unsafe fallback", format: `{{ .Title }}`, fallback: `{{range 2}}{{end}}`, entry: rss.Entry{Title: tmplSafeText}, want: tmplSafeText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpl, err := compileTemplate("supported", tc.format, tc.fallback)
@@ -335,27 +335,18 @@ func TestRenderTemplate_OutputByteBoundaries(t *testing.T) {
 	}
 }
 
-func TestBuildDiscordMessage_OutputLimitAppliesToEveryTemplate(t *testing.T) {
-	safe, err := compileTemplate("safe", "safe", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	oversized, err := compileTemplate("oversized", authorField, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestFeedRendererBuild_OutputLimitAppliesToEveryTemplate(t *testing.T) {
 	for _, tc := range []struct {
-		name                         string
-		embed                        *v1alpha1.EmbedSpec
-		content, description, thread *template.Template
+		name string
+		feed *v1alpha1.FeedSpec
 	}{
-		{name: "message", content: oversized},
-		{name: "embed description", embed: &v1alpha1.EmbedSpec{Enabled: true}, description: oversized},
-		{name: "forum thread name", content: safe, thread: oversized},
+		{name: "message", feed: &v1alpha1.FeedSpec{Format: authorField}},
+		{name: "embed description", feed: &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: authorField}}},
+		{name: "forum thread name", feed: &v1alpha1.FeedSpec{Format: "safe", ForumThreadName: authorField}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := rss.Entry{Author: strings.Repeat("x", (1<<20)+1)}
-			msg, _, err := buildDiscordMessage(&v1alpha1.FeedGroup{}, tc.embed, tc.content, tc.description, tc.thread, &v1alpha1.FeedSpec{}, entry)
+			msg, err := mustBuild(t, &v1alpha1.FeedGroup{}, tc.feed, entry)
 			if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
 				t.Fatalf("expected output-limit error, got %v", err)
 			}
