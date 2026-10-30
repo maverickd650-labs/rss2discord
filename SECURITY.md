@@ -33,14 +33,18 @@ fetch errors may echo them. Don't put credentials or tokens in a feed URL's quer
 userinfo unless everyone who can read those surfaces is trusted with them. Only the Discord
 webhook URL (kept in a Secret) is redacted.
 
-Known trade-off: by default the operator's ClusterRole can `get`, `list` and `watch` Secrets
-cluster-wide, so it can retry a feed as soon as its webhook Secret is replaced. The watch is
+Secret access: by default the operator's ClusterRole can only `get` Secrets, by name; it has no
+`list` or `watch`, so its token cannot enumerate Secrets. Watching webhook Secrets (to retry a
+feed as soon as its webhook Secret is replaced, `--watch-webhook-secrets`) needs `list` and
+`watch`, so the chart enables it only where the grant is scoped -- a namespace-scoped install
+(`rbac.watchNamespaces`/`rbac.namespaced`) -- or on explicit opt-in with
+`rbac.clusterWideSecretWatch`, a known trade-off for single-tenant clusters. The watch is
 metadata-only and its cache strips annotations and managedFields (`kubectl apply` copies a
 Secret's data into an annotation), and Secret data is only ever read uncached, by name. Those
-limit what the operator holds in memory, **not what its credential is authorized to do**: a
-stolen service-account token can list every Secret's data. For tenant deployments, install with
-the chart's `rbac.watchNamespaces` (see the README): the grant becomes a Role in each listed
-namespace and the manager's `--watch-namespaces` is set to the same list, so both are scoped
+limit what the operator holds in memory, **not what its credential is authorized to do**: with
+`rbac.clusterWideSecretWatch`, a stolen service-account token can list every Secret's data. For
+tenant deployments, install with the chart's `rbac.watchNamespaces` (see the README): the
+grant becomes a Role in each listed namespace and the manager's `--watch-namespaces` is set to the same list, so both are scoped
 together. Treat the resulting RBAC grants as the boundary, not the watch arguments, and verify
 them with `kubectl auth can-i ... --as=system:serviceaccount:<ns>:<sa>` -- including after
 narrowing an existing installation, where `helm upgrade` removes the cluster-wide manager

@@ -72,12 +72,20 @@ type FeedGroupReconciler struct {
 	// zero value, controller-runtime defaults this to 1, preserving the
 	// historical single-worker behavior.
 	MaxConcurrentReconciles int
+	// WatchWebhookSecrets wakes a FeedGroup as soon as its webhook Secret
+	// changes (see noteWebhookSecretVersion), via a metadata-only Secret
+	// watch. It needs list/watch on Secrets, so it is off unless that grant is
+	// wanted: the Helm chart turns it on with a namespace-scoped install
+	// (rbac.watchNamespaces), where the grant is scoped to those namespaces
+	// too. Without it the change is still noticed, on the group's next
+	// scheduled reconcile, with only get on Secrets.
+	WatchWebhookSecrets bool
 }
 
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -784,20 +792,23 @@ func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("feedgroup-controller")
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		// Status is written by this controller, so reacting to those writes
 		// would re-enqueue every reconcile that changed anything (and, for a
 		// failing feed whose RetryCount ticks up each pass, loop at
 		// API-round-trip speed instead of RetryInterval). Only spec changes
 		// (generation bumps), creates and deletes matter; periodic work is
 		// driven by RequeueAfter.
-		For(&v1alpha1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&v1alpha1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	if r.WatchWebhookSecrets {
 		// A replaced webhook Secret lets a feed backed off after a permanent
 		// send failure retry right away (see noteWebhookSecretVersion).
 		// Metadata only: the informer never holds Secret data, and the
 		// webhook URL itself is still read uncached in resolveWebhookURL.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.feedGroupsForSecret),
-			builder.OnlyMetadata, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		b = b.Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.feedGroupsForSecret),
+			builder.OnlyMetadata, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}))
+	}
+	return b.
 		Named("feedgroup").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.MaxConcurrentReconciles,

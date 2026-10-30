@@ -158,6 +158,16 @@ rbac:
   ##
   watchNamespaces: []
 
+  ## Let a cluster-wide install (rbac.watchNamespaces unset, rbac.namespaced
+  ## false) watch webhook Secrets, so a FeedGroup retries as soon as its
+  ## Secret changes rather than on its next scheduled reconcile. This grants
+  ## list/watch on every Secret in the cluster, which a stolen service-account
+  ## token could use to read them all; the default keeps get-only access. A
+  ## namespace-scoped install always watches, with the grant in those
+  ## namespaces only.
+  ##
+  clusterWideSecretWatch: false
+
   ## Helper roles for CRD management (admin/editor/viewer)
   ##
   helpers:

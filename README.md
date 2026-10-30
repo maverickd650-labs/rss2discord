@@ -294,7 +294,7 @@ Resource names drop the redundant `-controller-manager` suffix — with a releas
 
 ### Restricting the operator to some namespaces
 
-By default the operator gets a ClusterRole: it watches FeedGroups in every namespace and may `get`, `list` and `watch` Secrets cluster-wide (it only ever reads the webhook Secret a FeedGroup names, and caches Secret metadata, never data, but the grant is what a stolen token could use). **For tenant deployments, install it namespace-scoped explicitly**, listing the namespaces it serves:
+By default the operator gets a ClusterRole: it watches FeedGroups in every namespace and may `get` Secrets cluster-wide, by name only (it reads just the webhook Secret a FeedGroup names). It has no `list` or `watch` on Secrets, so a stolen token cannot enumerate them, and it does not watch webhook Secrets: a replaced webhook URL is picked up at the feed's next scheduled reconcile rather than at once. **For tenant deployments, install it namespace-scoped explicitly**, listing the namespaces it serves:
 
 ```bash
 helm install rss2discord-operator ./dist/chart \
@@ -302,20 +302,20 @@ helm install rss2discord-operator ./dist/chart \
   --set 'rbac.watchNamespaces={team-a,team-b}'
 ```
 
-The chart then grants the manager's permissions as a Role and RoleBinding in each listed namespace only (no ClusterRole) and starts it with `--watch-namespaces=team-a,team-b`, so the watch scope and the grant always match. FeedGroups in other namespaces are ignored. Each entry must be a valid namespace name, and an empty or invalid list fails the install rather than falling back to cluster-wide. `rbac.namespaced: true` is shorthand for the release namespace alone.
+The chart then grants the manager's permissions as a Role and RoleBinding in each listed namespace only (no ClusterRole) and starts it with `--watch-namespaces=team-a,team-b`, so the watch scope and the grant always match. A namespace-scoped install also gets `list` and `watch` on Secrets in those namespaces and runs with `--watch-webhook-secrets`, so a webhook Secret change retries its feeds immediately. Cluster-wide list/watch on Secrets is available only by opting in with `rbac.clusterWideSecretWatch: true`, which lets the service account read every Secret's data in the cluster. FeedGroups in other namespaces are ignored. Each entry must be a valid namespace name, and an empty or invalid list fails the install rather than falling back to cluster-wide. `rbac.namespaced: true` is shorthand for the release namespace alone.
 
 **The RBAC grant is the credential boundary, not `--watch-namespaces`.** The flag only limits what the operator watches; what a stolen service-account token can read is whatever its Roles and ClusterRoles allow. Check the grant itself:
 
 ```bash
 sa=system:serviceaccount:rss2discord-operator-system:rss2discord-operator
-kubectl auth can-i list secrets --as="$sa" -n team-a          # yes
+kubectl auth can-i list secrets --as="$sa" -n team-a          # yes (namespace-scoped install)
 kubectl auth can-i list secrets --as="$sa" -n some-other-ns   # no
 kubectl auth can-i list secrets --as="$sa" --all-namespaces   # no
 ```
 
 In namespace-scoped mode the chart still installs two cluster-scoped roles, neither of which reaches Secrets: `metrics-auth-role` (create TokenReviews and SubjectAccessReviews, for authenticating metrics scrapes) and `metrics-reader` (`get` on the `/metrics` URL, bound to no one by the chart).
 
-**Narrowing an existing installation:** `helm upgrade` with `rbac.watchNamespaces` set deletes the release's cluster-wide `manager-role` ClusterRole and ClusterRoleBinding, because they are no longer in the rendered release. A chart test (`TestChartUpgradeToWatchNamespacesRevokesClusterWideSecretAccess`) runs exactly this upgrade against a real API server and checks with SubjectAccessReviews that the account can no longer read Secrets outside the listed namespaces. Run the `kubectl auth can-i` checks above after the upgrade anyway, and remove any binding to the service account that was created outside the chart. With `kubectl apply -f dist/install.yaml` nothing is pruned: replace the `manager-role` ClusterRole/ClusterRoleBinding with per-namespace Role/RoleBindings, pass `--watch-namespaces`, and delete the cluster-wide pair yourself (`kubectl delete clusterrolebinding rss2discord-operator-manager-rolebinding` and `kubectl delete clusterrole rss2discord-operator-manager-role`).
+**Narrowing an existing installation:** `helm upgrade` with `rbac.watchNamespaces` set deletes the release's cluster-wide `manager-role` ClusterRole and ClusterRoleBinding, because they are no longer in the rendered release. A chart test (`TestChartUpgradeToWatchNamespacesRevokesClusterWideSecretAccess`) runs exactly this upgrade, from `rbac.clusterWideSecretWatch: true`, against a real API server and checks with SubjectAccessReviews that the account can no longer read Secrets outside the listed namespaces. Run the `kubectl auth can-i` checks above after the upgrade anyway, and remove any binding to the service account that was created outside the chart. With `kubectl apply -f dist/install.yaml` nothing is pruned: replace the `manager-role` ClusterRole/ClusterRoleBinding with per-namespace Role/RoleBindings, pass `--watch-namespaces`, and delete the cluster-wide pair yourself (`kubectl delete clusterrolebinding rss2discord-operator-manager-rolebinding` and `kubectl delete clusterrole rss2discord-operator-manager-role`).
 
 Common commands:
 
@@ -429,7 +429,7 @@ Common issues:
 - FeedGroup not updating — check `interval` and the operator logs.
 - Messages formatted wrong — check template placeholders against the [available fields](#message-template).
 - A feed that keeps returning a "permanent" error (e.g. HTTP 404/403) is retried with exponential backoff capped at 6h, so it recovers on its own once the source is back; editing the spec retries it immediately.
-- A deleted or regenerated Discord webhook (HTTP 404 on send) backs the feed off the same way. Putting the new webhook URL in the Secret named by `discordWebhookSecretRef` retries it immediately: any update to that Secret, including one to its data only, changes its `resourceVersion`, which the operator watches (it caches the Secret's metadata, never its data) and answers by clearing send backoffs.
+- A deleted or regenerated Discord webhook (HTTP 404 on send) backs the feed off the same way. Putting the new webhook URL in the Secret named by `discordWebhookSecretRef` clears its send backoff: any update to that Secret, including one to its data only, changes its `resourceVersion`, which the operator compares on every reconcile. With `--watch-webhook-secrets` (on for a namespace-scoped install, or with `rbac.clusterWideSecretWatch`) it watches the Secret's metadata (never its data) and retries immediately; otherwise the change is noticed at the next scheduled reconcile.
 - An entry that can't be rendered is skipped (Warning Event `EntrySkipped`, `skipped` metric outcome) once the group's `retries` are exhausted, so it doesn't block newer entries — but only if other entries in the feed do render. If the template fails for every entry, they are held until you fix it.
 
 ## References

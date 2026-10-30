@@ -360,7 +360,23 @@ func TestChartManagerRoleRulesMatchConfig(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &config); err != nil {
 		t.Fatal(err)
 	}
-	for _, values := range [][]string{nil, {watchTwoNamespaces}} {
+	// --watch-webhook-secrets adds list/watch on Secrets on top of the generated
+	// rules, and only then.
+	secretWatchRule := map[string]any{
+		"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{verbList, verbWatch},
+	}
+	for _, tc := range []struct {
+		values      []string
+		secretWatch bool
+	}{
+		{values: nil},
+		{values: []string{watchTwoNamespaces}, secretWatch: true},
+		{values: []string{"rbac.clusterWideSecretWatch=true"}, secretWatch: true},
+	} {
+		values, want := tc.values, config.Rules
+		if tc.secretWatch {
+			want = append(append([]any{}, config.Rules...), secretWatchRule)
+		}
 		decoder := yaml.NewDecoder(strings.NewReader(renderChartTemplate(t, managerRoleTemplate, values...)))
 		for docs := 0; ; docs++ {
 			var role struct {
@@ -375,9 +391,9 @@ func TestChartManagerRoleRulesMatchConfig(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(role.Rules, config.Rules) {
-				t.Errorf("%s rules (values %v) differ from config/rbac/role.yaml; copy them into %s",
-					role.Kind, values, managerRoleTemplate)
+			if !reflect.DeepEqual(role.Rules, want) {
+				t.Errorf("%s rules (values %v) differ from config/rbac/role.yaml (plus the Secret watch rule: %v); "+
+					"copy them into %s", role.Kind, values, tc.secretWatch, managerRoleTemplate)
 			}
 		}
 	}
@@ -413,6 +429,12 @@ func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := renderChartTemplate(t, managerTemplate, tc.values...)
+			// A namespace-scoped install always watches its webhook Secrets
+			// (list/watch is then confined to those namespaces); the
+			// cluster-wide default reads them by name only.
+			if got := strings.Contains(manager, "- --watch-webhook-secrets\n"); got != (tc.wantArg != "") {
+				t.Errorf("--watch-webhook-secrets present = %v, want %v:\n%s", got, tc.wantArg != "", manager)
+			}
 			if tc.wantArg == "" && strings.Contains(manager, "--watch-namespaces") {
 				t.Errorf("unexpected --watch-namespaces:\n%s", manager)
 			}
@@ -463,5 +485,21 @@ func TestChartWatchNamespacesRejectsAnAllBlankList(t *testing.T) {
 	out, err := runHelmTemplate(t, managerRoleTemplate, `rbac.watchNamespaces={,}`)
 	if err == nil || !strings.Contains(out, "rbac.watchNamespaces must list at least one non-empty namespace") {
 		t.Fatalf("want a render failure for an all-blank rbac.watchNamespaces, got err=%v:\n%s", err, out)
+	}
+}
+
+// TestChartClusterWideSecretWatchIsAnExplicitOptIn checks the only way to get
+// cluster-wide list/watch on Secrets: rbac.clusterWideSecretWatch adds the
+// rule to the ClusterRole and turns the watch on, without scoping the watch.
+func TestChartClusterWideSecretWatchIsAnExplicitOptIn(t *testing.T) {
+	values := "rbac.clusterWideSecretWatch=true"
+	manager := renderChartTemplate(t, managerTemplate, values)
+	if !strings.Contains(manager, "- --watch-webhook-secrets\n") || strings.Contains(manager, "--watch-namespaces") {
+		t.Errorf("want --watch-webhook-secrets without --watch-namespaces:\n%s", manager)
+	}
+	role := renderChartTemplate(t, managerRoleTemplate, values)
+	const secretWatchRule = "- secrets\n  verbs:\n  - list\n  - watch\n"
+	if strings.Count(role, "kind: ClusterRole\n") != 1 || !strings.Contains(role, secretWatchRule) {
+		t.Errorf("want one ClusterRole granting list/watch:\n%s", role)
 	}
 }

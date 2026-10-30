@@ -12,8 +12,6 @@ rules:
   - secrets
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - ""
   - events.k8s.io
@@ -48,6 +46,13 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - list
+  - watch
 ---
 # Source: rss2discord-operator/templates/rbac/manager-role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -62,8 +67,6 @@ rules:
   - secrets
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - ""
   - events.k8s.io
@@ -98,3 +101,10 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - list
+  - watch

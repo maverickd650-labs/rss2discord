@@ -226,8 +226,11 @@ var _ = Describe("Webhook Secret watch", func() {
 		Expect(discordServer.MessageCount()).To(Equal(1))
 	})
 
-	It("is woken by a Secret change under a running manager, with the production cache settings", func() {
-		const watchNamespace = "secret-watch"
+	// rotateUnderManager runs the real controller under a manager configured
+	// like cmd/main.go, backs a feed off on a 404 webhook, then replaces the
+	// URL in its Secret. With the watch it must deliver within seconds; without
+	// it nothing may happen before the group's next scheduled reconcile (30m).
+	rotateUnderManager := func(watchNamespace string, watchWebhookSecrets bool) {
 		By("Starting a manager configured like cmd/main.go, scoped to a private namespace")
 		// Atomics rather than MockDiscordServer: here the handler runs on the
 		// server's goroutines while the spec flips and reads its state.
@@ -278,6 +281,7 @@ var _ = Describe("Webhook Secret watch", func() {
 			DiscordClientBuilder: func(webhookURL string) *discord.Client {
 				return discord.NewClientWithHTTP(webhookURL, httpClient)
 			},
+			WatchWebhookSecrets: watchWebhookSecrets,
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, stop := context.WithCancel(ctx)
@@ -312,13 +316,27 @@ var _ = Describe("Webhook Secret watch", func() {
 		Eventually(func() string { return feedStatus().BackoffUntil }, 10*time.Second, 100*time.Millisecond).ShouldNot(BeEmpty())
 		Expect(delivered.Load()).To(BeZero())
 
-		By("Replacing the webhook URL in the Secret, which the watch should notice")
+		By("Replacing the webhook URL in the Secret")
 		failing.Store(false)
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
 		secret.Data[secretURLKey] = []byte(discordServer.URL + "\n")
 		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
 
+		if !watchWebhookSecrets {
+			Consistently(delivered.Load, 3*time.Second, 100*time.Millisecond).Should(BeZero(),
+				"without --watch-webhook-secrets a Secret change must not wake the FeedGroup")
+			Expect(feedStatus().BackoffUntil).NotTo(BeEmpty())
+			return
+		}
 		Eventually(delivered.Load, 10*time.Second, 100*time.Millisecond).Should(BeNumerically("==", 1))
 		Eventually(func() string { return feedStatus().BackoffUntil }, 10*time.Second, 100*time.Millisecond).Should(BeEmpty())
+	}
+
+	It("is woken by a Secret change under a running manager with --watch-webhook-secrets", func() {
+		rotateUnderManager("secret-watch", true)
+	})
+
+	It("is not woken by a Secret change without --watch-webhook-secrets (the default: get-only on Secrets)", func() {
+		rotateUnderManager("secret-watch-off", false)
 	})
 })

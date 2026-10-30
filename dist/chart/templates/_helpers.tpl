@@ -109,3 +109,15 @@ falling back to cluster-wide.
 {{- .Release.Namespace }}
 {{- end }}
 {{- end }}
+
+{{/*
+"true" when the manager runs with --watch-webhook-secrets (and manager-role
+gains list/watch on Secrets): always for a namespace-scoped install, where the
+grant is scoped to those namespaces, and cluster-wide only when
+rbac.clusterWideSecretWatch opts in to that wider grant. Empty otherwise.
+*/}}
+{{- define "rss2discord-operator.watchWebhookSecrets" -}}
+{{- if or (include "rss2discord-operator.watchNamespaces" .) .Values.rbac.clusterWideSecretWatch -}}
+true
+{{- end }}
+{{- end }}

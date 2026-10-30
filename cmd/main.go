@@ -121,6 +121,7 @@ func main() {
 	var maxConcurrentFeedGroupReconciles int
 	var otlpEndpoint string
 	var watchNamespaces string
+	var watchWebhookSecrets bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -145,6 +146,11 @@ func main() {
 		"Comma-separated namespaces to watch for FeedGroups and their webhook Secrets. Empty watches every "+
 			"namespace. When set, grant the manager's RBAC as a Role in exactly these namespaces instead of a "+
 			"ClusterRole: limiting the watch alone does not limit what the service account may read.")
+	flag.BoolVar(&watchWebhookSecrets, "watch-webhook-secrets", false,
+		"Watch webhook Secrets (metadata only) so a FeedGroup backed off after a permanent send failure "+
+			"retries as soon as its Secret changes, instead of on its next scheduled reconcile. Requires list "+
+			"and watch on Secrets in every watched namespace; the Helm chart enables it, and that grant, only "+
+			"for namespace-scoped installs unless rbac.clusterWideSecretWatch is set.")
 	// Development defaults to false so production deployments get
 	// structured JSON logs at info level rather than zap's human-oriented
 	// console encoder with debug-level and stack-traced warnings. Pass
@@ -247,6 +253,7 @@ func main() {
 			return discord.NewClientWithLimiter(webhookURL, discordHTTPClient, discordRateLimiter)
 		},
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
+		WatchWebhookSecrets:     watchWebhookSecrets,
 	}).SetupWithManager(mgr)
 	exitOnError(err, "Failed to create controller", "controller", "feedgroup")
 	// +kubebuilder:scaffold:builder

@@ -96,6 +96,9 @@ spec:
         {{- with include "rss2discord-operator.watchNamespaces" . }}
         - --watch-namespaces={{ . }}
         {{- end }}
+        {{- if include "rss2discord-operator.watchWebhookSecrets" . }}
+        - --watch-webhook-secrets
+        {{- end }}
         {{- range .Values.manager.args }}
         - {{ tpl . $ }}
         {{- end }}

@@ -33,6 +33,7 @@ spec:
         - --metrics-bind-address=:8443
         - --health-probe-bind-address=:8081
         - --watch-namespaces=team-a,team-b
+        - --watch-webhook-secrets
         - --leader-elect
         command:
         - /manager

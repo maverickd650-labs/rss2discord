@@ -1,9 +1,12 @@
 {{- /*
 Hand-tuned (preserved by mise run helm-chart-refresh): a ClusterRole, or a Role
 in each namespace from rss2discord-operator.watchNamespaces (see _helpers.tpl).
-The rules must match config/rbac/role.yaml, which is generated from the
-+kubebuilder:rbac markers; test/chart's TestChartManagerRoleRulesMatchConfig
-fails when they drift.
+The managerRoleRules must match config/rbac/role.yaml, which is generated from
+the +kubebuilder:rbac markers; test/chart's TestChartManagerRoleRulesMatchConfig
+fails when they drift. secretWatchRule (list/watch on Secrets) is added on top
+only when the manager runs with --watch-webhook-secrets
+(rss2discord-operator.watchWebhookSecrets), so the default cluster-wide install
+keeps get-only Secret access.
 */}}
 {{- define "rss2discord-operator.managerRoleRules" }}
 rules:
@@ -13,8 +16,6 @@ rules:
   - secrets
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - ""
   - events.k8s.io
@@ -49,6 +50,15 @@ rules:
   - get
   - patch
   - update
+{{- if include "rss2discord-operator.watchWebhookSecrets" . }}
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - list
+  - watch
+{{- end }}
 {{- end }}
 {{- $namespaces := include "rss2discord-operator.watchNamespaces" . }}
 {{- $targets := list "" }}

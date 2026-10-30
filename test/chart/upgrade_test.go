@@ -40,10 +40,13 @@ const (
 	managerRoleName  = upgradeRelease + "-rss2discord-operator-manager-role"
 	managerBinding   = upgradeRelease + "-rss2discord-operator-manager-rolebinding"
 	managerSAName    = upgradeRelease + "-rss2discord-operator"
+	verbList         = "list"
+	verbWatch        = "watch"
 )
 
 // TestChartUpgradeToWatchNamespacesRevokesClusterWideSecretAccess installs the
-// chart cluster-wide against a real API server, narrows it with
+// chart against a real API server, checks the default grants get-only Secret
+// access, widens it with rbac.clusterWideSecretWatch, narrows it with
 // rbac.watchNamespaces through helm upgrade, and asks the API server's RBAC
 // authorizer (SubjectAccessReview) what the operator's service account may
 // still do. The grant, not --watch-namespaces, is the credential boundary: the
@@ -126,8 +129,21 @@ func TestChartUpgradeToWatchNamespacesRevokesClusterWideSecretAccess(t *testing.
 	if !exists(&rbacv1.ClusterRoleBinding{}, client.ObjectKey{Name: managerBinding}) {
 		t.Fatal("the default install has no cluster-wide manager binding; this test no longer exercises narrowing")
 	}
-	if !can("list", otherNamespace) || !can("list", "") {
-		t.Fatal("the default install should grant cluster-wide Secret access (the baseline this test narrows)")
+	// The default install reads a webhook Secret by name only: no Secret
+	// watch, so no list/watch -- a stolen token cannot enumerate Secrets.
+	if !can("get", otherNamespace) {
+		t.Fatal("the default install must still get webhook Secrets by name in any namespace")
+	}
+	for _, verb := range []string{verbList, verbWatch} {
+		if can(verb, otherNamespace) || can(verb, "") {
+			t.Errorf("the default install grants %s on Secrets; only an explicit opt-in may", verb)
+		}
+	}
+
+	// The widest grant the chart can issue is the starting point narrowed below.
+	helm("upgrade", "rbac.clusterWideSecretWatch=true")
+	if !can(verbList, otherNamespace) || !can(verbWatch, "") {
+		t.Fatal("rbac.clusterWideSecretWatch should grant cluster-wide list/watch (the baseline this test narrows)")
 	}
 
 	helm("upgrade", "rbac.watchNamespaces={"+tenantNamespace+"}")
@@ -141,7 +157,7 @@ func TestChartUpgradeToWatchNamespacesRevokesClusterWideSecretAccess(t *testing.
 	if !exists(&rbacv1.RoleBinding{}, client.ObjectKey{Namespace: tenantNamespace, Name: managerBinding}) {
 		t.Errorf("no manager RoleBinding in %s after narrowing", tenantNamespace)
 	}
-	for _, verb := range []string{"get", "list", "watch"} {
+	for _, verb := range []string{"get", verbList, verbWatch} {
 		if !can(verb, tenantNamespace) {
 			t.Errorf("service account cannot %s Secrets in the listed namespace %s", verb, tenantNamespace)
 		}
