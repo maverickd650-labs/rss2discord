@@ -17,61 +17,337 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
+	"fmt"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 )
 
-// feedAttempt is the failure/retry bookkeeping shared by the fetch, render and
-// send paths of one feed in one reconcile. It holds only the mechanics; each
-// call site decides the policy (whether a failure is permanent, when retries
-// count as exhausted, whether to back off or skip), because those differ per
-// path.
+// attemptKind is what happened in one step of processing a feed. Every kind
+// is applied by feedAttempt.record and nowhere else.
+type attemptKind int
+
+const (
+	// attemptFetchSucceeded: the feed was fetched (or a 304 confirmed it).
+	attemptFetchSucceeded attemptKind = iota + 1
+	// attemptFetchFailed: the fetch failed; the failureClass says how.
+	attemptFetchFailed
+	// attemptRenderFailed: an entry's message could not be rendered.
+	attemptRenderFailed
+	// attemptSendFailed: Discord refused or never received a message; the
+	// failureClass says how.
+	attemptSendFailed
+	// attemptRateLimited: Discord rate limited the webhook (a
+	// *discord.RateLimitError), which spends no retry.
+	attemptRateLimited
+	// attemptSent: an entry was delivered.
+	attemptSent
+	// attemptEntrySkipped: an entry whose render retries are exhausted was
+	// given up on so the feed behind it can proceed.
+	attemptEntrySkipped
+	// attemptBacklogSkipped: a first sync with catchUpLimit 0 skipped the
+	// feed's existing entries.
+	attemptBacklogSkipped
+	// attemptConfigError: the feed's filter or templates don't compile.
+	attemptConfigError
+
+	// attemptKindEnd is one past the last kind, for tests that enumerate them.
+	attemptKindEnd
+)
+
+// attemptOutcome is a kind with the detail that kind alone carries.
+type attemptOutcome struct {
+	kind attemptKind
+	// entry is the title of the entry given up on (attemptEntrySkipped).
+	entry string
+	// count is how many existing entries were skipped (attemptBacklogSkipped).
+	count int
+}
+
+// noClass is the failureClass of an outcome that has none.
+var noClass = failureClass{}
+
+// metricLabel is the outcome label the outcome increments
+// feedOperationsTotal with, or "" for an outcome that isn't counted. At most
+// one label per outcome; fetch_error and send_error are only ever recorded
+// with their class's metricReason suffix.
+func (o attemptOutcome) metricLabel(class failureClass) string {
+	switch o.kind {
+	case attemptFetchFailed:
+		return fetchErrorOutcome(class)
+	case attemptSendFailed:
+		return sendErrorOutcome(class)
+	case attemptRenderFailed:
+		return outcomeRenderError
+	case attemptRateLimited:
+		return outcomeRateLimited
+	case attemptSent:
+		return outcomeSent
+	case attemptEntrySkipped:
+		return outcomeSkipped
+	}
+	return ""
+}
+
+// sendFailureOutcome says which outcome a failed SendMessage is: a rate limit
+// (which the webhook's Retry-After drives, not the retry count) or a classified
+// send failure.
+func sendFailureOutcome(err error) (attemptOutcome, failureClass) {
+	if _, ok := errors.AsType[*discord.RateLimitError](err); ok {
+		return attemptOutcome{kind: attemptRateLimited}, classRateLimited
+	}
+	return attemptOutcome{kind: attemptSendFailed}, classifySendError(err)
+}
+
+// attemptVerdict is what recording an outcome means for the rest of the
+// reconcile. The zero value is "nothing to do".
+type attemptVerdict struct {
+	// retry asks for the group to be requeued after its (faster) RetryInterval
+	// instead of its Interval.
+	retry bool
+	// retryAfter is how long Discord asked the webhook to be left alone.
+	retryAfter time.Duration
+	// pending says an entry from this fetch is still unresolved, even if its
+	// retries are exhausted or it is in permanent backoff, so the fetch is not
+	// accounted for (see settlement).
+	pending bool
+}
+
+// fold combines the verdicts of two steps (the entries of a feed, or the feeds
+// of a group): any retry, the longest rate-limit wait, any pending.
+func (v attemptVerdict) fold(other attemptVerdict) attemptVerdict {
+	return attemptVerdict{
+		retry:      v.retry || other.retry,
+		retryAfter: max(v.retryAfter, other.retryAfter),
+		pending:    v.pending || other.pending,
+	}
+}
+
+// settlement is the syncVerdict for a feedSync whose send loop ended with v.
+func (v attemptVerdict) settlement() syncVerdict {
+	if v.pending {
+		return syncPending
+	}
+	return syncAccountedFor
+}
+
+// feedAttempt records the outcomes of processing one feed in one reconcile. It
+// is the single owner of what an outcome does to the world: the outcome metric,
+// the Reachable or Delivered condition, LastError, RetryCount, permanent backoff,
+// the persistent-failure Events and the retry decision. The policy -- a
+// permanent failure backs off immediately, a transient one retries until its
+// retries run out and is then announced once -- is written once, in record.
 type feedAttempt struct {
 	r     *FeedGroupReconciler
 	group *v1alpha1.FeedGroup
 	fs    *v1alpha1.FeedStatus
 	url   string
+	// now is the RFC3339 timestamp of the reconcile, for LastChecked.
+	now string
 }
 
-func (r *FeedGroupReconciler) newFeedAttempt(group *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url string) feedAttempt {
-	return feedAttempt{r: r, group: group, fs: fs, url: url}
+func (r *FeedGroupReconciler) newFeedAttempt(group *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url, now string) feedAttempt {
+	return feedAttempt{r: r, group: group, fs: fs, url: url, now: now}
 }
 
-// clearFailure resets the retry state after a success (or a skip).
-func (a feedAttempt) clearFailure() {
-	clearFailure(a.fs)
+// record applies one outcome to the feed's status and says what the reconcile
+// should do next.
+//
+// class is only read for the failures it classifies (attemptFetchFailed and
+// attemptSendFailed); err is the failure itself, or the cause of a skip or
+// config error. The effects, per kind:
+//
+//   - attemptFetchSucceeded: LastChecked, the success gauge, Reachable True.
+//   - attemptFetchFailed / attemptSendFailed: LastError, RetryCount++, the
+//     outcome metric, Reachable / Delivered False with the class's reason, then
+//     the retry policy below. Not pending for a fetch; pending for a send.
+//   - attemptRenderFailed: the same with outcome render_error and a transient
+//     policy; pending.
+//   - attemptRateLimited: LastError, outcome rate_limited, Delivered False
+//     RateLimited; retry, with the wait Discord asked for; pending. No retry is
+//     spent.
+//   - attemptSent: failure cleared, outcome sent, Delivered True.
+//   - attemptEntrySkipped: failure cleared, outcome skipped, Delivered False
+//     EntrySkipped and a Warning Event.
+//   - attemptBacklogSkipped: Delivered True BacklogSkipped.
+//   - attemptConfigError: LastError, Delivered False ConfigError and one Warning
+//     Event per distinct error. No metric and no retry: it won't fix itself.
+//
+// The retry policy: a permanent failure backs off exponentially right away
+// (BackoffUntil; one Warning Event, the first time the backoff reaches its cap)
+// and never asks for a retry, so it doesn't pull the group onto the faster
+// RetryInterval. A transient one asks for a retry while RetryCount is below the
+// limit; at the reconcile RetryCount first equals it (== rather than >=, so an
+// ongoing failure doesn't re-fire) one Warning Event announces the exhaustion.
+func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) attemptVerdict {
+	if label := o.metricLabel(class); label != "" {
+		feedOperationsTotal.WithLabelValues(a.group.Namespace, a.group.Name, a.url, label).Inc()
+	}
+
+	switch o.kind {
+	case attemptFetchSucceeded:
+		a.fs.LastChecked = a.now
+		markFeedCheckSuccess(a.group)
+		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
+			"FetchSucceeded", "Feed fetched successfully")
+		return attemptVerdict{}
+
+	case attemptFetchFailed:
+		return a.failed(v1alpha1.FeedConditionTypeReachable, class, "FetchFailed", err)
+
+	case attemptRenderFailed:
+		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered,
+			failureClass{conditionReason: reasonRenderError}, "RenderFailed", err)
+		verdict.pending = true
+		return verdict
+
+	case attemptSendFailed:
+		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered, class, "SendFailed", err)
+		verdict.pending = true
+		return verdict
+
+	case attemptRateLimited:
+		a.fs.LastError = errText(err)
+		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonRateLimited, err.Error())
+		verdict := attemptVerdict{retry: true, pending: true}
+		if rateLimitErr, ok := errors.AsType[*discord.RateLimitError](err); ok {
+			verdict.retryAfter = rateLimitErr.RetryAfter
+		}
+		return verdict
+
+	case attemptSent:
+		clearFailure(a.fs)
+		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
+			"MessageSent", "Entry rendered and delivered to Discord")
+		return attemptVerdict{}
+
+	case attemptEntrySkipped:
+		// Surfaced via a Warning Event, a metric outcome and the Delivered
+		// condition rather than LastError, which would otherwise mark the feed
+		// failing forever.
+		const reason = "RenderFailed"
+		clearFailure(a.fs)
+		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonEntrySkipped,
+			fmt.Sprintf("skipped entry %q after %s: %v", clampText(o.entry, 100), reason, err))
+		a.warn(reasonEntrySkipped, "SkippedEntry", "feed %s: skipped entry %q after exhausting retries (%s): %v",
+			a.url, clampText(o.entry, 100), reason, err)
+		return attemptVerdict{}
+
+	case attemptBacklogSkipped:
+		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonBacklogSkipped,
+			fmt.Sprintf("catchUpLimit is 0: skipped %d existing entries", o.count))
+		return attemptVerdict{}
+
+	case attemptConfigError:
+		// A deterministic FeedSpec misconfiguration carries no RetryCount to
+		// gate a one-time Event on. setCondition's changed return serves the
+		// same purpose instead: it is true only the reconcile the Delivered
+		// condition first flips to ConfigError (or its message changes, e.g. a
+		// different typo), not on every reconcile of the same unresolved error.
+		a.fs.LastError = errText(err)
+		if a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, err.Error()) {
+			a.warn(reasonConfigError, "InvalidConfig", "feed %s: %v", a.url, err)
+		}
+		return attemptVerdict{}
+	}
+	panic(fmt.Sprintf("feedAttempt: unknown outcome kind %d", o.kind))
+}
+
+// failed records one counted failure -- LastError (errText, which is clamped),
+// RetryCount and the condition of type condType (carrying the full err.Error())
+// -- and applies the retry policy to it. eventReason names the failure in the
+// Events.
+func (a feedAttempt) failed(condType string, class failureClass, eventReason string, err error) attemptVerdict {
+	a.fs.LastError = errText(err)
+	a.fs.RetryCount++
+	a.setCondition(condType, metav1.ConditionFalse, class.conditionReason, err.Error())
+
+	if class.permanent {
+		// Permanent failures (404, 410, bad XML, a deleted webhook, a malformed
+		// message Discord keeps rejecting) won't self-heal on the normal retry
+		// schedule, so back off exponentially to reduce polling instead of
+		// using the flat RetryInterval. The group's normal Interval drives other
+		// feeds; this feed handles its own timing via BackoffUntil, checked in
+		// the active-feeds filter. No retry is asked for, so a single permanent
+		// failure doesn't pull the whole group onto the faster RetryInterval.
+		a.backOff(eventReason, err)
+		return attemptVerdict{}
+	}
+
+	maxRetries := maxRetryCount(a.group.Spec.Retries)
+	if a.fs.RetryCount < maxRetries {
+		return attemptVerdict{retry: true}
+	}
+	// Fire the persistent-failure Event exactly once, the reconcile this
+	// feed's retries are first exhausted -- not on every subsequent reconcile
+	// of a feed stuck failing the same way. Without the == here (rather than
+	// >=), RetryCount keeps climbing past maxRetries forever and a single
+	// ongoing failure would generate a fresh Warning Event every poll interval,
+	// indefinitely.
+	if a.fs.RetryCount == maxRetries {
+		a.warn(eventReason, "RetriesExhausted", "feed %s: giving up after exhausting retries: %v", a.url, err)
+	}
+	return attemptVerdict{}
+}
+
+// pastRetryLimit reports whether the failure just recorded came after the
+// retries were already exhausted a full reconcile ago: RetryCount went past
+// the limit, not just up to it.
+func (a feedAttempt) pastRetryLimit() bool {
+	return a.fs.RetryCount > maxRetryCount(a.group.Spec.Retries)
+}
+
+// backOff sets fs.BackoffUntil using exponential backoff
+// (permanentBackoffDuration, based on fs.RetryCount, which failed has already
+// incremented for this failure), capped at maxPermanentBackoff. reason and err
+// identify the Warning Event fired the first time the cap is reached -- not on
+// every capped retry after, so a feed that keeps failing at the cap doesn't
+// emit an Event every few hours. Unlike the exhaustion Event it doesn't speak
+// of exhausted retries: a permanent failure never spends them, and the feed
+// keeps being retried, waiting at most the cap between attempts (or longer if
+// the group's Interval is longer).
+func (a feedAttempt) backOff(reason string, err error) {
+	base, _ := parseDurationWithDefault(a.group.Spec.RetryInterval, fallbackRetryInterval)
+	backoff := permanentBackoffDuration(int(a.fs.RetryCount), base)
+	if backoff >= maxPermanentBackoff {
+		firstCapped := a.fs.RetryCount <= 1 ||
+			permanentBackoffDuration(int(a.fs.RetryCount)-1, base) < maxPermanentBackoff
+		if firstCapped {
+			a.warn(reason, "BackoffCapped", "feed %s: still failing permanently, backoff now capped at %s: %v",
+				a.url, maxPermanentBackoff, err)
+		}
+		backoff = maxPermanentBackoff
+	}
+	a.fs.BackoffUntil = nextBackoffUntil(time.Now().UTC(), backoff)
+}
+
+// setCondition is setFeedCondition for the attempt's feed and generation. It
+// returns whether the condition was added or changed.
+func (a feedAttempt) setCondition(condType string, status metav1.ConditionStatus, reason, message string) bool {
+	return setFeedCondition(a.fs, condType, status, reason, message, a.group.Generation)
+}
+
+// warn emits a Warning Event on the FeedGroup, so a failure is visible via
+// `kubectl describe feedgroup` instead of requiring a controller log dive. It
+// is a no-op if Recorder is unset (e.g. in unit tests that construct the
+// reconciler directly rather than through SetupWithManager).
+func (a feedAttempt) warn(reason, action, format string, args ...any) {
+	if a.r.Recorder == nil {
+		return
+	}
+	a.r.Recorder.Eventf(a.group, nil, corev1.EventTypeWarning, reason, action, format, args...)
 }
 
 // clearFailure resets fs's retry state: its last error, its retry count and
-// any permanent backoff.
+// any permanent backoff. A sent or skipped entry clears it through record; a
+// feedSync does when the fetch it applied is accounted for.
 func clearFailure(fs *v1alpha1.FeedStatus) {
 	fs.LastError = ""
 	fs.RetryCount = 0
 	fs.BackoffUntil = ""
-}
-
-// fail records one counted failure, in this order: LastError (errText, which
-// is clamped), RetryCount, the single-outcome metric, then the condition of
-// type condType (carrying the full err.Error()).
-func (a feedAttempt) fail(condType, outcome, reason string, err error) {
-	a.fs.LastError = errText(err)
-	a.fs.RetryCount++
-	feedOperationsTotal.WithLabelValues(a.group.Namespace, a.group.Name, a.url, outcome).Inc()
-	setFeedCondition(a.fs, condType, metav1.ConditionFalse, reason, err.Error(), a.group.Generation)
-}
-
-// announceExhaustion fires the persistent-failure Event only on the reconcile
-// RetryCount first equals maxRetries (== rather than >=), so an ongoing
-// failure doesn't emit a fresh Event every reconcile.
-func (a feedAttempt) announceExhaustion(maxRetries int32, reason string, err error) {
-	if a.fs.RetryCount == maxRetries {
-		a.r.recordPersistentFailure(a.group, a.url, reason, err)
-	}
-}
-
-// backOff applies the exponential permanent-failure backoff; see
-// applyPermanentBackoff.
-func (a feedAttempt) backOff(reason string, err error) {
-	a.r.applyPermanentBackoff(a.group, a.fs, a.url, reason, err)
 }

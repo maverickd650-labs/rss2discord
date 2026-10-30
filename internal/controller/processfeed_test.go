@@ -55,8 +55,9 @@ func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 	fg.Spec.Feeds[0] = feed
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	wantRetry, rateLimitRetryAfter := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, oneEntryFetch(), nil, client, testReconcileTime)
+	wantRetry, rateLimitRetryAfter := verdict.retry, verdict.retryAfter
 
 	if wantRetry {
 		t.Fatal("expected no retry for a deterministic regex compile error")
@@ -112,8 +113,9 @@ func TestProcessFeed_InvalidMessageTemplate(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Unclosed")
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	wantRetry, _ := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, oneEntryFetch(), nil, client, testReconcileTime)
+	wantRetry := verdict.retry
 
 	if wantRetry {
 		t.Fatal("expected no retry for a deterministic message template compile error")
@@ -143,8 +145,9 @@ func TestProcessFeed_InvalidForumThreadNameTemplate(t *testing.T) {
 	fg.Spec.Feeds[0] = feed
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	wantRetry, _ := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, oneEntryFetch(), nil, client, testReconcileTime)
+	wantRetry := verdict.retry
 
 	if wantRetry {
 		t.Fatal("expected no retry for a deterministic forum thread name template compile error")
@@ -168,8 +171,9 @@ func TestProcessFeed_NotModifiedPersistsLastModified(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fetchResult := rss.FetchResult{NotModified: true, LastModified: "Fri, 23 Oct 2015 07:28:00 GMT"}
 
-	wantRetry, _ := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, fetchResult, nil, nil, testReconcileTime)
+	wantRetry := verdict.retry
 
 	if wantRetry {
 		t.Fatal("expected no retry on a 304 response")
@@ -220,8 +224,9 @@ func TestProcessFeed_AlreadySentEntrySkipped(t *testing.T) {
 	feedStatusFor(fg, feed.RSSUrl).LastSent = map[string]string{entryKey: "2025-12-31T00:00:00Z"}
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	wantRetry, _ := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, fetchResult, nil, client, testReconcileTime)
+	wantRetry := verdict.retry
 
 	if wantRetry {
 		t.Fatal("expected no retry for an already-sent entry")
@@ -257,8 +262,9 @@ func TestProcessFeed_RecoversFromStaleErrorWithNoNewEntries(t *testing.T) {
 	fs.BackoffUntil = "2025-12-31T01:00:00Z"
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	wantRetry, _ := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, fetchResult, nil, client, testReconcileTime)
+	wantRetry := verdict.retry
 
 	if wantRetry {
 		t.Fatal("expected no retry once the feed recovers")
@@ -379,8 +385,9 @@ func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 	notFoundErr := &rss.HTTPStatusError{StatusCode: 404, Status: http404Status}
 
 	before := time.Now().UTC()
-	wantRetry, rateLimitRetryAfter := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, rss.FetchResult{}, notFoundErr, nil, testReconcileTime)
+	wantRetry, rateLimitRetryAfter := verdict.retry, verdict.retryAfter
 	after := time.Now().UTC()
 
 	if wantRetry {
@@ -422,8 +429,9 @@ func TestProcessFeed_BlockedAddressSetsPermanentBackoff(t *testing.T) {
 	fg.Spec.RetryInterval = "5m"
 	blockedErr := doError(&rss.BlockedAddressError{Addr: netip.MustParseAddr("169.254.169.254")}, true)
 
-	wantRetry, rateLimitRetryAfter := (&FeedGroupReconciler{}).processFeed(
+	verdict := (&FeedGroupReconciler{}).processFeed(
 		ctx, fg, feed, rss.FetchResult{}, blockedErr, nil, testReconcileTime)
+	wantRetry, rateLimitRetryAfter := verdict.retry, verdict.retryAfter
 
 	if wantRetry {
 		t.Fatal("expected no group-level retry for a permanent fetch failure")
@@ -461,7 +469,8 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 	recorder := events.NewFakeRecorder(10)
 	r := &FeedGroupReconciler{Recorder: recorder}
 	before := time.Now().UTC()
-	wantRetry, _ := r.processFeed(ctx, fg, feed, rss.FetchResult{}, notFoundErr, nil, testReconcileTime)
+	verdict := r.processFeed(ctx, fg, feed, rss.FetchResult{}, notFoundErr, nil, testReconcileTime)
+	wantRetry := verdict.retry
 
 	if wantRetry {
 		t.Fatal("expected no group-level retry for a capped permanent failure")
@@ -751,9 +760,10 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("config-error-ns", "config-error", "")
 	fs := feedStatusFor(fg, feed.RSSUrl)
 	recorder := events.NewFakeRecorder(10)
-	r := &FeedGroupReconciler{Recorder: recorder}
+	attempt := (&FeedGroupReconciler{Recorder: recorder}).newFeedAttempt(fg, fs, feed.RSSUrl, testReconcileTime)
+	configError := attemptOutcome{kind: attemptConfigError}
 
-	r.recordConfigError(fg, fs, feed.RSSUrl, errors.New("bad regex"))
+	attempt.record(configError, noClass, errors.New("bad regex"))
 	select {
 	case ev := <-recorder.Events:
 		if !strings.Contains(ev, reasonConfigError) || !strings.Contains(ev, "bad regex") {
@@ -763,14 +773,14 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 		t.Fatal("expected an Event the first time the config error appears")
 	}
 
-	r.recordConfigError(fg, fs, feed.RSSUrl, errors.New("bad regex"))
+	attempt.record(configError, noClass, errors.New("bad regex"))
 	select {
 	case ev := <-recorder.Events:
 		t.Fatalf("unexpected repeat Event for an unchanged error: %s", ev)
 	default:
 	}
 
-	r.recordConfigError(fg, fs, feed.RSSUrl, errors.New("a different typo"))
+	attempt.record(configError, noClass, errors.New("a different typo"))
 	select {
 	case <-recorder.Events:
 	default:
@@ -918,7 +928,8 @@ func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
 			}
 			fetch := rss.FetchResult{Entries: entries, ETag: `"skip-v1"`, LastModified: testReconcileTime}
 			r := &FeedGroupReconciler{}
-			wantRetry, retryAfter := r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			verdict := r.processFeed(t.Context(), fg, feed, fetch, nil, client, testReconcileTime)
+			wantRetry, retryAfter := verdict.retry, verdict.retryAfter
 			if wantRetry || retryAfter != 0 || discordServer.MessageCount() != 0 || len(fs.LastSent) != 0 {
 				t.Fatalf("backlog was sent or retried: retry=%t after=%v sent=%d status=%+v", wantRetry, retryAfter, discordServer.MessageCount(), fs)
 			}
@@ -1000,8 +1011,9 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 				id := fmt.Sprintf("entry-%d", i)
 				entries[i] = rss.Entry{ID: id, Title: id, Seq: len(entries) - 1 - i}
 			}
-			wantRetry, retryAfter := (&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed,
+			verdict := (&FeedGroupReconciler{}).processFeed(t.Context(), fg, feed,
 				rss.FetchResult{Entries: entries}, nil, client, testReconcileTime)
+			wantRetry, retryAfter := verdict.retry, verdict.retryAfter
 			bodies := discordServer.Bodies()
 			if wantRetry || retryAfter != 0 || len(bodies) != len(entries)-tc.wantStart {
 				t.Fatalf("retry=%t after=%v sent=%d; want %d", wantRetry, retryAfter, len(bodies), len(entries)-tc.wantStart)

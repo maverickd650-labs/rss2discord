@@ -198,7 +198,7 @@ func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *
 	setFeedReachableCondition(feedGroup)
 
 	// Gate the Event on the condition's reason/message actually changing (as
-	// recordConfigError does for feeds), not on every reconcile that still
+	// feedAttempt.record does for a feed's config error), not on every reconcile that still
 	// sees the bad value. ObservedGeneration is deliberately not compared, so
 	// an unrelated spec edit doesn't repeat the Event.
 	if ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); r.Recorder != nil &&

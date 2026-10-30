@@ -48,12 +48,20 @@ var allFailureClasses = []failureClass{
 
 // expectedOutcomes is every outcome label value feedOperationsTotal can ever
 // be incremented with in production -- the "reality" side of the contract
-// that the dashboard and alerts in dist/chart are checked against.
+// that the dashboard and alerts in dist/chart are checked against. It is
+// enumerated from feedAttempt's own outcome kinds (see attemptOutcome.metricLabel,
+// the only place a label is chosen), crossed with every failureClass, so a
+// kind that starts counting under a new label shows up here without anyone
+// remembering to list it.
 func expectedOutcomes() []string {
-	outcomes := make([]string, 0, 4+2*len(allFailureClasses))
-	outcomes = append(outcomes, outcomeSent, outcomeRenderError, outcomeRateLimited, outcomeSkipped)
-	for _, class := range allFailureClasses {
-		outcomes = append(outcomes, fetchErrorOutcome(class), sendErrorOutcome(class))
+	var outcomes []string
+	for kind := attemptFetchSucceeded; kind < attemptKindEnd; kind++ {
+		for _, class := range allFailureClasses {
+			label := attemptOutcome{kind: kind}.metricLabel(class)
+			if label != "" && !slices.Contains(outcomes, label) {
+				outcomes = append(outcomes, label)
+			}
+		}
 	}
 	return outcomes
 }

@@ -22,9 +22,6 @@ import (
 	"slices"
 	"testing"
 
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
@@ -38,7 +35,6 @@ const (
 	syncTestNow      = "2026-02-03T04:05:06Z"
 	syncTestModified = "Thu, 01 Jan 2026 00:00:00 GMT"
 	syncTestOldMod   = "Wed, 31 Dec 2025 00:00:00 GMT"
-	syncTestGen      = 7
 	// syncTestTitle is the feed title of every fetch; syncTestLegacyChecked is
 	// when a legacy status was last checked.
 	syncTestTitle         = "Sync Feed"
@@ -74,7 +70,7 @@ func syncFetch(entries ...rss.Entry) rss.FetchResult {
 }
 
 func syncSpec(catchUpLimit int) feedSyncSpec {
-	return feedSyncSpec{catchUpLimit: catchUpLimit, generation: syncTestGen, now: syncTestNow}
+	return feedSyncSpec{catchUpLimit: catchUpLimit, now: syncTestNow}
 }
 
 // currentStatus is a feed status in the current identity scheme that was
@@ -368,10 +364,8 @@ func TestFeedSync_BacklogSkipOnAFirstSync(t *testing.T) {
 	if fs.LastSeenEntry != all[3].ID || len(fs.LastSent) != 0 {
 		t.Fatalf("LastSeenEntry=%q LastSent=%v, want the newest entry as watermark and nothing recorded as sent", fs.LastSeenEntry, fs.LastSent)
 	}
-	cond := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
-	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != reasonBacklogSkipped ||
-		cond.ObservedGeneration != syncTestGen || cond.Message != "catchUpLimit is 0: skipped 4 existing entries" {
-		t.Fatalf("Delivered condition = %+v", cond)
+	if first.skippedBacklog != 4 {
+		t.Fatalf("skippedBacklog = %d, want the 4 existing entries", first.skippedBacklog)
 	}
 	first.close(syncAccountedFor)
 	if !fs.Initialized {
@@ -382,6 +376,9 @@ func TestFeedSync_BacklogSkipOnAFirstSync(t *testing.T) {
 	second.begin()
 	if got, want := syncIDs(second.entries()), syncIDs(all[4:]); !slices.Equal(got, want) {
 		t.Fatalf("second sync considers %q, want only the new %q", got, want)
+	}
+	if second.skippedBacklog != 0 {
+		t.Fatalf("second sync skipped %d entries, want none", second.skippedBacklog)
 	}
 }
 

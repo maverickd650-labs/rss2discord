@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,7 +25,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -185,38 +183,32 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	wg.Wait()
 
-	wantRetry := false
-	var discordRetryAfter time.Duration
+	var verdict attemptVerdict
 	for i, feed := range activeFeeds {
 		// All feeds in a group share one webhook, so once any feed hits
 		// Discord's per-webhook rate limit, processing the rest would only
 		// fire more sends that 429 too. Stop here and let the requeue (which
-		// backs off for discordRetryAfter below) retry the remaining feeds.
-		if discordRetryAfter > 0 {
+		// backs off for verdict.retryAfter below) retry the remaining feeds.
+		if verdict.retryAfter > 0 {
 			break
 		}
-		retry, rateLimitRetryAfter := r.processFeed(ctx, &feedGroup, feed, fetched[i], fetchErrs[i], discordClient, now)
-		if retry {
-			wantRetry = true
-		}
-		if rateLimitRetryAfter > discordRetryAfter {
-			discordRetryAfter = rateLimitRetryAfter
-		}
+		verdict = verdict.fold(r.processFeed(ctx, &feedGroup, feed, fetched[i], fetchErrs[i], discordClient, now))
 	}
 
-	decision := plan.requeue(&feedGroup.Spec, wantRetry, discordRetryAfter)
+	decision := plan.requeue(&feedGroup.Spec, verdict.retry, verdict.retryAfter)
 	return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, decision, nil)
 }
 
 // processFeed handles a completed fetch for a single feed: it records the
 // fetch outcome, sends new entries that pass the filter, and updates the feed's
 // FeedStatus. now is an RFC3339 status timestamp. Fetch, configuration,
-// rendering, and delivery errors are recorded in status. Applying the fetch to
-// the FeedStatus -- the order of the steps and what is settled -- belongs to the
-// feedSync opened below, which is closed with a verdict on every return. It
-// returns whether the reconcile should retry sooner than the normal interval
-// and, if Discord rate limited the webhook, how long to wait before the next
-// attempt.
+// rendering, and delivery errors are recorded in status by the feed's
+// feedAttempt, which also decides whether the failure is worth retrying.
+// Applying the fetch to the FeedStatus -- the order of the steps and what is
+// settled -- belongs to the feedSync opened below, which is closed with a
+// verdict on every return. The returned verdict says whether the reconcile
+// should retry sooner than the normal interval and, if Discord rate limited the
+// webhook, how long to wait before the next attempt.
 func (r *FeedGroupReconciler) processFeed(
 	ctx context.Context,
 	feedGroup *v1alpha1.FeedGroup,
@@ -225,47 +217,24 @@ func (r *FeedGroupReconciler) processFeed(
 	fetchErr error,
 	discordClient *discord.Client,
 	now string,
-) (wantRetry bool, rateLimitRetryAfter time.Duration) {
+) attemptVerdict {
 	log := logf.FromContext(ctx)
 	fs := feedStatusFor(feedGroup, feed.RSSUrl)
-	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl)
+	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl, now)
 
-	// Every return below sets verdict first; the deferred close is what settles
-	// the FeedStatus, and rejects a return that forgot to.
+	// Every return below sets settlement first; the deferred close is what
+	// settles the FeedStatus, and rejects a return that forgot to.
 	syncer := openFeedSync(fs, fetchResult, feedSyncSpecFor(feedGroup, now))
-	var verdict syncVerdict
-	defer func() { syncer.close(verdict) }()
+	var settlement syncVerdict
+	defer func() { syncer.close(settlement) }()
 
 	if fetchErr != nil {
-		verdict = syncFetchFailed
+		settlement = syncFetchFailed
 		// LastChecked deliberately doesn't advance here: it tracks the last
 		// *successful* check, so a feed stuck failing shows an aging
 		// LastChecked rather than looking freshly checked every retry.
 		log.Error(fetchErr, "failed to fetch RSS feed", "url", feed.RSSUrl)
-		class := classifyFetchError(fetchErr)
-		attempt.fail(v1alpha1.FeedConditionTypeReachable, fetchErrorOutcome(class), class.conditionReason, fetchErr)
-
-		if class.permanent {
-			// Permanent failures (404, 410, bad XML, etc.) won't self-heal on
-			// the normal retry schedule, so use exponential backoff to reduce
-			// polling instead of the flat RetryInterval. The group's normal
-			// Interval drives other feeds; this feed handles its own timing via
-			// BackoffUntil checked in the active-feeds filter. wantRetry is
-			// false so a single permanent failure doesn't pull the whole group
-			// onto the faster RetryInterval.
-			attempt.backOff("FetchFailed", fetchErr)
-			return false, 0
-		}
-
-		maxRetries := maxRetryCount(feedGroup.Spec.Retries)
-		// Fire the persistent-failure Event exactly once, the reconcile this
-		// feed's retries are first exhausted -- not on every subsequent
-		// reconcile of a feed stuck failing the same way. Without the == here
-		// (rather than >=), RetryCount keeps climbing past maxRetries forever
-		// and a single ongoing failure would otherwise generate a fresh Warning
-		// Event every poll interval, indefinitely.
-		attempt.announceExhaustion(maxRetries, "FetchFailed", fetchErr)
-		return fs.RetryCount < maxRetries, 0
+		return attempt.record(attemptOutcome{kind: attemptFetchFailed}, classifyFetchError(fetchErr), fetchErr)
 	}
 
 	// A 304 is just as much a successful check as one that found something to
@@ -274,14 +243,11 @@ func (r *FeedGroupReconciler) processFeed(
 	// else changed (requeueWithStatus diffs on the whole status), so a
 	// quiet feed now costs one status write per poll interval instead of
 	// zero.
-	fs.LastChecked = now
-	markFeedCheckSuccess(feedGroup)
-	setFeedCondition(fs, v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
-		"FetchSucceeded", "Feed fetched successfully", feedGroup.Generation)
+	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, noClass, nil)
 
 	if v, done := syncer.withoutEntries(); done {
-		verdict = v
-		return false, 0
+		settlement = v
+		return attemptVerdict{}
 	}
 
 	// Every config check happens in one step, before the sync begins, so a
@@ -289,10 +255,9 @@ func (r *FeedGroupReconciler) processFeed(
 	// a "feed was empty" delivery of its whole backlog.
 	renderer, err := newFeedRenderer(feedGroup, &feed)
 	if err != nil {
-		verdict = syncConfigError
+		settlement = syncConfigError
 		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
-		r.recordConfigError(feedGroup, fs, feed.RSSUrl, err)
-		return false, 0
+		return attempt.record(attemptOutcome{kind: attemptConfigError}, noClass, err)
 	}
 
 	syncer.begin()
@@ -300,34 +265,30 @@ func (r *FeedGroupReconciler) processFeed(
 		log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
 			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
 	}
-
-	var pending bool
-	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, syncer, discordClient)
-	verdict = syncAccountedFor
-	if pending {
-		verdict = syncPending
+	if syncer.skippedBacklog > 0 {
+		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, noClass, nil)
 	}
-	return wantRetry, rateLimitRetryAfter
+
+	verdict := r.sendNewEntries(ctx, feedGroup, renderer, syncer, attempt, discordClient)
+	settlement = verdict.settlement()
+	return verdict
 }
 
-// sendNewEntries scans the entries of syncer (see feedSync.entries), sending each
-// not-yet-sent entry that passes the filter and updates fs (feed's FeedStatus)
-// as it goes.
-// Rendering and delivery failures update status and stop the scan unless a
-// render failure qualifies for skipping. The results indicate whether to retry
-// sooner, the rate-limit wait, and whether an unresolved entry remains pending
-// even if its retries are exhausted.
+// sendNewEntries scans the entries of syncer (see feedSync.entries), sending
+// each not-yet-sent entry that passes the filter and recording every outcome
+// with attempt. The first rendering or delivery failure ends the scan, unless
+// it is a render failure that qualifies for skipping, and its verdict is the
+// result; a scan that gets through every entry has the zero verdict.
 func (r *FeedGroupReconciler) sendNewEntries(
 	ctx context.Context,
 	feedGroup *v1alpha1.FeedGroup,
-	fs *v1alpha1.FeedStatus,
 	renderer *feedRenderer,
 	syncer *feedSync,
+	attempt feedAttempt,
 	discordClient *discord.Client,
-) (wantRetry bool, rateLimitRetryAfter time.Duration, pending bool) {
+) attemptVerdict {
 	log := logf.FromContext(ctx)
 	feed := renderer.feed
-	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl)
 
 	for _, entry := range syncer.entries() {
 		if syncer.sent(entry) {
@@ -341,19 +302,13 @@ func (r *FeedGroupReconciler) sendNewEntries(
 		discordMessage, overflow, err := renderer.build(entry)
 		if err != nil {
 			log.Error(err, "failed to render Discord message", "url", feed.RSSUrl)
-			attempt.fail(v1alpha1.FeedConditionTypeDelivered, outcomeRenderError, reasonRenderError, err)
-
 			// A render error is deterministic for a given entry+template, so
 			// once retries are exhausted, retrying forever would just spin
-			// at RetryInterval without ever making progress. Surface an
-			// Event instead of looping indefinitely. The Event only fires
-			// the reconcile RetryCount first reaches maxRetries (== rather
-			// than >=), since this entry is reprocessed every reconcile
-			// until something changes -- without the equality check, a
-			// stuck template would emit a fresh Warning Event every poll
-			// interval forever.
-			maxRetries := maxRetryCount(feedGroup.Spec.Retries)
-			if fs.RetryCount > maxRetries && renderer.otherEntryRenders(syncer.window(), entry) {
+			// at RetryInterval without ever making progress. The attempt
+			// surfaces an Event instead of looping indefinitely, the
+			// reconcile RetryCount first reaches maxRetries.
+			verdict := attempt.record(attemptOutcome{kind: attemptRenderFailed}, noClass, err)
+			if attempt.pastRetryLimit() && renderer.otherEntryRenders(syncer.window(), entry) {
 				// Retries were exhausted a full reconcile ago and the entry
 				// still can't render, yet a sibling entry renders fine with
 				// the same templates: the problem is this entry's content, it
@@ -361,29 +316,24 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				// block every newer entry behind it forever. Drop it and carry
 				// on. If no entry renders, the templates themselves are broken
 				// and skipping would just drain the feed, so keep holding.
-				r.skipEntry(ctx, feedGroup, fs, *feed, entry, syncer, "RenderFailed", err)
+				log.Error(err, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", entryIdentity(entry))
+				syncer.markHandled(entry)
+				attempt.record(attemptOutcome{kind: attemptEntrySkipped, entry: entry.Title}, noClass, err)
 				continue
-			}
-			if fs.RetryCount < maxRetries {
-				wantRetry = true
-			} else {
-				attempt.announceExhaustion(maxRetries, "RenderFailed", err)
 			}
 
 			// Stop processing this feed's remaining entries for this
 			// reconcile rather than continuing to the next one: entries are
 			// sent oldest-to-newest, and a later entry's success advances
-			// LastSeenEntry (below) past everything up to it. If we kept
-			// going past this failed entry, a subsequent success would push
-			// the watermark past it too, and the next reconcile's forward-
-			// scan would then treat it as "already handled" and never
-			// attempt it again -- silently dropping it for good. Stopping
-			// here, like the rate-limit branch below already does, keeps
-			// the watermark from ever skipping an unresolved entry; it just
-			// means later entries in the same feed wait behind this one
-			// instead of jumping ahead.
-			pending = true
-			break
+			// LastSeenEntry past everything up to it. If we kept going past
+			// this failed entry, a subsequent success would push the watermark
+			// past it too, and the next reconcile's forward-scan would then
+			// treat it as "already handled" and never attempt it again --
+			// silently dropping it for good. Stopping here keeps the watermark
+			// from ever skipping an unresolved entry; it just means later
+			// entries in the same feed wait behind this one instead of jumping
+			// ahead. The same goes for a failed send below, and a rate limit.
+			return verdict
 		}
 
 		// Recorded per send attempt, before the outcome is known, so a retried
@@ -399,162 +349,20 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			Observe(time.Since(sendStart).Seconds())
 		if err != nil {
 			log.Error(err, "failed to send Discord message", "url", feed.RSSUrl)
-			fs.LastError = errText(err)
-
-			if rateLimitErr, ok := errors.AsType[*discord.RateLimitError](err); ok {
-				wantRetry = true
-				feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeRateLimited).Inc()
-				setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
-					reasonRateLimited, err.Error(), feedGroup.Generation)
-				if rateLimitErr.RetryAfter > rateLimitRetryAfter {
-					rateLimitRetryAfter = rateLimitErr.RetryAfter
-				}
-				// Discord rate limits are per-webhook, so once one entry is
-				// limited every further POST this reconcile would 429 too.
-				// Stop sending the rest of this feed's entries; the unsent ones
-				// stay pending (validators aren't persisted below) and are
-				// retried after the requeue backs off for RetryAfter.
-				pending = true
-				break
-			} else {
-				class := classifySendError(err)
-				attempt.fail(v1alpha1.FeedConditionTypeDelivered, sendErrorOutcome(class), class.conditionReason, err)
-
-				if class.permanent {
-					// A permanent classification (e.g. a deleted webhook, or
-					// a malformed message Discord will keep rejecting) won't
-					// recover on its own, so back off exponentially right
-					// away, exactly as a permanent fetch failure does: no
-					// wantRetry, so it doesn't pull the whole group onto the
-					// faster RetryInterval, and the persistent-failure Event
-					// comes from the backoff reaching its cap.
-					attempt.backOff("SendFailed", err)
-				} else {
-					// A transient classification (5xx, timeout) keeps
-					// retrying since it's expected to recover on its own. See
-					// the matching comment on the render-error branch above:
-					// fire the persistent-failure Event only the reconcile
-					// RetryCount first reaches maxRetries, not on every
-					// subsequent reconcile of an entry stuck failing to send.
-					maxRetries := maxRetryCount(feedGroup.Spec.Retries)
-					if fs.RetryCount < maxRetries {
-						wantRetry = true
-					} else {
-						attempt.announceExhaustion(maxRetries, "SendFailed", err)
-					}
-				}
-			}
-			// See the matching comment on the render-error branch above:
-			// stop here rather than continuing to the next entry, so a later
-			// entry's success can't advance LastSeenEntry past this unsent
-			// one and silently skip it for good.
-			pending = true
-			break
+			// Discord rate limits are per-webhook, so once one entry is
+			// limited every further POST this reconcile would 429 too: the
+			// scan stops, the unsent entries stay pending (validators aren't
+			// persisted) and are retried after the requeue backs off for the
+			// verdict's retryAfter.
+			outcome, class := sendFailureOutcome(err)
+			return attempt.record(outcome, class, err)
 		}
 
 		syncer.markHandled(entry)
-		attempt.clearFailure()
-		setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
-			"MessageSent", "Entry rendered and delivered to Discord", feedGroup.Generation)
-		feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeSent).Inc()
+		attempt.record(attemptOutcome{kind: attemptSent}, noClass, nil)
 	}
 
-	return wantRetry, rateLimitRetryAfter, pending
-}
-
-// skipEntry gives up on a single entry whose retries are exhausted, so the
-// rest of the feed can proceed: it is recorded as handled (dedup key and
-// watermark) and the retry state is reset for the entry after it. The skip is
-// surfaced via a Warning Event, a metric outcome, and the Delivered condition
-// rather than LastError, which would otherwise mark the feed failing forever.
-func (r *FeedGroupReconciler) skipEntry(
-	ctx context.Context,
-	feedGroup *v1alpha1.FeedGroup,
-	fs *v1alpha1.FeedStatus,
-	feed v1alpha1.FeedSpec,
-	entry rss.Entry,
-	syncer *feedSync,
-	reason string,
-	cause error,
-) {
-	identity := entryIdentity(entry)
-	logf.FromContext(ctx).Error(cause, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", identity)
-
-	syncer.markHandled(entry)
-	r.newFeedAttempt(feedGroup, fs, feed.RSSUrl).clearFailure()
-	feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeSkipped).Inc()
-	setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
-		reasonEntrySkipped, fmt.Sprintf("skipped entry %q after %s: %v", clampText(entry.Title, 100), reason, cause), feedGroup.Generation)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonEntrySkipped, "SkippedEntry",
-			"feed %s: skipped entry %q after exhausting retries (%s): %v", feed.RSSUrl, clampText(entry.Title, 100), reason, cause)
-	}
-}
-
-// applyPermanentBackoff sets fs.BackoffUntil using exponential backoff
-// (permanentBackoffDuration, based on fs.RetryCount, which the caller has
-// already incremented for this failure), capped at maxPermanentBackoff. Shared
-// by the fetch- and send-permanent-failure paths so a feed/entry that can't
-// recover on its own backs off the same way instead of retrying at full
-// Interval cadence forever. reason/err identify the Warning Event fired the
-// first time the cap is reached -- not on every capped retry after, so a feed
-// that keeps failing at the cap doesn't emit an Event every few hours.
-func (r *FeedGroupReconciler) applyPermanentBackoff(feedGroup *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, rssURL, reason string, err error) {
-	base, _ := parseDurationWithDefault(feedGroup.Spec.RetryInterval, fallbackRetryInterval)
-	backoff := permanentBackoffDuration(int(fs.RetryCount), base)
-	if backoff >= maxPermanentBackoff {
-		firstCapped := fs.RetryCount <= 1 ||
-			permanentBackoffDuration(int(fs.RetryCount)-1, base) < maxPermanentBackoff
-		if firstCapped {
-			r.recordBackoffCapped(feedGroup, rssURL, reason, err)
-		}
-		backoff = maxPermanentBackoff
-	}
-	fs.BackoffUntil = nextBackoffUntil(time.Now().UTC(), backoff)
-}
-
-// recordPersistentFailure emits a Warning Event on feedGroup once a feed's
-// fetch or send retries are exhausted, so the failure is visible via
-// `kubectl describe feedgroup` instead of requiring a controller log dive.
-// It's a no-op if Recorder is unset (e.g. in unit tests that construct the
-// reconciler directly rather than through SetupWithManager).
-func (r *FeedGroupReconciler) recordPersistentFailure(feedGroup *v1alpha1.FeedGroup, url, reason string, err error) {
-	if r.Recorder == nil {
-		return
-	}
-	r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reason, "RetriesExhausted",
-		"feed %s: giving up after exhausting retries: %v", url, err)
-}
-
-// recordBackoffCapped emits the Warning Event for a permanent failure the
-// first time its exponential backoff reaches maxPermanentBackoff. Unlike
-// recordPersistentFailure it doesn't speak of exhausted retries: a permanent
-// failure never spends them, and the feed keeps being retried, waiting at
-// most the cap between attempts (or longer if the group's Interval is longer).
-func (r *FeedGroupReconciler) recordBackoffCapped(feedGroup *v1alpha1.FeedGroup, url, reason string, err error) {
-	if r.Recorder == nil {
-		return
-	}
-	r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reason, "BackoffCapped",
-		"feed %s: still failing permanently, backoff now capped at %s: %v", url, maxPermanentBackoff, err)
-}
-
-// recordConfigError updates fs to reflect a deterministic FeedSpec
-// misconfiguration (an invalid filter regex or message/thread-name
-// template): these won't be fixed by retrying, so unlike a fetch/send
-// failure they carry no RetryCount escalation to gate a one-time Event on.
-// setFeedCondition's changed return serves the same purpose instead: it's
-// true only the reconcile the Delivered condition first flips to
-// ConfigError (or its message changes, e.g. a different typo), not on every
-// subsequent reconcile of the same unresolved error.
-func (r *FeedGroupReconciler) recordConfigError(feedGroup *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url string, err error) {
-	fs.LastError = errText(err)
-	changed := setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
-		reasonConfigError, err.Error(), feedGroup.Generation)
-	if changed && r.Recorder != nil {
-		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonConfigError, "InvalidConfig",
-			"feed %s: %v", url, err)
-	}
+	return attemptVerdict{}
 }
 
 func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (webhookURL, resourceVersion string, err error) {

@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"slices"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
@@ -76,15 +74,16 @@ type feedSync struct {
 	// defaultCatchUpLimit because fs is an ambiguous legacy status; set by
 	// begin.
 	cappedAmbiguousLegacy bool
+	// skippedBacklog is how many existing entries the begin step skipped over, for a
+	// first sync with catchUpLimit 0 (see skipBacklog); 0 otherwise. The
+	// caller records the BacklogSkipped outcome.
+	skippedBacklog int
 }
 
 // feedSyncSpec is what a sync needs from the FeedGroup and the reconcile.
 type feedSyncSpec struct {
 	// catchUpLimit is the effective spec limit (defaultCatchUpLimit when unset).
 	catchUpLimit int
-	// generation is the FeedGroup generation, recorded on the conditions the
-	// sync sets.
-	generation int64
 	// now is the RFC3339 timestamp recorded for entries handled in this sync.
 	now string
 }
@@ -95,7 +94,7 @@ func feedSyncSpecFor(group *v1alpha1.FeedGroup, now string) feedSyncSpec {
 	if group.Spec.CatchUpLimit != nil {
 		limit = int(*group.Spec.CatchUpLimit)
 	}
-	return feedSyncSpec{catchUpLimit: limit, generation: group.Generation, now: now}
+	return feedSyncSpec{catchUpLimit: limit, now: now}
 }
 
 // syncVerdict says how the processing of a fetch ended, and so what close
@@ -252,15 +251,13 @@ func (s *feedSync) markHandled(entry rss.Entry) {
 }
 
 // skipBacklog records the newest of entries (sorted oldest-to-newest) as the
-// feed's watermark without sending anything and sets Delivered to BacklogSkipped.
-// entries must be non-empty; later scans resume after this entry rather than
-// comparing publication times. The identity is the same one markHandled would
-// have stored after sending that entry, so the next forward-scan resumes
-// right behind it.
+// feed's watermark without sending anything. entries must be non-empty; later
+// scans resume after this entry rather than comparing publication times. The
+// identity is the same one markHandled would have stored after sending that
+// entry, so the next forward-scan resumes right behind it.
 func (s *feedSync) skipBacklog(entries []rss.Entry) {
 	s.ledger.markNewest(entries)
-	setFeedCondition(s.fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
-		reasonBacklogSkipped, fmt.Sprintf("catchUpLimit is 0: skipped %d existing entries", len(entries)), s.spec.generation)
+	s.skippedBacklog = len(entries)
 }
 
 // limitCatchUp trims entries to at most limit, keeping the most recent ones

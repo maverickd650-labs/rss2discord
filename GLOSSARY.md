@@ -44,3 +44,26 @@ Terms used in `internal/controller`, with the names the code gives them.
   say whether the feed was empty when last checked. Under `catchUpLimit: 0` it is capped
   at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for
   the fetch.
+
+**Feed attempt** (`feedAttempt`, `attempt.go`)
+: The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
+  an entry failing to render, failing to send, being rate limited, sent or skipped, a
+  skipped backlog, a config error -- each applied through the single entry point
+  `record(outcome, failureClass, err)`. It owns the outcome metric label, the `Reachable` /
+  `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
+  persistent-failure Events and the retry decision.
+
+**Attempt verdict** (`attemptVerdict`)
+: What recording an outcome means for the rest of the reconcile: `retry` (come back after
+  `RetryInterval`), `retryAfter` (how long Discord asked the webhook to be left alone) and
+  `pending` (an entry is still unresolved, even if its retries are exhausted). `fold`
+  combines verdicts across entries and feeds, and `settlement` turns the send loop's
+  verdict into the feed sync's close verdict: `pending` closes it `syncPending`,
+  otherwise `syncAccountedFor`.
+
+**Permanent failure** (`failureClass.permanent`)
+: A failure retrying on the normal schedule won't fix (a 404, bad XML, a deleted webhook).
+  It backs off exponentially from its first occurrence, capped at 6h, and never asks for a
+  faster retry; one Event announces the first time the backoff reaches the cap. A
+  transient failure instead retries until `RetryCount` reaches the retry limit, and one
+  Event announces that.
