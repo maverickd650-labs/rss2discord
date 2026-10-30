@@ -3,7 +3,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  namespace: team-a
+  namespace: "team-a"
   name: chart-golden-test-rss2discord-operator-manager-role
 rules:
 - apiGroups:
@@ -53,7 +53,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  namespace: team-b
+  namespace: "team-b"
   name: chart-golden-test-rss2discord-operator-manager-role
 rules:
 - apiGroups:

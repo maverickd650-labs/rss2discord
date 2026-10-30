@@ -15,7 +15,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: {{ if $ns }}RoleBinding{{ else }}ClusterRoleBinding{{ end }}
 metadata:
   {{- with $ns }}
-  namespace: {{ . }}
+  namespace: {{ . | quote }}
   {{- end }}
   labels:
     app.kubernetes.io/managed-by: {{ $.Release.Service }}

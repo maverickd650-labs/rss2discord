@@ -425,11 +425,23 @@ func TestChartWatchNamespacesScopesGrantAndWatchTogether(t *testing.T) {
 				t.Errorf("want %d x %q, got:\n%s", max(1, len(tc.namespaces)), tc.wantKind, role)
 			}
 			for _, ns := range tc.namespaces {
-				if !strings.Contains(role, "namespace: "+ns+"\n") {
+				if !strings.Contains(role, "namespace: \""+ns+"\"\n") {
 					t.Errorf("no Role in %s:\n%s", ns, role)
 				}
 			}
 		})
+	}
+}
+
+// TestChartWatchNamespacesQuotesNumericNames pins that an all-digit namespace,
+// which is a valid name, renders as a YAML string: unquoted it would parse as a
+// number and the API server would reject the Role and RoleBinding.
+func TestChartWatchNamespacesQuotesNumericNames(t *testing.T) {
+	for _, tmpl := range []string{managerRoleTemplate, managerRoleBindingTemplate} {
+		rendered := renderChartTemplate(t, tmpl, "rbac.watchNamespaces[0]=123")
+		if !strings.Contains(rendered, "namespace: \"123\"\n") {
+			t.Errorf("%s: want namespace: \"123\", got:\n%s", tmpl, rendered)
+		}
 	}
 }
 

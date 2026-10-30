@@ -62,7 +62,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: {{ if $ns }}Role{{ else }}ClusterRole{{ end }}
 metadata:
   {{- with $ns }}
-  namespace: {{ . }}
+  namespace: {{ . | quote }}
   {{- end }}
   name: {{ include "rss2discord-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
 {{- include "rss2discord-operator.managerRoleRules" $ }}

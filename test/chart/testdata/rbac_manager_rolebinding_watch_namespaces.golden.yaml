@@ -3,7 +3,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  namespace: team-a
+  namespace: "team-a"
   labels:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: rss2discord-operator
@@ -23,7 +23,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  namespace: team-b
+  namespace: "team-b"
   labels:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: rss2discord-operator
