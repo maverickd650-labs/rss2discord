@@ -231,6 +231,7 @@ func (r *FeedGroupReconciler) processFeed(
 ) (wantRetry bool, rateLimitRetryAfter time.Duration) {
 	log := logf.FromContext(ctx)
 	fs := feedStatusFor(feedGroup, feed.RSSUrl)
+	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl)
 
 	// Settles what a status written before stateVersion 1 still needs from
 	// the legacy reading below; see legacyState.
@@ -243,11 +244,7 @@ func (r *FeedGroupReconciler) processFeed(
 		// LastChecked rather than looking freshly checked every retry.
 		log.Error(fetchErr, "failed to fetch RSS feed", "url", feed.RSSUrl)
 		class := classifyFetchError(fetchErr)
-		fs.LastError = errText(fetchErr)
-		fs.RetryCount++
-		feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, fetchErrorOutcome(class)).Inc()
-		setFeedCondition(fs, v1alpha1.FeedConditionTypeReachable, metav1.ConditionFalse,
-			class.conditionReason, fetchErr.Error(), feedGroup.Generation)
+		attempt.fail(v1alpha1.FeedConditionTypeReachable, fetchErrorOutcome(class), class.conditionReason, fetchErr)
 
 		if class.permanent {
 			// Permanent failures (404, 410, bad XML, etc.) won't self-heal on
@@ -257,7 +254,7 @@ func (r *FeedGroupReconciler) processFeed(
 			// BackoffUntil checked in the active-feeds filter. wantRetry is
 			// false so a single permanent failure doesn't pull the whole group
 			// onto the faster RetryInterval.
-			r.applyPermanentBackoff(feedGroup, fs, feed.RSSUrl, "FetchFailed", fetchErr)
+			attempt.backOff("FetchFailed", fetchErr)
 			return false, 0
 		}
 
@@ -268,9 +265,7 @@ func (r *FeedGroupReconciler) processFeed(
 		// (rather than >=), RetryCount keeps climbing past maxRetries forever
 		// and a single ongoing failure would otherwise generate a fresh Warning
 		// Event every poll interval, indefinitely.
-		if fs.RetryCount == maxRetries {
-			r.recordPersistentFailure(feedGroup, feed.RSSUrl, "FetchFailed", fetchErr)
-		}
+		attempt.announceExhaustion(maxRetries, "FetchFailed", fetchErr)
 		return fs.RetryCount < maxRetries, 0
 	}
 
@@ -317,9 +312,7 @@ func (r *FeedGroupReconciler) processFeed(
 			fs.Initialized = true
 		}
 		persistValidators()
-		fs.LastError = ""
-		fs.RetryCount = 0
-		fs.BackoffUntil = ""
+		attempt.clearFailure()
 		return false, 0
 	}
 
@@ -337,9 +330,7 @@ func (r *FeedGroupReconciler) processFeed(
 		fs.Initialized = true
 		legacy.settled = true
 		persistValidators()
-		fs.LastError = ""
-		fs.RetryCount = 0
-		fs.BackoffUntil = ""
+		attempt.clearFailure()
 		return false, 0
 	}
 
@@ -438,9 +429,7 @@ func (r *FeedGroupReconciler) processFeed(
 		// stale LastError/RetryCount forever, since neither branch above runs
 		// for an all-skipped fetch -- the FeedGroup's Ready condition would
 		// stay False on a feed that's actually healthy again.
-		fs.LastError = ""
-		fs.RetryCount = 0
-		fs.BackoffUntil = ""
+		attempt.clearFailure()
 	}
 
 	return wantRetry, rateLimitRetryAfter
@@ -469,6 +458,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 ) (wantRetry bool, rateLimitRetryAfter time.Duration, pending bool) {
 	log := logf.FromContext(ctx)
 	feed := renderer.feed
+	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl)
 
 	for _, entry := range entries[resumeAt:] {
 		if ledger.sent(entry) {
@@ -482,11 +472,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 		discordMessage, overflow, err := renderer.build(entry)
 		if err != nil {
 			log.Error(err, "failed to render Discord message", "url", feed.RSSUrl)
-			fs.LastError = errText(err)
-			fs.RetryCount++
-			feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeRenderError).Inc()
-			setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
-				reasonRenderError, err.Error(), feedGroup.Generation)
+			attempt.fail(v1alpha1.FeedConditionTypeDelivered, outcomeRenderError, reasonRenderError, err)
 
 			// A render error is deterministic for a given entry+template, so
 			// once retries are exhausted, retrying forever would just spin
@@ -511,8 +497,8 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			}
 			if fs.RetryCount < maxRetries {
 				wantRetry = true
-			} else if fs.RetryCount == maxRetries {
-				r.recordPersistentFailure(feedGroup, feed.RSSUrl, "RenderFailed", err)
+			} else {
+				attempt.announceExhaustion(maxRetries, "RenderFailed", err)
 			}
 
 			// Stop processing this feed's remaining entries for this
@@ -563,10 +549,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				break
 			} else {
 				class := classifySendError(err)
-				fs.RetryCount++
-				feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, sendErrorOutcome(class)).Inc()
-				setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
-					class.conditionReason, err.Error(), feedGroup.Generation)
+				attempt.fail(v1alpha1.FeedConditionTypeDelivered, sendErrorOutcome(class), class.conditionReason, err)
 
 				// See the matching comment on the render-error branch above:
 				// fire the persistent-failure Event only the reconcile
@@ -576,9 +559,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				if fs.RetryCount < maxRetries {
 					wantRetry = true
 				} else {
-					if fs.RetryCount == maxRetries {
-						r.recordPersistentFailure(feedGroup, feed.RSSUrl, "SendFailed", err)
-					}
+					attempt.announceExhaustion(maxRetries, "SendFailed", err)
 					// A permanent classification (e.g. a deleted webhook, or
 					// a malformed message Discord will keep rejecting) won't
 					// recover on its own, so back off exponentially the same
@@ -587,7 +568,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 					// classification (5xx, timeout) keeps retrying at that
 					// cadence since it's expected to recover on its own.
 					if class.permanent {
-						r.applyPermanentBackoff(feedGroup, fs, feed.RSSUrl, "SendFailed", err)
+						attempt.backOff("SendFailed", err)
 					}
 				}
 			}
@@ -600,9 +581,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 		}
 
 		ledger.markHandled(entry, now)
-		fs.LastError = ""
-		fs.RetryCount = 0
-		fs.BackoffUntil = ""
+		attempt.clearFailure()
 		setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
 			"MessageSent", "Entry rendered and delivered to Discord", feedGroup.Generation)
 		feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeSent).Inc()
@@ -631,9 +610,7 @@ func (r *FeedGroupReconciler) skipEntry(
 	logf.FromContext(ctx).Error(cause, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", identity)
 
 	ledger.markHandled(entry, now)
-	fs.LastError = ""
-	fs.RetryCount = 0
-	fs.BackoffUntil = ""
+	r.newFeedAttempt(feedGroup, fs, feed.RSSUrl).clearFailure()
 	feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeSkipped).Inc()
 	setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
 		reasonEntrySkipped, fmt.Sprintf("skipped entry %q after %s: %v", clampText(entry.Title, 100), reason, cause), feedGroup.Generation)
