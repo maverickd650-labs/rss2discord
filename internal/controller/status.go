@@ -159,8 +159,9 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 	})
 }
 
-// requeueWithStatus persists feedGroup's status and requeues after the given
-// interval (falling back to fallback if interval is unset or invalid). The
+// requeueWithStatus persists feedGroup's status and requeues after
+// decision.wait() (the decision's interval, or its fallback if that is unset or
+// invalid, then jittered and bounded; see requeueDecision). The
 // status write (applyStatus) is skipped when the status hasn't actually
 // changed from original, avoiding an API round trip for unchanged status.
 // webhookErr, if non-nil, means the reconcile never got far enough to
@@ -177,16 +178,15 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 // on the transition. Duration parse errors are not returned; status conversion
 // or API write errors from applyStatus are returned with an empty result.
 //
-// jitter controls whether requeueJitterMaxFactor is applied to the computed
-// duration. It must be false when fallback is itself an externally-dictated
-// wait -- currently only Discord's rate-limit Retry-After -- since that
+// decision.jitter controls whether requeueJitterMaxFactor is applied to the
+// computed duration. It must be false when the fallback is itself an
+// externally-dictated wait -- currently only Discord's rate-limit Retry-After -- since that
 // duration is already the exact minimum wait Discord demands, not a
 // self-chosen periodicity that benefits from desynchronization.
-func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, interval string, fallback time.Duration, webhookErr error, jitter bool) (ctrl.Result, error) {
-	// parseDurationWithDefault returns fallback alongside its error; the error
-	// itself is reported via intervalErr below, for both fields at once.
-	duration, _ := parseDurationWithDefault(interval, fallback)
-	duration = jitterDuration(duration, jitter)
+func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, decision requeueDecision, webhookErr error) (ctrl.Result, error) {
+	// A parse error in decision.interval falls back to decision.fallback; it is
+	// reported via invalidIntervalError below, for both fields at once.
+	duration := decision.wait()
 
 	feedGroup.Status.ObservedGeneration = feedGroup.Generation
 	prevReady := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)

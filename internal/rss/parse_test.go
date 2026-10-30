@@ -1810,3 +1810,34 @@ func TestParseFeed_AtomPreviousIDSurvivesTheCapWithForeignEntries(t *testing.T) 
 		t.Fatalf("first entry ID, PreviousID = %q, %q; want %q, %q", entries[0].ID, entries[0].PreviousID, nsIDReal, nsIDFake)
 	}
 }
+
+// TestParseFeed_AtomPreviousIDEmptyForPlainDocument asserts an Atom 1.0 entry
+// with dates, an enclosure, a relative link and an xml:base, but no extension
+// elements, reports no PreviousID: both vocabularies derive the same identity.
+func TestParseFeed_AtomPreviousIDEmptyForPlainDocument(t *testing.T) {
+	doc := []byte(`<?xml version="1.0"?>
+<feed xmlns="` + atomNamespace + `" xml:base="https://example.com/blog/">
+  <title>Plain</title>
+  <entry>
+    <id>urn:uuid:1</id><title>One</title>
+    <link rel="alternate" href="posts/one"/>
+    <link rel="enclosure" type="image/png" href="img/one.png"/>
+    <updated>2024-01-02T03:04:05Z</updated>
+    <published>2024-01-01T03:04:05Z</published>
+  </entry>
+  <entry>
+    <title>Two</title>
+    <link href="posts/two"/>
+    <updated>2024-01-03T03:04:05Z</updated>
+  </entry>
+</feed>`)
+	entries, _, err := parseFeed(doc)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
+	}
+	for _, e := range entries {
+		if e.PreviousID != "" || e.PreviousIDSource != 0 {
+			t.Errorf("entry %q: PreviousID, PreviousIDSource = %q, %v; want empty", e.Title, e.PreviousID, e.PreviousIDSource)
+		}
+	}
+}

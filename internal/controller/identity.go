@@ -553,8 +553,45 @@ func recordSent(lastSent map[string]string, entry rss.Entry, counts strippedCoun
 	}
 }
 
-// entriesContainID reports whether id, as stored in LastSeenEntry, stands for
-// any of entries; see watermarkIndex.
-func entriesContainID(entries []rss.Entry, id string) bool {
-	return watermarkIndex(entries, id, countStripped(entries)) >= 0
+// deliveryLedger is a feed's delivery bookkeeping over one fetch: the
+// FeedStatus it reads and writes (the LastSeenEntry watermark and the LastSent
+// dedup keys) together with the stripped-identity counts they depend on. The
+// counts are taken once, over the whole untrimmed fetch, so an entry's stripped
+// identity is only unique if it is across the feed, however the entries are
+// later trimmed for catch-up.
+type deliveryLedger struct {
+	fs     *v1alpha1.FeedStatus
+	counts strippedCounts
+}
+
+// newDeliveryLedger builds the ledger for fs over entries, the whole fetch
+// (after identity migrations) and before any catch-up trim.
+func newDeliveryLedger(fs *v1alpha1.FeedStatus, entries []rss.Entry) *deliveryLedger {
+	return &deliveryLedger{fs: fs, counts: countStripped(entries)}
+}
+
+// resume returns the index in entries of the entry fs.LastSeenEntry stands for,
+// and whether there is one; see watermarkIndex. entries should be the fetch the
+// ledger was built from.
+func (l *deliveryLedger) resume(entries []rss.Entry) (index int, found bool) {
+	index = watermarkIndex(entries, l.fs.LastSeenEntry, l.counts)
+	return index, index >= 0
+}
+
+// sent reports whether entry was already delivered; see entrySent.
+func (l *deliveryLedger) sent(entry rss.Entry) bool {
+	return entrySent(l.fs.LastSent, entry, l.counts)
+}
+
+// markHandled records entry as delivered (or given up on) at now and moves the
+// watermark to it.
+func (l *deliveryLedger) markHandled(entry rss.Entry, now string) {
+	recordSent(l.fs.LastSent, entry, l.counts, now)
+	l.fs.LastSeenEntry = clampWatermark(entryIdentity(entry))
+}
+
+// markNewest moves the watermark to the newest of entries (sorted
+// oldest-to-newest, non-empty) without recording anything as sent.
+func (l *deliveryLedger) markNewest(entries []rss.Entry) {
+	l.fs.LastSeenEntry = clampWatermark(entryIdentity(entries[len(entries)-1]))
 }
