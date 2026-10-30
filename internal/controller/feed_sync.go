@@ -206,16 +206,9 @@ func (s *feedSync) begin() {
 	// Built over the whole fetch, before any catch-up trim below, so an
 	// entry's stripped identity is only unique if it is across the feed.
 	s.ledger = newDeliveryLedger(s.fs, entries)
-	hadWatermark := s.fs.LastSeenEntry != ""
-	index, found := -1, false
-	if hadWatermark {
-		index, found = s.ledger.resume(entries)
-	}
 	plan := planDelivery(deliveryInputs{
 		entries:         entries,
-		hadWatermark:    hadWatermark,
-		watermarkIndex:  index,
-		found:           found,
+		watermark:       s.ledger.resume(entries),
 		catchUpLimit:    s.spec.catchUpLimit,
 		legacyAmbiguous: s.legacy.ambiguous,
 		wasInitialized:  s.wasInitialized,
@@ -239,7 +232,7 @@ func (s *feedSync) window() []rss.Entry {
 	return s.scan
 }
 
-// sent reports whether entry was already delivered; see entrySent.
+// sent reports whether entry was already delivered; see deliveryLedger.sent.
 func (s *feedSync) sent(entry rss.Entry) bool {
 	return s.ledger.sent(entry)
 }

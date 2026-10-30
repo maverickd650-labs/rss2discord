@@ -33,6 +33,8 @@ func planEntries(n int) []rss.Entry {
 }
 
 func TestPlanDelivery(t *testing.T) {
+	noWatermark := watermarkLookup{watermarkNone, -1}
+	lostWatermark := watermarkLookup{watermarkLost, -1}
 	const big = defaultCatchUpLimit + 5
 	all := planEntries(big)
 	few := planEntries(3)
@@ -45,83 +47,83 @@ func TestPlanDelivery(t *testing.T) {
 	}{
 		{
 			name: "watermark found resumes after it",
-			in:   deliveryInputs{entries: all, hadWatermark: true, found: true, watermarkIndex: 4, catchUpLimit: 2},
+			in:   deliveryInputs{entries: all, watermark: watermarkLookup{watermarkFound, 4}, catchUpLimit: 2},
 			want: deliveryPlan{scan: all, resumeAt: 5},
 		},
 		{
 			name: "watermark found ignores catchUpLimit 0, ambiguity and initialization",
-			in: deliveryInputs{entries: few, hadWatermark: true, found: true, watermarkIndex: 0,
+			in: deliveryInputs{entries: few, watermark: watermarkLookup{watermarkFound, 0},
 				catchUpLimit: 0, legacyAmbiguous: true},
 			want: deliveryPlan{scan: few, resumeAt: 1},
 		},
 		{
 			name: "watermark at newest entry leaves nothing past it",
-			in:   deliveryInputs{entries: few, hadWatermark: true, found: true, watermarkIndex: 2, catchUpLimit: 5, wasInitialized: true},
+			in:   deliveryInputs{entries: few, watermark: watermarkLookup{watermarkFound, 2}, catchUpLimit: 5, wasInitialized: true},
 			want: deliveryPlan{scan: few, resumeAt: 3},
 		},
 		{
 			name: "watermark not found, limit above zero caps catch-up",
-			in:   deliveryInputs{entries: all, hadWatermark: true, catchUpLimit: 2, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 2, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, 2)},
 		},
 		{
 			name: "watermark not found, limit above feed size keeps all",
-			in:   deliveryInputs{entries: few, hadWatermark: true, catchUpLimit: 10},
+			in:   deliveryInputs{entries: few, watermark: lostWatermark, catchUpLimit: 10},
 			want: deliveryPlan{scan: few},
 		},
 		{
 			name: "watermark not found, limit 0 falls back to the default cap",
-			in:   deliveryInputs{entries: all, hadWatermark: true, catchUpLimit: 0, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 0, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit)},
 		},
 		{
 			name: "watermark not found, limit 0, not initialized is not a first sync",
-			in:   deliveryInputs{entries: all, hadWatermark: true, catchUpLimit: 0},
+			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 0},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit)},
 		},
 		{
 			name: "watermark not found, limit 0, ambiguous legacy is not capped as legacy",
-			in:   deliveryInputs{entries: all, hadWatermark: true, catchUpLimit: 0, legacyAmbiguous: true},
+			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 0, legacyAmbiguous: true},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit)},
 		},
 		{
 			name: "no watermark, limit above zero caps catch-up",
-			in:   deliveryInputs{entries: all, catchUpLimit: 3},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3},
 			want: deliveryPlan{scan: tail(all, 3)},
 		},
 		{
 			name: "no watermark, limit above zero ignores ambiguity and initialization",
-			in:   deliveryInputs{entries: all, catchUpLimit: 3, legacyAmbiguous: true, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3, legacyAmbiguous: true, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, 3)},
 		},
 		{
 			name: "no watermark, limit 0, first sync skips the backlog",
-			in:   deliveryInputs{entries: all, catchUpLimit: 0},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0},
 			want: deliveryPlan{skipBacklog: true},
 		},
 		{
 			name: "no watermark, limit 0, already initialized delivers everything",
-			in:   deliveryInputs{entries: all, catchUpLimit: 0, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, wasInitialized: true},
 			want: deliveryPlan{scan: all},
 		},
 		{
 			name: "no watermark, limit 0, ambiguous legacy is capped at the default",
-			in:   deliveryInputs{entries: all, catchUpLimit: 0, legacyAmbiguous: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacyAmbiguous: true},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit), cappedAmbiguousLegacy: true},
 		},
 		{
 			name: "no watermark, limit 0, ambiguous legacy wins over initialized",
-			in:   deliveryInputs{entries: all, catchUpLimit: 0, legacyAmbiguous: true, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacyAmbiguous: true, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit), cappedAmbiguousLegacy: true},
 		},
 		{
 			name: "no watermark, limit 0, ambiguous legacy, small feed keeps all but still signals",
-			in:   deliveryInputs{entries: few, catchUpLimit: 0, legacyAmbiguous: true},
+			in:   deliveryInputs{entries: few, watermark: noWatermark, catchUpLimit: 0, legacyAmbiguous: true},
 			want: deliveryPlan{scan: few, cappedAmbiguousLegacy: true},
 		},
 		{
 			name: "no entries, limit 0, first sync still plans a skip",
-			in:   deliveryInputs{catchUpLimit: 0},
+			in:   deliveryInputs{watermark: noWatermark, catchUpLimit: 0},
 			want: deliveryPlan{skipBacklog: true},
 		},
 	} {
