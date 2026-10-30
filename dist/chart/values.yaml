@@ -147,6 +147,8 @@ rbac:
   namespaced: false
 
   ## Namespaces the operator watches for FeedGroups and their webhook Secrets.
+  ## Recommended for tenant deployments; see "Restricting the operator to some
+  ## namespaces" in the README, including how to verify the resulting grant.
   ## When set, the manager's permissions (including Secret get/list/watch) are
   ## granted as a Role + RoleBinding in each listed namespace instead of a
   ## ClusterRole, and the manager runs with the same --watch-namespaces. Use it

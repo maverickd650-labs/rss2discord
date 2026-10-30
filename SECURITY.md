@@ -38,10 +38,14 @@ cluster-wide, so it can retry a feed as soon as its webhook Secret is replaced. 
 metadata-only and its cache strips annotations and managedFields (`kubectl apply` copies a
 Secret's data into an annotation), and Secret data is only ever read uncached, by name. Those
 limit what the operator holds in memory, **not what its credential is authorized to do**: a
-stolen service-account token can list every Secret's data. For strict tenant separation, set
+stolen service-account token can list every Secret's data. For tenant deployments, install with
 the chart's `rbac.watchNamespaces` (see the README): the grant becomes a Role in each listed
 namespace and the manager's `--watch-namespaces` is set to the same list, so both are scoped
-together.
+together. Treat the resulting RBAC grants as the boundary, not the watch arguments, and verify
+them with `kubectl auth can-i ... --as=system:serviceaccount:<ns>:<sa>` -- including after
+narrowing an existing installation, where `helm upgrade` removes the cluster-wide manager
+binding (covered by a chart test against a real API server) but a hand-applied
+`dist/install.yaml` is not pruned.
 
 ## Supply Chain
 
