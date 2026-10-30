@@ -17,7 +17,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"\nimport sys, json, subprocess\ndata = json.load(sys.stdin)\npath = data.get('tool_input', {}).get('file_path', '')\nif path.endswith('.go'):\n    result = subprocess.run(['mise', 'run', 'lint-fix'], capture_output=True, text=True)\n    if result.returncode != 0:\n        output = result.stdout or result.stderr\n        print(output[-1000:] if len(output) > 1000 else output)\n\""
+            "command": "python3 -c \"\nimport sys, json, os, subprocess\ndata = json.load(sys.stdin)\npath = data.get('tool_input', {}).get('file_path', '')\nif path.endswith('.go'):\n    env = {**os.environ, 'PATH': os.path.expanduser('~/.local/bin') + os.pathsep + os.environ.get('PATH', '')}\n    result = subprocess.run(['mise', 'run', 'lint-fix'], capture_output=True, text=True, env=env)\n    if result.returncode != 0:\n        output = result.stdout or result.stderr\n        print(output[-1000:] if len(output) > 1000 else output)\n\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
           }
         ]
       }
