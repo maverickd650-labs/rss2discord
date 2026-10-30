@@ -17,12 +17,9 @@ limitations under the License.
 package controller
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,12 +42,6 @@ import (
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
-
-// defaultCatchUpLimit is the cap used when a watermark has scrolled out of a
-// feed's window, and by limitCatchUp for any non-positive limit. On a true
-// first sync an explicit catchUpLimit of 0 means "skip the backlog" instead
-// (see skipBacklog); an omitted field is defaulted to 5 by the API server.
-const defaultCatchUpLimit = 5
 
 // maxConcurrentFetches bounds how many feed fetches a single reconcile runs
 // in parallel. Feeds.MaxItems caps the list at 50 (see FeedGroupSpec), but
@@ -218,15 +209,11 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // processFeed handles a completed fetch for a single feed: it records the
-// fetch outcome, applies the catch-up policy when no usable watermark exists,
-// sends new entries that pass the filter, and updates the feed's FeedStatus. now is an
-// RFC3339 status timestamp. Fetch, configuration, rendering, and delivery
-// errors are recorded in status. Legacy identities are migrated before the
-// watermark lookup. For non-empty fetches, Initialized is set only once the
-// feed's configuration is known to be usable, so a config error on a first fetch
-// can't turn the next attempt into a "feed was empty" delivery of its whole
-// backlog. An ambiguous legacy status additionally waits until the fetch is
-// accounted for (nothing pending) before it is initialized and settled. It
+// fetch outcome, sends new entries that pass the filter, and updates the feed's
+// FeedStatus. now is an RFC3339 status timestamp. Fetch, configuration,
+// rendering, and delivery errors are recorded in status. Applying the fetch to
+// the FeedStatus -- the order of the steps and what is settled -- belongs to the
+// feedSync opened below, which is closed with a verdict on every return. It
 // returns whether the reconcile should retry sooner than the normal interval
 // and, if Discord rate limited the webhook, how long to wait before the next
 // attempt.
@@ -243,12 +230,14 @@ func (r *FeedGroupReconciler) processFeed(
 	fs := feedStatusFor(feedGroup, feed.RSSUrl)
 	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl)
 
-	// Settles what a status written before stateVersion 1 still needs from
-	// the legacy reading below; see legacyState.
-	legacy := readLegacyState(fs)
-	defer legacy.finish(fs)
+	// Every return below sets verdict first; the deferred close is what settles
+	// the FeedStatus, and rejects a return that forgot to.
+	syncer := openFeedSync(fs, fetchResult, feedSyncSpecFor(feedGroup, now))
+	var verdict syncVerdict
+	defer func() { syncer.close(verdict) }()
 
 	if fetchErr != nil {
+		verdict = syncFetchFailed
 		// LastChecked deliberately doesn't advance here: it tracks the last
 		// *successful* check, so a feed stuck failing shows an aging
 		// LastChecked rather than looking freshly checked every retry.
@@ -279,178 +268,51 @@ func (r *FeedGroupReconciler) processFeed(
 		return fs.RetryCount < maxRetries, 0
 	}
 
-	// Initialized is set only once the feed's configuration is known to be
-	// usable (below, or on the paths that never reach it): marking it earlier
-	// would let a config error on a non-empty first fetch leave Initialized
-	// true with no watermark, so a fixed config would deliver the whole
-	// backlog despite catchUpLimit 0.
-	wasInitialized := fs.Initialized
+	// A 304 is just as much a successful check as one that found something to
+	// send -- it shouldn't read as stale just because nothing changed. This does
+	// give up the optimization of skipping the status write when nothing
+	// else changed (requeueWithStatus diffs on the whole status), so a
+	// quiet feed now costs one status write per poll interval instead of
+	// zero.
+	fs.LastChecked = now
+	markFeedCheckSuccess(feedGroup)
+	setFeedCondition(fs, v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
+		"FetchSucceeded", "Feed fetched successfully", feedGroup.Generation)
 
-	// Persisting the new validators is deferred until the end of this
-	// function (and skipped entirely if anything below needs a retry): if a
-	// send fails, storing the new ETag now would make the next reconcile's
-	// conditional GET return 304 before the unsent entry is ever retried,
-	// silently dropping it.
-	persistValidators := func() {
-		if fetchResult.ETag != "" {
-			fs.ETag = fetchResult.ETag
-		}
-		if fetchResult.LastModified != "" {
-			fs.LastModified = fetchResult.LastModified
-		}
-	}
-
-	markFetchSucceeded := func() {
-		fs.LastChecked = now
-		markFeedCheckSuccess(feedGroup)
-		setFeedCondition(fs, v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
-			"FetchSucceeded", "Feed fetched successfully", feedGroup.Generation)
-	}
-
-	if fetchResult.NotModified {
-		// A 304 confirms the feed has no new entries, which is just as much a
-		// successful check as one that found something to send -- it
-		// shouldn't read as stale just because nothing changed. This does
-		// give up the optimization of skipping the status write when nothing
-		// else changed (requeueWithStatus diffs on the whole status), so a
-		// quiet feed now costs one status write per poll interval instead of
-		// zero.
-		markFetchSucceeded()
-		// A 304 repeats a fetch an ambiguous legacy status can't account
-		// for, so it settles nothing.
-		if !legacy.ambiguous {
-			fs.Initialized = true
-		}
-		persistValidators()
-		attempt.clearFailure()
+	if v, done := syncer.withoutEntries(); done {
+		verdict = v
 		return false, 0
 	}
 
-	markFetchSucceeded()
-
-	entries := fetchResult.Entries
-	// Stamp the feed's title on each entry so templates can use {{.FeedTitle}}
-	// without threading it through sendNewEntries/buildDiscordMessage.
-	for i := range entries {
-		entries[i].FeedTitle = fetchResult.FeedTitle
-	}
-	if len(entries) == 0 {
-		// Nothing to send, so it's always safe to persist. An empty feed
-		// also settles an ambiguous legacy status: anything after it is new.
-		fs.Initialized = true
-		legacy.settled = true
-		persistValidators()
-		attempt.clearFailure()
-		return false, 0
-	}
-
-	// Every config check happens in one step, before Initialized is set below,
-	// so a config error on a non-empty first fetch can't turn the next
-	// attempt into a "feed was empty" delivery of its whole backlog.
+	// Every config check happens in one step, before the sync begins, so a
+	// config error on a non-empty first fetch can't turn the next attempt into
+	// a "feed was empty" delivery of its whole backlog.
 	renderer, err := newFeedRenderer(feedGroup, &feed)
 	if err != nil {
+		verdict = syncConfigError
 		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
 		r.recordConfigError(feedGroup, fs, feed.RSSUrl, err)
 		return false, 0
 	}
 
-	// An ambiguous legacy status is capped in memory only (see below), so it
-	// is settled once the fetch is accounted for, not here: settling it now
-	// would let a failed first send leave a current, watermark-less status
-	// that no longer gets the cap, and the next attempt would deliver the
-	// whole backlog.
-	if !legacy.ambiguous {
-		fs.Initialized = true
-		legacy.settled = true
-	}
-
-	// Sort oldest-to-newest so the catch-up window (limitCatchUp keeps the
-	// tail) and the watermark (sendNewEntries advances LastSeenEntry to the
-	// last entry it sends) both track the *newest* entries. Published is the
-	// primary key, but many feeds omit per-entry dates, leaving every entry
-	// with a zero timestamp; in that case fall back to document order, where a
-	// lower Seq is newer (feeds list newest-first). Tie-break so a lower Seq
-	// sorts later (toward the newest tail) -- without this, date-less feeds
-	// would catch-up on their oldest entries and park the watermark there,
-	// then never deliver anything newer.
-	slices.SortStableFunc(entries, func(a, b rss.Entry) int {
-		if c := a.Published.Compare(b.Published); c != 0 {
-			return c
-		}
-		return cmp.Compare(b.Seq, a.Seq)
-	})
-
-	catchUpLimit := defaultCatchUpLimit
-	if feedGroup.Spec.CatchUpLimit != nil {
-		catchUpLimit = int(*feedGroup.Spec.CatchUpLimit)
-	}
-	legacy.migrate(fs, entries, catchUpLimit)
-	migratePreviousIdentities(fs, entries)
-
-	// Built over the whole fetch, before any catch-up trim below, so an
-	// entry's stripped identity is only unique if it is across the feed.
-	ledger := newDeliveryLedger(fs, entries)
-	hadWatermark := fs.LastSeenEntry != ""
-	index, found := -1, false
-	if hadWatermark {
-		index, found = ledger.resume(entries)
-	}
-	plan := planDelivery(deliveryInputs{
-		entries:         entries,
-		hadWatermark:    hadWatermark,
-		watermarkIndex:  index,
-		found:           found,
-		catchUpLimit:    catchUpLimit,
-		legacyAmbiguous: legacy.ambiguous,
-		wasInitialized:  wasInitialized,
-	})
-	if plan.cappedAmbiguousLegacy {
+	syncer.begin()
+	if syncer.cappedAmbiguousLegacy {
 		log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
 			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
 	}
-	if plan.skipBacklog {
-		skipBacklog(feedGroup, ledger, entries)
-	}
-	entries, resumeAt := plan.scan, plan.resumeAt
 
 	var pending bool
-	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, entries, ledger, resumeAt,
-		discordClient, now)
-
-	pruneLastSent(fs.LastSent, maxLastSentPerFeed)
-
-	// Only persist now that every entry from this fetch was either sent or
-	// filtered out. pending (not wantRetry) is the right gate here: wantRetry
-	// turns false once an entry's retries are exhausted or it enters
-	// permanent backoff, even though the entry itself is still unsent.
-	// Persisting validators at that point would let the next fetch's
-	// conditional GET come back 304 -- which skips re-parsing entries
-	// entirely -- and silently strand the unresolved entry forever. Keeping
-	// the old validators instead forces a full re-fetch (and another attempt
-	// at this entry) on every reconcile until it's actually resolved.
-	if !pending {
-		fs.Initialized = true
-		legacy.settled = true
-		persistValidators()
-		// Every entry from this fetch was either sent (which already clears
-		// these below in sendNewEntries) or skipped as already-sent/filtered.
-		// A feed stuck on a prior failure that recovers but happens to have
-		// nothing new and unfiltered to send would otherwise keep showing the
-		// stale LastError/RetryCount forever, since neither branch above runs
-		// for an all-skipped fetch -- the FeedGroup's Ready condition would
-		// stay False on a feed that's actually healthy again.
-		attempt.clearFailure()
+	wantRetry, rateLimitRetryAfter, pending = r.sendNewEntries(ctx, feedGroup, fs, renderer, syncer, discordClient)
+	verdict = syncAccountedFor
+	if pending {
+		verdict = syncPending
 	}
-
 	return wantRetry, rateLimitRetryAfter
 }
 
-// sendNewEntries scans entries in order, starting at resumeAt (the index just
-// past the watermark, from ledger.resume; 0 when there is none), sending each
+// sendNewEntries scans the entries of syncer (see feedSync.entries), sending each
 // not-yet-sent entry that passes the filter and updates fs (feed's FeedStatus)
 // as it goes.
-// entries must be sorted oldest-to-newest; now is an RFC3339 send timestamp.
-// ledger must have been built over the entire fetch before any catch-up trimming.
 // Rendering and delivery failures update status and stop the scan unless a
 // render failure qualifies for skipping. The results indicate whether to retry
 // sooner, the rate-limit wait, and whether an unresolved entry remains pending
@@ -460,18 +322,15 @@ func (r *FeedGroupReconciler) sendNewEntries(
 	feedGroup *v1alpha1.FeedGroup,
 	fs *v1alpha1.FeedStatus,
 	renderer *feedRenderer,
-	entries []rss.Entry,
-	ledger *deliveryLedger,
-	resumeAt int,
+	syncer *feedSync,
 	discordClient *discord.Client,
-	now string,
 ) (wantRetry bool, rateLimitRetryAfter time.Duration, pending bool) {
 	log := logf.FromContext(ctx)
 	feed := renderer.feed
 	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl)
 
-	for _, entry := range entries[resumeAt:] {
-		if ledger.sent(entry) {
+	for _, entry := range syncer.entries() {
+		if syncer.sent(entry) {
 			continue
 		}
 
@@ -494,7 +353,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			// stuck template would emit a fresh Warning Event every poll
 			// interval forever.
 			maxRetries := maxRetryCount(feedGroup.Spec.Retries)
-			if fs.RetryCount > maxRetries && renderer.otherEntryRenders(entries, entry) {
+			if fs.RetryCount > maxRetries && renderer.otherEntryRenders(syncer.window(), entry) {
 				// Retries were exhausted a full reconcile ago and the entry
 				// still can't render, yet a sibling entry renders fine with
 				// the same templates: the problem is this entry's content, it
@@ -502,7 +361,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 				// block every newer entry behind it forever. Drop it and carry
 				// on. If no entry renders, the templates themselves are broken
 				// and skipping would just drain the feed, so keep holding.
-				r.skipEntry(ctx, feedGroup, fs, *feed, entry, ledger, "RenderFailed", err, now)
+				r.skipEntry(ctx, feedGroup, fs, *feed, entry, syncer, "RenderFailed", err)
 				continue
 			}
 			if fs.RetryCount < maxRetries {
@@ -593,7 +452,7 @@ func (r *FeedGroupReconciler) sendNewEntries(
 			break
 		}
 
-		ledger.markHandled(entry, now)
+		syncer.markHandled(entry)
 		attempt.clearFailure()
 		setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
 			"MessageSent", "Entry rendered and delivered to Discord", feedGroup.Generation)
@@ -614,15 +473,14 @@ func (r *FeedGroupReconciler) skipEntry(
 	fs *v1alpha1.FeedStatus,
 	feed v1alpha1.FeedSpec,
 	entry rss.Entry,
-	ledger *deliveryLedger,
+	syncer *feedSync,
 	reason string,
 	cause error,
-	now string,
 ) {
 	identity := entryIdentity(entry)
 	logf.FromContext(ctx).Error(cause, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", identity)
 
-	ledger.markHandled(entry, now)
+	syncer.markHandled(entry)
 	r.newFeedAttempt(feedGroup, fs, feed.RSSUrl).clearFailure()
 	feedOperationsTotal.WithLabelValues(feedGroup.Namespace, feedGroup.Name, feed.RSSUrl, outcomeSkipped).Inc()
 	setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse,
@@ -716,75 +574,6 @@ func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *
 	}
 
 	return strings.TrimSpace(string(value)), secret.ResourceVersion, nil
-}
-
-// compileFilterRegex compiles a feed's filter regex once per feed per
-// reconcile, instead of recompiling it for every entry in the feed.
-func compileFilterRegex(filter *v1alpha1.Filter) (*regexp.Regexp, error) {
-	if filter == nil || strings.TrimSpace(filter.Regex) == "" {
-		return nil, nil
-	}
-
-	re, err := regexp.Compile(filter.Regex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
-	}
-	return re, nil
-}
-
-func matchesFilter(filter *v1alpha1.Filter, entry rss.Entry, filterRegex *regexp.Regexp) bool {
-	if filter == nil {
-		return true
-	}
-
-	if filterRegex != nil && !filterRegex.MatchString(entry.Title+"\n"+entry.Description) {
-		return false
-	}
-
-	if len(filter.Keywords) == 0 {
-		return true
-	}
-
-	content := strings.ToLower(strings.TrimSpace(entry.Title + "\n" + entry.Description))
-	for _, keyword := range filter.Keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
-			continue
-		}
-		if strings.Contains(content, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// skipBacklog records the newest of entries (sorted oldest-to-newest) as the
-// feed's watermark without sending anything and sets Delivered to BacklogSkipped.
-// entries must be non-empty; later scans resume after this entry rather than
-// comparing publication times. The identity is the same one sendNewEntries would
-// have stored after sending that entry, so the next forward-scan resumes
-// right behind it.
-func skipBacklog(feedGroup *v1alpha1.FeedGroup, ledger *deliveryLedger, entries []rss.Entry) {
-	ledger.markNewest(entries)
-	setFeedCondition(ledger.fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
-		reasonBacklogSkipped, fmt.Sprintf("catchUpLimit is 0: skipped %d existing entries", len(entries)), feedGroup.Generation)
-}
-
-// limitCatchUp trims entries to at most limit, keeping the most recent ones
-// (entries is assumed sorted ascending by Published). A non-positive limit
-// falls back to defaultCatchUpLimit rather than disabling the cap, so a feed
-// can never dump its entire backlog on first reconcile. (An explicit
-// catchUpLimit of 0 is handled earlier, by skipBacklog, on a true first
-// sync only.)
-func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
-	if limit <= 0 {
-		limit = defaultCatchUpLimit
-	}
-	if len(entries) <= limit {
-		return entries
-	}
-	return entries[len(entries)-limit:]
 }
 
 // SetupWithManager sets up the controller with the Manager.

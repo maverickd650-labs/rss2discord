@@ -40,9 +40,15 @@ func (r *FeedGroupReconciler) newFeedAttempt(group *v1alpha1.FeedGroup, fs *v1al
 
 // clearFailure resets the retry state after a success (or a skip).
 func (a feedAttempt) clearFailure() {
-	a.fs.LastError = ""
-	a.fs.RetryCount = 0
-	a.fs.BackoffUntil = ""
+	clearFailure(a.fs)
+}
+
+// clearFailure resets fs's retry state: its last error, its retry count and
+// any permanent backoff.
+func clearFailure(fs *v1alpha1.FeedStatus) {
+	fs.LastError = ""
+	fs.RetryCount = 0
+	fs.BackoffUntil = ""
 }
 
 // fail records one counted failure, in this order: LastError (errText, which
