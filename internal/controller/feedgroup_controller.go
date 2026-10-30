@@ -638,7 +638,7 @@ func (r *FeedGroupReconciler) applyPermanentBackoff(feedGroup *v1alpha1.FeedGrou
 		firstCapped := fs.RetryCount <= 1 ||
 			permanentBackoffDuration(int(fs.RetryCount)-1, base) < maxPermanentBackoff
 		if firstCapped {
-			r.recordPersistentFailure(feedGroup, rssURL, reason, err)
+			r.recordBackoffCapped(feedGroup, rssURL, reason, err)
 		}
 		backoff = maxPermanentBackoff
 	}
@@ -656,6 +656,18 @@ func (r *FeedGroupReconciler) recordPersistentFailure(feedGroup *v1alpha1.FeedGr
 	}
 	r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reason, "RetriesExhausted",
 		"feed %s: giving up after exhausting retries: %v", url, err)
+}
+
+// recordBackoffCapped emits the Warning Event for a permanent failure the
+// first time its exponential backoff reaches maxPermanentBackoff. Unlike
+// recordPersistentFailure it doesn't speak of exhausted retries: a permanent
+// failure never spends them, and the feed keeps being retried at the cap.
+func (r *FeedGroupReconciler) recordBackoffCapped(feedGroup *v1alpha1.FeedGroup, url, reason string, err error) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reason, "BackoffCapped",
+		"feed %s: still failing permanently, now retried every %s: %v", url, maxPermanentBackoff, err)
 }
 
 // recordConfigError updates fs to reflect a deterministic FeedSpec
