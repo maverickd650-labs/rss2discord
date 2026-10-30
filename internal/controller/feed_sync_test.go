@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -502,6 +503,29 @@ func TestFeedSync_MisuseIsLoud(t *testing.T) {
 		var verdict syncVerdict
 		defer s.closeOnReturn(&verdict)
 	})
+}
+
+// Verdicts name themselves in close's panic messages and logs, so every verdict
+// needs its own name, and a value that is not a verdict must still read as a
+// number rather than borrowing one.
+func TestSyncVerdict_String(t *testing.T) {
+	seen := map[string]syncVerdict{}
+	for verdict := syncFetchFailed; verdict <= syncAccountedFor; verdict++ {
+		name := verdict.String()
+		if name == "" || strings.HasPrefix(name, "syncVerdict(") {
+			t.Errorf("verdict %d has no name of its own: %q", int(verdict), name)
+		}
+		if other, dup := seen[name]; dup {
+			t.Errorf("verdicts %d and %d share the name %q", int(other), int(verdict), name)
+		}
+		seen[name] = verdict
+	}
+	for _, notVerdict := range []syncVerdict{0, syncAccountedFor + 1} {
+		want := fmt.Sprintf("syncVerdict(%d)", int(notVerdict))
+		if got := notVerdict.String(); got != want {
+			t.Errorf("syncVerdict(%d).String() = %q, want %q", int(notVerdict), got, want)
+		}
+	}
 }
 
 // processFeed defers closeOnReturn. A panic raised before any verdict was set
