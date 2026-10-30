@@ -134,7 +134,7 @@ func TestFeedGroupsForSecretListFailure(t *testing.T) {
 	})
 	r := &FeedGroupReconciler{Client: failing}
 	secret := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: testSecretName, Namespace: testNamespace}}
-	if got := r.feedGroupsForSecret(context.Background(), secret); got != nil {
+	if got := r.feedGroupsForSecret(t.Context(), secret); got != nil {
 		t.Errorf("requests = %v, want none when listing FeedGroups fails", got)
 	}
 }
