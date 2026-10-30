@@ -21,10 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -175,6 +176,7 @@ func (m *MockRSSServer) Close() {
 // MockDiscordServer provides a mock Discord webhook for testing
 type MockDiscordServer struct {
 	server           *httptest.Server
+	webhookURL       string
 	messagesReceived int
 	deliveryAttempts int
 	bodiesReceived   []string
@@ -183,16 +185,34 @@ type MockDiscordServer struct {
 	failRetryAfter   string
 }
 
-// NewMockDiscordServer creates a new mock Discord server. It uses TLS and
-// registers its loopback host with discord.AllowedWebhookHosts so it can
-// stand in for a real discord.com webhook, since the production client
-// rejects non-Discord hosts (SSRF/domain-confusion guard).
-func NewMockDiscordServer() *MockDiscordServer {
+// mockWebhookHost is the host of every mock webhook URL: Discord's own, so
+// the URL passes the production allowlist.
+const mockWebhookHost = "discord.com"
+
+// mockWebhookIDs numbers the webhook URL of each MockDiscordServer so no two
+// servers share one, as no two real webhooks do.
+var mockWebhookIDs atomic.Int64
+
+// NewMockDiscordServer creates a new mock Discord server on httptest's
+// in-memory network, shut down when tb's test ends. Its client (see
+// DiscordClientBuilder) routes every request to it, so URL can be a real
+// https://discord.com webhook URL that passes the production
+// discord.AllowedWebhookHosts check unchanged -- tests never widen that
+// SSRF/domain-confusion guard.
+func NewMockDiscordServer(tb testing.TB) *MockDiscordServer {
+	webhookPath := fmt.Sprintf("/api/webhooks/%d/mock-token", mockWebhookIDs.Add(1))
 	d := &MockDiscordServer{
-		messagesReceived: 0,
+		webhookURL: "https://" + mockWebhookHost + webhookPath,
 	}
 
-	d.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d.server = httptest.NewTestServer(tb, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The client routes every host here, so answer only this server's
+		// own webhook -- as Discord would -- and a send to the wrong URL
+		// still fails.
+		if r.Host != mockWebhookHost || r.URL.Path != webhookPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -218,8 +238,6 @@ func NewMockDiscordServer() *MockDiscordServer {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	discord.AllowedWebhookHosts[d.server.Listener.Addr().(*net.TCPAddr).IP.String()] = true
-
 	return d
 }
 
@@ -244,12 +262,13 @@ func (d *MockDiscordServer) Bodies() []string {
 	return d.bodiesReceived
 }
 
+// URL returns this server's webhook URL. It is only reachable through the
+// clients DiscordClientBuilder builds.
 func (d *MockDiscordServer) URL() string {
-	return d.server.URL
+	return d.webhookURL
 }
 
 func (d *MockDiscordServer) Close() {
-	delete(discord.AllowedWebhookHosts, d.server.Listener.Addr().(*net.TCPAddr).IP.String())
 	d.server.Close()
 }
 
@@ -263,8 +282,8 @@ func (d *MockDiscordServer) DeliveryAttempts() int {
 	return d.deliveryAttempts
 }
 
-// DiscordClientBuilder returns a DiscordClientBuilder that trusts this mock
-// server's self-signed TLS certificate.
+// DiscordClientBuilder returns a DiscordClientBuilder whose clients send
+// every request, over TLS, to this mock server.
 func (d *MockDiscordServer) DiscordClientBuilder() func(webhookURL string) *discord.Client {
 	httpClient := d.server.Client()
 	return func(webhookURL string) *discord.Client {
@@ -351,7 +370,7 @@ func newTestReconciler(discordServer *MockDiscordServer) *FeedGroupReconciler {
 // FeedGroup before it is created.
 func setUpFeedGroup(ctx context.Context, name, secretName, feedXML string, opts ...feedGroupOption) (*MockDiscordServer, *MockRSSServer, *FeedGroupReconciler) {
 	GinkgoHelper()
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(GinkgoTB())
 	DeferCleanup(discordServer.Close)
 	rssServer := NewMockRSSServer(feedXML)
 	DeferCleanup(rssServer.Close)
@@ -909,7 +928,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-embed"
 
 			By("Creating mock Discord webhook server")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 
 			By("Creating a mock RSS feed server with an enclosure image")
@@ -1277,7 +1296,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-send-error"
 
 			By("Creating a mock Discord server that always fails the send with a non-rate-limit error")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 			discordServer.FailNextRequests(3, http.StatusInternalServerError)
 
@@ -1504,7 +1523,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-send-error-permanent-backoff"
 
 			By("Creating a mock Discord server that always 404s, as if the webhook were deleted")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 			discordServer.FailNextRequests(100, http.StatusNotFound)
 
@@ -1558,7 +1577,7 @@ var _ = Describe("FeedGroup Controller", func() {
 	Describe("Filtering", func() {
 		It("should apply regex filters to RSS entries", func() {
 			By("Creating mock Discord webhook server")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 
 			By("Creating a mock RSS feed server with multiple entries")
@@ -1608,7 +1627,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 		It("should apply keyword filters to RSS entries", func() {
 			By("Creating mock Discord webhook server")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 
 			By("Creating a mock RSS feed server with multiple entries")
@@ -1792,7 +1811,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-removed-feed"
 
 			By("Creating mock Discord webhook server")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 
 			By("Creating a mock RSS feed server")
@@ -2079,7 +2098,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-rate-limited-multi-feed"
 
 			By("Creating a mock Discord server that rate-limits the very first delivery")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 			discordServer.FailNextRequestsRateLimited(1, "3")
 
@@ -2201,7 +2220,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			}()
 
 			By("Creating a mock Discord webhook server shared by all feeds")
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(GinkgoTB())
 			defer discordServer.Close()
 
 			By("Creating a secret with Discord webhook URL")

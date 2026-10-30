@@ -47,7 +47,7 @@ func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 	ns, name := "processfeed-bad-regex", "fg-bad-regex"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -80,7 +80,7 @@ func TestProcessFeed_FeedTitleReachesTemplate(t *testing.T) {
 	ns, name := "processfeed-feed-title", "fg-feed-title"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "[{{.FeedTitle}}] {{.Title}}")
@@ -107,7 +107,7 @@ func TestProcessFeed_InvalidMessageTemplate(t *testing.T) {
 	ns, name := "processfeed-bad-template", "fg-bad-template"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Unclosed")
@@ -137,7 +137,7 @@ func TestProcessFeed_InvalidForumThreadNameTemplate(t *testing.T) {
 	ns, name := "processfeed-bad-thread-name", "fg-bad-thread-name"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -215,7 +215,7 @@ func TestProcessFeed_AlreadySentEntrySkipped(t *testing.T) {
 	ns, name := "processfeed-dedup", "fg-dedup"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -249,7 +249,7 @@ func TestProcessFeed_RecoversFromStaleErrorWithNoNewEntries(t *testing.T) {
 	ns, name := "processfeed-recovers", "fg-recovers"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -588,7 +588,7 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	ns, name := "processfeed-skip-render", "fg-skip-render"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
@@ -647,7 +647,7 @@ func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 	ns, name := "processfeed-broken-template", "fg-broken-template"
 	defer deleteFeedGroupMetrics(ns, name)
 
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
@@ -798,7 +798,7 @@ func TestProcessFeed_CatchUpLimitZeroOnlySkipsOnFirstSync(t *testing.T) {
 		t.Helper()
 		ns, name := "skip-backlog-unit", "fg-skip-"+lastSeen
 		defer deleteFeedGroupMetrics(ns, name)
-		discordServer := NewMockDiscordServer()
+		discordServer := NewMockDiscordServer(t)
 		defer discordServer.Close()
 
 		fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -845,7 +845,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := initializationUnitNS, tc.name
 			defer deleteFeedGroupMetrics(ns, name)
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 
 			fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -871,7 +871,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 func TestProcessFeed_CatchUpLimitZeroDeliversAllAfterEmptyFirstSync(t *testing.T) {
 	ns, name := initializationUnitNS, "all-after-empty"
 	defer deleteFeedGroupMetrics(ns, name)
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -914,7 +914,7 @@ func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
 			fg.Spec.CatchUpLimit = new(int32(0))
 			fs := feedStatusFor(fg, feed.RSSUrl)
 			fs.LastError, fs.RetryCount, fs.BackoffUntil = "old failure", 2, "2031-01-01T00:00:00Z"
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 			client := discordServer.DiscordClientBuilder()(discordServer.URL())
 			entries := make([]rss.Entry, 2, 3)
@@ -1003,7 +1003,7 @@ func TestProcessFeed_CatchUpCapsAndLegacyWatermarks(t *testing.T) {
 			fg.Spec.CatchUpLimit = tc.limit
 			fs := feedStatusFor(fg, feed.RSSUrl)
 			fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 			client := discordServer.DiscordClientBuilder()(discordServer.URL())
 			entries := make([]rss.Entry, 9)
@@ -1042,7 +1042,7 @@ const configErrURLPrefix = "https://config-error.example.test/"
 func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	ns, name := initializationUnitNS, "config-error-first-sync"
 	defer deleteFeedGroupMetrics(ns, name)
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -1089,7 +1089,7 @@ func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := initializationUnitNS, "render-config-error-"+strings.ReplaceAll(tc.name, " ", "-")
 			defer deleteFeedGroupMetrics(ns, name)
-			discordServer := NewMockDiscordServer()
+			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
 
 			fg, feed := newMetricsFeedGroup(ns, name, "")
@@ -1184,7 +1184,7 @@ func sentContents(t *testing.T, server *MockDiscordServer) []string {
 // run sent exactly want and the second run sent nothing more.
 func processTwice(t *testing.T, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, entries []rss.Entry, want ...string) {
 	t.Helper()
-	server := NewMockDiscordServer()
+	server := NewMockDiscordServer(t)
 	defer server.Close()
 	client := server.DiscordClientBuilder()(server.URL())
 	for range 2 {
@@ -1311,7 +1311,7 @@ func TestProcessFeed_LegacyReplayCapSurvivesFailedSends(t *testing.T) {
 	fs.LastSeenEntry = legacyEntryIdentity(entries[0])
 	fs.LastSent[legacyKey(entries[0])] = legacySentAt
 
-	server := NewMockDiscordServer()
+	server := NewMockDiscordServer(t)
 	defer server.Close()
 	client := server.DiscordClientBuilder()(server.URL())
 	server.FailNextRequests(2, http.StatusInternalServerError)
@@ -1687,7 +1687,7 @@ func runSkipProbe(
 ) (*MockDiscordServer, *v1alpha1.FeedStatus) {
 	t.Helper()
 	ctx := t.Context()
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	t.Cleanup(discordServer.Close)
 	t.Cleanup(func() { deleteFeedGroupMetrics(ns, name) })
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
@@ -1794,7 +1794,7 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-overflow-attempts", "fg-overflow-attempts"
 	defer deleteFeedGroupMetrics(ns, name)
-	discordServer := NewMockDiscordServer()
+	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 	discordServer.FailNextRequests(2, http.StatusInternalServerError)
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
