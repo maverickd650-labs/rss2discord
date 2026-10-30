@@ -393,17 +393,14 @@ func (r *FeedGroupReconciler) processFeed(
 	hasSeenID := lastSeenID != ""
 	resumeAt := 0
 	if hasSeenID {
+		// A stored ID that has scrolled out of the feed's window (or that the
+		// feed changed how it identifies between fetches) is not found, and
+		// resumeAt stays 0: the forward-scan would never match it and would
+		// silently treat every entry as already sent, forever. Fall back to
+		// catch-up instead of going permanently silent.
 		index, found := ledger.resume(entries)
 		hasSeenID = found
 		resumeAt = index + 1
-	}
-	if lastSeenID != "" && !hasSeenID {
-		// The stored ID has scrolled out of the feed's window (or the feed
-		// changed how it identifies this entry between fetches), so the
-		// forward-scan below would never match it and would silently treat
-		// every entry as already sent, forever. Fall back to catch-up
-		// instead of going permanently silent.
-		hasSeenID = false
 	}
 	if !hasSeenID {
 		if catchUpLimit == 0 && lastSeenID == "" {
