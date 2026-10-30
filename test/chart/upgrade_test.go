@@ -17,7 +17,6 @@ limitations under the License.
 package chart
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,7 +59,7 @@ func TestChartUpgradeToWatchNamespacesRevokesClusterWideSecretAccess(t *testing.
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Fatal("KUBEBUILDER_ASSETS is unset -- run via `mise run test`, which provisions the envtest API server")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	env := &envtest.Environment{}
 	cfg, err := env.Start()
