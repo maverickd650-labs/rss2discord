@@ -106,7 +106,8 @@ func renderChartTemplate(t *testing.T, showOnly string, setValues ...string) str
 // runHelmTemplate does the shared work of renderChartTemplate and returns
 // helm's combined output plus its error instead of failing the test, so a
 // test can assert on an expected render failure. showOnly may be empty to
-// render the whole chart.
+// render the whole chart. A setValues entry starting with "--" (e.g.
+// "--set-string=k=v") is passed through as is instead of after --set.
 func runHelmTemplate(t *testing.T, showOnly string, setValues ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -124,6 +125,10 @@ func runHelmTemplate(t *testing.T, showOnly string, setValues ...string) (string
 		args = append(args, "-s", showOnly)
 	}
 	for _, v := range append([]string{"manager.image.tag=golden-test"}, setValues...) {
+		if strings.HasPrefix(v, "--") {
+			args = append(args, v)
+			continue
+		}
 		args = append(args, "--set", v)
 	}
 
@@ -501,5 +506,17 @@ func TestChartClusterWideSecretWatchIsAnExplicitOptIn(t *testing.T) {
 	const secretWatchRule = "- secrets\n  verbs:\n  - list\n  - watch\n"
 	if strings.Count(role, "kind: ClusterRole\n") != 1 || !strings.Contains(role, secretWatchRule) {
 		t.Errorf("want one ClusterRole granting list/watch:\n%s", role)
+	}
+}
+
+// TestChartClusterWideSecretWatchRequiresABoolean pins that a string-valued
+// opt-in, such as `--set-string rbac.clusterWideSecretWatch=false`, fails the
+// render instead of being read as truthy and granting cluster-wide list/watch.
+func TestChartClusterWideSecretWatchRequiresABoolean(t *testing.T) {
+	for _, value := range []string{"false", "true"} {
+		out, err := runHelmTemplate(t, managerRoleTemplate, "--set-string=rbac.clusterWideSecretWatch="+value)
+		if err == nil || !strings.Contains(out, "rbac.clusterWideSecretWatch must be a boolean") {
+			t.Errorf("want a render failure for the string %q, got err=%v:\n%s", value, err, out)
+		}
 	}
 }

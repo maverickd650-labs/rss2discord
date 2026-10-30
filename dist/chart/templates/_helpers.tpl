@@ -114,10 +114,17 @@ falling back to cluster-wide.
 "true" when the manager runs with --watch-webhook-secrets (and manager-role
 gains list/watch on Secrets): always for a namespace-scoped install, where the
 grant is scoped to those namespaces, and cluster-wide only when
-rbac.clusterWideSecretWatch opts in to that wider grant. Empty otherwise.
+rbac.clusterWideSecretWatch opts in to that wider grant. Empty otherwise. The
+opt-in must be a real boolean: `--set-string rbac.clusterWideSecretWatch=false`
+yields the non-empty (so truthy) string "false", which would otherwise grant
+cluster-wide list/watch against the operator's intent.
 */}}
 {{- define "rss2discord-operator.watchWebhookSecrets" -}}
-{{- if or (include "rss2discord-operator.watchNamespaces" .) .Values.rbac.clusterWideSecretWatch -}}
+{{- $clusterWide := .Values.rbac.clusterWideSecretWatch | default false }}
+{{- if not (kindIs "bool" $clusterWide) }}
+{{- fail (printf "rbac.clusterWideSecretWatch must be a boolean, got %T %q" $clusterWide (toString $clusterWide)) }}
+{{- end }}
+{{- if or (include "rss2discord-operator.watchNamespaces" .) $clusterWide -}}
 true
 {{- end }}
 {{- end }}
