@@ -235,97 +235,15 @@ func (r *FeedGroupReconciler) processFeed(
 		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, noClass, nil)
 	}
 
-	verdict := r.sendNewEntries(ctx, feedGroup, renderer, syncer, attempt, discordClient)
+	verdict := entryDelivery{
+		renderer: renderer,
+		syncer:   syncer,
+		attempt:  attempt,
+		sender:   discordClient,
+		metrics:  metricsFor(feedGroup),
+	}.run(ctx)
 	settlement = verdict.settlement()
 	return verdict
-}
-
-// sendNewEntries scans the entries of syncer (see feedSync.entries), sending
-// each not-yet-sent entry that passes the filter and recording every outcome
-// with attempt. The first rendering or delivery failure ends the scan, unless
-// it is a render failure that qualifies for skipping, and its verdict is the
-// result; a scan that gets through every entry has the zero verdict.
-func (r *FeedGroupReconciler) sendNewEntries(
-	ctx context.Context,
-	feedGroup *v1alpha1.FeedGroup,
-	renderer *feedRenderer,
-	syncer *feedSync,
-	attempt feedAttempt,
-	discordClient MessageSender,
-) attemptVerdict {
-	log := logf.FromContext(ctx)
-	feed := renderer.feed
-
-	for _, entry := range syncer.entries() {
-		if syncer.sent(entry) {
-			continue
-		}
-
-		if !renderer.matches(entry) {
-			continue
-		}
-
-		discordMessage, overflow, err := renderer.build(entry)
-		if err != nil {
-			log.Error(err, "failed to render Discord message", "url", feed.RSSUrl)
-			// A render error is deterministic for a given entry+template, so
-			// once retries are exhausted, retrying forever would just spin
-			// at RetryInterval without ever making progress. The attempt
-			// surfaces an Event instead of looping indefinitely, the
-			// reconcile RetryCount first reaches maxRetries.
-			verdict := attempt.record(attemptOutcome{kind: attemptRenderFailed}, noClass, err)
-			if attempt.pastRetryLimit() && renderer.otherEntryRenders(syncer.window(), entry) {
-				// Retries were exhausted a full reconcile ago and the entry
-				// still can't render, yet a sibling entry renders fine with
-				// the same templates: the problem is this entry's content, it
-				// never will render, and holding the watermark here would
-				// block every newer entry behind it forever. Drop it and carry
-				// on. If no entry renders, the templates themselves are broken
-				// and skipping would just drain the feed, so keep holding.
-				log.Error(err, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", entryIdentity(entry))
-				syncer.markHandled(entry)
-				attempt.record(attemptOutcome{kind: attemptEntrySkipped, entry: entry.Title}, noClass, err)
-				continue
-			}
-
-			// Stop processing this feed's remaining entries for this
-			// reconcile rather than continuing to the next one: entries are
-			// sent oldest-to-newest, and a later entry's success advances
-			// LastSeenEntry past everything up to it. If we kept going past
-			// this failed entry, a subsequent success would push the watermark
-			// past it too, and the next reconcile's forward-scan would then
-			// treat it as "already handled" and never attempt it again --
-			// silently dropping it for good. Stopping here keeps the watermark
-			// from ever skipping an unresolved entry; it just means later
-			// entries in the same feed wait behind this one instead of jumping
-			// ahead. The same goes for a failed send below, and a rate limit.
-			return verdict
-		}
-
-		// Recorded per send attempt, before the outcome is known, so a retried
-		// entry counts again; renders that are never sent (see
-		// otherEntryRenders) are not observed.
-		if overflow > 0 {
-			metricsFor(feedGroup).overflow(overflow)
-		}
-
-		err = discordClient.SendMessage(ctx, discordMessage)
-		if err != nil {
-			log.Error(err, "failed to send Discord message", "url", feed.RSSUrl)
-			// Discord rate limits are per-webhook, so once one entry is
-			// limited every further POST this reconcile would 429 too: the
-			// scan stops, the unsent entries stay pending (validators aren't
-			// persisted) and are retried after the requeue backs off for the
-			// verdict's retryAfter.
-			outcome, class := sendFailureOutcome(err)
-			return attempt.record(outcome, class, err)
-		}
-
-		syncer.markHandled(entry)
-		attempt.record(attemptOutcome{kind: attemptSent}, noClass, nil)
-	}
-
-	return attemptVerdict{}
 }
 
 // webhook returns the group's Discord webhook URL, read uncached from its
@@ -367,7 +285,7 @@ func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.F
 // clientsFor returns the feed fetcher and message sender for one reconcile,
 // defaulting r.RSSClient / r.DiscordClientBuilder to the real clients. Both are
 // wrapped in the timing adapters, which are the only place feedRequestDuration
-// is observed -- not the fetch goroutines or sendNewEntries.
+// is observed -- not the fetch goroutines or entryDelivery.
 func (r *FeedGroupReconciler) clientsFor(feedGroup *v1alpha1.FeedGroup, webhookURL string) (FeedFetcher, MessageSender) {
 	fetcher := r.RSSClient
 	if fetcher == nil {

@@ -64,6 +64,16 @@ Terms used in `internal/controller`, with the names the code gives them.
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision.
 
+**Entry delivery** (`entryDelivery`, `delivery.go`)
+: The per-entry send loop of one feed's sync. `run` scans the entries the feed sync hands it,
+  skipping those already sent or filtered out, rendering and sending the rest, and recording
+  each outcome with the feed attempt. It owns when the scan ends -- the first render, send or
+  rate-limit failure stops it, so the watermark never moves past an unresolved entry -- and
+  the render-failure policy (`renderFailed`): an entry that still fails to render after its
+  retries are exhausted is skipped (marked handled, recorded as skipped) only if another entry
+  of the window renders, otherwise the scan holds. It is the only caller of
+  `groupMetrics.overflow`. Its result is an attempt verdict.
+
 **Attempt verdict** (`attemptVerdict`)
 : What recording an outcome means for the rest of the reconcile: `retry` (come back after
   `RetryInterval`), `retryAfter` (how long Discord asked the webhook to be left alone) and

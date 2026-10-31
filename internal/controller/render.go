@@ -450,7 +450,7 @@ type feedRenderer struct {
 	feed                             *v1alpha1.FeedSpec
 	embed                            *v1alpha1.EmbedSpec
 	content, description, threadName *template.Template
-	filter                           *regexp.Regexp
+	filter                           entryFilter
 }
 
 // newFeedRenderer prepares the renderer for feed within group: it compiles the
@@ -459,7 +459,7 @@ type feedRenderer struct {
 // plus the forum thread-name template when one is set. The first config error
 // is returned unwrapped, checked in that order.
 func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedRenderer, error) {
-	filter, err := compileFilterRegex(feed.Filter)
+	filter, err := compileEntryFilter(feed.Filter)
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +485,7 @@ func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedR
 
 // matches reports whether entry passes the feed's filter.
 func (fr *feedRenderer) matches(entry rss.Entry) bool {
-	return matchesFilter(fr.feed.Filter, entry, fr.filter)
+	return fr.filter.matches(entry)
 }
 
 // build renders entry into the message that should actually
@@ -571,50 +571,5 @@ func (fr *feedRenderer) otherEntryRenders(entries []rss.Entry, skip rss.Entry) b
 			return true
 		}
 	}
-	return false
-}
-
-// compileFilterRegex compiles a feed's filter regex once per feed per
-// reconcile, instead of recompiling it for every entry in the feed.
-func compileFilterRegex(filter *v1alpha1.Filter) (*regexp.Regexp, error) {
-	if filter == nil || strings.TrimSpace(filter.Regex) == "" {
-		return nil, nil
-	}
-
-	re, err := regexp.Compile(filter.Regex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
-	}
-	return re, nil
-}
-
-// matchesFilter reports whether entry passes filter: its compiled regex (if
-// any) must match the title and description, and, when keywords are set, at
-// least one of them must appear (case-insensitively) in them. A nil filter
-// matches everything.
-func matchesFilter(filter *v1alpha1.Filter, entry rss.Entry, filterRegex *regexp.Regexp) bool {
-	if filter == nil {
-		return true
-	}
-
-	if filterRegex != nil && !filterRegex.MatchString(entry.Title+"\n"+entry.Description) {
-		return false
-	}
-
-	if len(filter.Keywords) == 0 {
-		return true
-	}
-
-	content := strings.ToLower(strings.TrimSpace(entry.Title + "\n" + entry.Description))
-	for _, keyword := range filter.Keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
-			continue
-		}
-		if strings.Contains(content, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-
 	return false
 }

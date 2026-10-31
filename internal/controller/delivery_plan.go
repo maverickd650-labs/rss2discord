@@ -34,7 +34,7 @@ type deliveryInputs struct {
 	wasInitialized bool
 }
 
-// deliveryPlan says which entries sendNewEntries should scan and how.
+// deliveryPlan says which entries entryDelivery should scan and how.
 type deliveryPlan struct {
 	// scan is the entries to scan, in order, starting at resumeAt.
 	scan     []rss.Entry

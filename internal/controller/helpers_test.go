@@ -441,7 +441,7 @@ func TestEnsureFeedStatuses(t *testing.T) {
 	}
 }
 
-func TestCompileFilterRegex(t *testing.T) {
+func TestCompileEntryFilter(t *testing.T) {
 	cases := []struct {
 		name    string
 		filter  *v1alpha1.Filter
@@ -455,48 +455,49 @@ func TestCompileFilterRegex(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			re, err := compileFilterRegex(tc.filter)
-			if (err != nil) != tc.wantErr || (re != nil) != tc.wantRe {
-				t.Fatalf("got regex %v, err %v; want regex=%v err=%v", re, err, tc.wantRe, tc.wantErr)
+			f, err := compileEntryFilter(tc.filter)
+			if (err != nil) != tc.wantErr || (f.regex != nil) != tc.wantRe {
+				t.Fatalf("got regex %v, err %v; want regex=%v err=%v", f.regex, err, tc.wantRe, tc.wantErr)
 			}
 		})
 	}
 }
 
-func TestMatchesFilter(t *testing.T) {
+func TestEntryFilterMatches(t *testing.T) {
 	entry := rss.Entry{Title: "Breaking News", Description: "something happened"}
 
 	t.Run("nil filter matches", func(t *testing.T) {
-		if !matchesFilter(nil, entry, nil) {
+		f, _ := compileEntryFilter(nil)
+		if !f.matches(entry) {
 			t.Fatal("expected nil filter to match everything")
 		}
 	})
 
 	t.Run("regex non-match rejects", func(t *testing.T) {
-		re, _ := compileFilterRegex(&v1alpha1.Filter{Regex: "nomatch"})
-		if matchesFilter(&v1alpha1.Filter{Regex: "nomatch"}, entry, re) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Regex: "nomatch"})
+		if f.matches(entry) {
 			t.Fatal("expected non-matching regex to reject entry")
 		}
 	})
 
 	t.Run("keyword case-insensitive match", func(t *testing.T) {
-		f := &v1alpha1.Filter{Keywords: []string{"BREAKING"}}
-		if !matchesFilter(f, entry, nil) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"BREAKING"}})
+		if !f.matches(entry) {
 			t.Fatal("expected case-insensitive keyword match")
 		}
 	})
 
 	t.Run("no keyword match rejects", func(t *testing.T) {
-		f := &v1alpha1.Filter{Keywords: []string{"weather"}}
-		if matchesFilter(f, entry, nil) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"weather"}})
+		if f.matches(entry) {
 			t.Fatal("expected no keyword match to reject")
 		}
 	})
 
 	t.Run("blank keywords skipped, empty keyword list matches", func(t *testing.T) {
-		f := &v1alpha1.Filter{Keywords: []string{"  "}}
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"  "}})
 		// All keywords are blank/skipped, so none match.
-		if matchesFilter(f, entry, nil) {
+		if f.matches(entry) {
 			t.Fatal("expected all-blank keywords to match nothing")
 		}
 	})
