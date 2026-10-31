@@ -18,6 +18,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -36,7 +37,7 @@ func testRun(t testing.TB, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, resul
 		fetched: fetchOutcome{result: result, err: fetchErr},
 		sender:  sender,
 		cadence: cadenceOf(&fg.Spec),
-		now:     testReconcileTime,
+		now:     testReconcileInstant,
 	}
 }
 
@@ -45,13 +46,13 @@ func (run feedRun) withRecorder(recorder events.EventRecorder) feedRun {
 	return run
 }
 
-func (run feedRun) withNow(now string) feedRun {
+func (run feedRun) withNow(now time.Time) feedRun {
 	run.now = now
 	return run
 }
 
 // testAttempt is the feedAttempt for fg's feed at url, with no Event recorder.
-func testAttempt(t testing.TB, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url, now string) feedAttempt {
+func testAttempt(t testing.TB, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url string, now time.Time) feedAttempt {
 	return testRun(t, fg, v1alpha1.FeedSpec{RSSUrl: url}, rss.FetchResult{}, nil, nil).withNow(now).newAttempt(fs)
 }
 

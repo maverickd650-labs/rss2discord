@@ -210,7 +210,6 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	fg.Spec.RetryInterval = "5m"
 	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 400, Status: "400 Bad Request"}}}
 
-	before := time.Now().UTC()
 	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 
 	if verdict.retry {
@@ -220,13 +219,9 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
-	until, err := time.Parse(time.RFC3339, fs.BackoffUntil)
-	if err != nil {
-		t.Fatalf("BackoffUntil %q is not RFC3339: %v", fs.BackoffUntil, err)
-	}
-	// RetryCount 1 backs off 5m * 2^1 = 10m; allow for second truncation.
-	if until.Before(before.Add(10*time.Minute).Truncate(time.Second)) || until.After(time.Now().UTC().Add(10*time.Minute+time.Second)) {
-		t.Fatalf("BackoffUntil = %v, want about 10m after %v", until, before)
+	// RetryCount 1 backs off 5m * 2^1 = 10m from the run's clock.
+	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); fs.BackoffUntil != want {
+		t.Fatalf("BackoffUntil = %q, want %q", fs.BackoffUntil, want)
 	}
 	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, sendErrorOutcome(classClientError))); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=send_error_client_error} = %v, want 1", got)

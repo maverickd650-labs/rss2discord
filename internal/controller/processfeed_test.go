@@ -38,6 +38,9 @@ import (
 // testReconcileTime is the fixed "now" string handed to processFeed in tests.
 const testReconcileTime = "2026-01-01T00:00:00Z"
 
+// testReconcileInstant is testReconcileTime as the time processFeed runs at.
+var testReconcileInstant = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // TestProcessFeed_InvalidFilterRegex asserts a feed with an unparsable
 // filter regex records the compile error on the feed's status and sends
 // nothing, instead of panicking or silently matching everything.
@@ -276,10 +279,8 @@ func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 	fg.Spec.RetryInterval = "5m"
 	notFoundErr := &rss.HTTPStatusError{StatusCode: 404, Status: http404Status}
 
-	before := time.Now().UTC()
 	verdict := processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{}, notFoundErr, nil))
 	wantRetry, rateLimitRetryAfter := verdict.retry, verdict.retryAfter
-	after := time.Now().UTC()
 
 	if wantRetry {
 		t.Fatal("expected no group-level retry for a permanent fetch failure")
@@ -292,18 +293,10 @@ func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 	if fs.BackoffUntil == "" {
 		t.Fatal("expected BackoffUntil to be set after a permanent failure")
 	}
-	until, err := time.Parse(time.RFC3339, fs.BackoffUntil)
-	if err != nil {
-		t.Fatalf("BackoffUntil %q is not RFC3339: %v", fs.BackoffUntil, err)
-	}
-	// RetryCount is 1 after first failure; backoff = 5m * 2^1 = 10m.
-	// RFC3339 truncates to seconds, so expand the window by one second on
-	// each side to avoid spurious failures when the wall clock sits near a
-	// second boundary.
-	wantMin := before.Add(10 * time.Minute).Truncate(time.Second)
-	wantMax := after.Add(10 * time.Minute).Add(time.Second)
-	if until.Before(wantMin) || until.After(wantMax) {
-		t.Errorf("BackoffUntil %v outside expected window [%v, %v]", until, wantMin, wantMax)
+	// RetryCount is 1 after first failure; backoff = 5m * 2^1 = 10m from the
+	// run's clock.
+	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); fs.BackoffUntil != want {
+		t.Errorf("BackoffUntil = %q, want %q", fs.BackoffUntil, want)
 	}
 }
 
@@ -355,7 +348,6 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 	notFoundErr := &rss.HTTPStatusError{StatusCode: 404, Status: http404Status}
 
 	recorder := events.NewFakeRecorder(10)
-	before := time.Now().UTC()
 	verdict := processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{}, notFoundErr, nil).withRecorder(recorder))
 	wantRetry := verdict.retry
 
@@ -363,12 +355,8 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 		t.Fatal("expected no group-level retry for a capped permanent failure")
 	}
 	fs := feedStatusFor(fg, feed.RSSUrl)
-	until, err := time.Parse(time.RFC3339, fs.BackoffUntil)
-	if err != nil {
-		t.Fatalf("BackoffUntil %q is not RFC3339: %v", fs.BackoffUntil, err)
-	}
-	if got := until.Sub(before); got < maxPermanentBackoff-time.Second || got > maxPermanentBackoff+time.Minute {
-		t.Errorf("BackoffUntil is %v out, want ~%v", got, maxPermanentBackoff)
+	if want := nextBackoffUntil(testReconcileInstant, maxPermanentBackoff); fs.BackoffUntil != want {
+		t.Errorf("BackoffUntil = %q, want %q", fs.BackoffUntil, want)
 	}
 	select {
 	case <-recorder.Events:
@@ -511,7 +499,7 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("config-error-ns", "config-error", "")
 	fs := feedStatusFor(fg, feed.RSSUrl)
 	recorder := events.NewFakeRecorder(10)
-	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileTime).withRecorder(recorder)
+	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileInstant).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
 
 	attempt.record(configError, noClass, errors.New("bad regex"))

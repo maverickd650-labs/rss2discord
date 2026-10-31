@@ -147,8 +147,9 @@ type feedAttempt struct {
 	group *v1alpha1.FeedGroup
 	fs    *v1alpha1.FeedStatus
 	url   string
-	// now is the RFC3339 timestamp of the reconcile, for LastChecked.
-	now string
+	// now is the reconcile's clock reading: LastChecked, the success gauge and
+	// the backoff deadline all derive from it, so one run has one time.
+	now time.Time
 	// cadence is the group's retry limit and backoff base.
 	cadence cadence
 	// recorder receives the attempt's Warning Events; nil drops them.
@@ -199,8 +200,8 @@ func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) att
 
 	switch o.kind {
 	case attemptFetchSucceeded:
-		a.fs.LastChecked = a.now
-		metricsFor(a.group).checkSucceeded(time.Now())
+		a.fs.LastChecked = a.now.Format(time.RFC3339)
+		metricsFor(a.group).checkSucceeded(a.now)
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
 			reasonFetchSucceeded, "Feed fetched successfully")
 		return attemptVerdict{}
@@ -319,7 +320,7 @@ func (a feedAttempt) pastRetryLimit() bool {
 // keeps being retried, waiting at most the cap between attempts (or longer if
 // the group's Interval is longer).
 func (a feedAttempt) backOff(reason string, err error) {
-	if backoffOf(a.fs).extend(a.cadence.retry, time.Now().UTC()) {
+	if backoffOf(a.fs).extend(a.cadence.retry, a.now.UTC()) {
 		a.warn(reason, eventActionBackoffCapped, "feed %s: still failing permanently, backoff now capped at %s: %v",
 			a.url, maxPermanentBackoff, err)
 	}

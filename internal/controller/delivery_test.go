@@ -54,9 +54,9 @@ func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender 
 	if err != nil {
 		t.Fatalf("newFeedRenderer: %v", err)
 	}
-	syncer := openFeedSync(fs, rss.FetchResult{Entries: entries}, feedSyncSpecFor(fg, testReconcileTime))
+	syncer := openFeedSync(fs, rss.FetchResult{Entries: entries}, feedSyncSpecFor(fg, testReconcileInstant))
 	syncer.begin()
-	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileTime)
+	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileInstant)
 	return entryDelivery{
 		renderer: renderer,
 		syncer:   syncer,

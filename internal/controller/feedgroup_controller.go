@@ -190,7 +190,7 @@ func reconcilePass(
 
 	run := feedRun{
 		group: feedGroup, sender: sender, cadence: cad, recorder: recorder,
-		now: now.Format(time.RFC3339),
+		now: now,
 	}
 	var verdict attemptVerdict
 	for i, feed := range activeFeeds {
@@ -223,8 +223,9 @@ type feedRun struct {
 	cadence cadence
 	// recorder receives the Warning Events; nil drops them.
 	recorder events.EventRecorder
-	// now is the RFC3339 status timestamp of the reconcile.
-	now string
+	// now is the reconcile's clock reading; status timestamps are formatted
+	// from it where they are written.
+	now time.Time
 }
 
 // processFeed handles a completed fetch for a single feed: it records the

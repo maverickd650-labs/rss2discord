@@ -164,7 +164,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			}
 			// Past the retry limit, so exhaustion is covered too.
 			for pass := range 4 {
-				processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withNow(now.Format(time.RFC3339)).withRecorder(recorder))
+				processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withNow(now).withRecorder(recorder))
 				fs = reloadStatus(t, fg)
 				if fs.ETag != validatorsOld || fs.LastModified != "Wed, 31 Dec 2025 00:00:00 GMT" {
 					t.Fatalf("pass %d: validators = %q / %q, want the stored ones kept", pass, fs.ETag, fs.LastModified)
@@ -178,7 +178,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			}
 
 			tc.fix(&feed)
-			processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withNow(now.Format(time.RFC3339)).withRecorder(recorder))
+			processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withNow(now).withRecorder(recorder))
 			fs = reloadStatus(t, fg)
 			if server.MessageCount() != 1 {
 				t.Fatalf("sent %d messages after the fix, want 1", server.MessageCount())

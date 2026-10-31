@@ -22,7 +22,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -34,10 +33,13 @@ import (
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
 )
 
+// attemptInstant is the time every attempt in these tests runs at.
+var attemptInstant = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
 const (
 	attemptNS         = "attempt-ns"
 	attemptURL        = "https://example.test/attempt.xml"
-	attemptNow        = "2026-03-04T05:06:07Z"
+	attemptNow        = "2026-03-04T05:06:07Z" // attemptInstant, formatted
 	attemptGeneration = 3
 	attemptOld        = "old"
 	testBoom          = "boom"
@@ -360,9 +362,9 @@ func drainEvents(recorder *events.FakeRecorder) []string {
 func TestFeedAttempt_Record(t *testing.T) {
 	for i, tc := range attemptCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			// A synctest bubble's fake clock doesn't move while the case runs,
+			// The attempt runs at attemptInstant whatever the wall clock says,
 			// so BackoffUntil is checked to the second, not within a window.
-			synctest.Test(t, func(t *testing.T) { checkAttemptCase(t, fmt.Sprintf("attempt-fg-%d", i), tc) })
+			checkAttemptCase(t, fmt.Sprintf("attempt-fg-%d", i), tc)
 		})
 	}
 }
@@ -377,12 +379,11 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
 	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
 	if tc.failing {
-		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(time.Now().UTC(), time.Hour)
+		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(attemptInstant, time.Hour)
 	}
 	recorder := events.NewFakeRecorder(10)
-	attempt := testAttempt(t, fg, fs, attemptURL, attemptNow).withRecorder(recorder)
+	attempt := testAttempt(t, fg, fs, attemptURL, attemptInstant).withRecorder(recorder)
 
-	now := time.Now().UTC()
 	verdict := attempt.record(tc.outcome, tc.class, tc.err)
 
 	if verdict != tc.want.verdict {
@@ -394,7 +395,7 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	if fs.LastError != tc.want.lastError {
 		t.Errorf("LastError = %q, want %q", fs.LastError, tc.want.lastError)
 	}
-	assertBackoffUntil(t, fs.BackoffUntil, now, tc.want.backoff)
+	assertBackoffUntil(t, fs.BackoffUntil, attemptInstant, tc.want.backoff)
 	if checked := fs.LastChecked == attemptNow; checked != tc.want.checked || (!checked && fs.LastChecked != "") {
 		t.Errorf("LastChecked = %q, want advanced=%t", fs.LastChecked, tc.want.checked)
 	}
@@ -495,7 +496,7 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 			fg.Namespace, fg.Name = attemptNS, name
 			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
 			fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
-			testAttempt(t, fg, fs, attemptURL, attemptNow).record(tc.outcome, tc.class, tc.err)
+			testAttempt(t, fg, fs, attemptURL, attemptInstant).record(tc.outcome, tc.class, tc.err)
 		})
 	}
 }
@@ -510,7 +511,7 @@ func TestFeedAttempt_ConfigErrorWarnsOncePerDistinctError(t *testing.T) {
 	fg.Namespace, fg.Name = attemptNS, name
 	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL}
 	recorder := events.NewFakeRecorder(10)
-	attempt := testAttempt(t, fg, fs, attemptURL, attemptNow).withRecorder(recorder)
+	attempt := testAttempt(t, fg, fs, attemptURL, attemptInstant).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
 
 	for _, step := range []struct {
@@ -538,7 +539,7 @@ func TestFeedAttempt_PastRetryLimit(t *testing.T) {
 		fg := &v1alpha1.FeedGroup{}
 		fg.Spec.Retries = tc.retries
 		fs := &v1alpha1.FeedStatus{RetryCount: tc.retryCount}
-		if got := testAttempt(t, fg, fs, attemptURL, attemptNow).pastRetryLimit(); got != tc.want {
+		if got := testAttempt(t, fg, fs, attemptURL, attemptInstant).pastRetryLimit(); got != tc.want {
 			t.Errorf("retries %d, RetryCount %d: pastRetryLimit = %t, want %t", tc.retries, tc.retryCount, got, tc.want)
 		}
 	}
@@ -600,7 +601,7 @@ func TestAttemptOutcome_MetricLabels(t *testing.T) {
 		}
 	}()
 	fg := &v1alpha1.FeedGroup{}
-	testAttempt(t, fg, &v1alpha1.FeedStatus{}, attemptURL, attemptNow).
+	testAttempt(t, fg, &v1alpha1.FeedStatus{}, attemptURL, attemptInstant).
 		record(attemptOutcome{kind: attemptKindEnd}, noClass, nil)
 }
 

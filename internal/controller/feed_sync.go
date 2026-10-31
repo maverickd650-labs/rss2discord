@@ -20,6 +20,7 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -84,12 +85,13 @@ type feedSync struct {
 type feedSyncSpec struct {
 	// catchUpLimit is the effective spec limit (defaultCatchUpLimit when unset).
 	catchUpLimit int
-	// now is the RFC3339 timestamp recorded for entries handled in this sync.
-	now string
+	// now is the reconcile's clock reading; entries handled in this sync are
+	// recorded at its RFC3339 form.
+	now time.Time
 }
 
 // feedSyncSpecFor derives the spec of a sync of one of group's feeds.
-func feedSyncSpecFor(group *v1alpha1.FeedGroup, now string) feedSyncSpec {
+func feedSyncSpecFor(group *v1alpha1.FeedGroup, now time.Time) feedSyncSpec {
 	limit := defaultCatchUpLimit
 	if group.Spec.CatchUpLimit != nil {
 		limit = int(*group.Spec.CatchUpLimit)
@@ -239,7 +241,7 @@ func (s *feedSync) sent(entry rss.Entry) bool {
 // markHandled records entry as delivered (or given up on) at the sync's time
 // and moves the watermark to it.
 func (s *feedSync) markHandled(entry rss.Entry) {
-	s.ledger.markHandled(entry, s.spec.now)
+	s.ledger.markHandled(entry, s.spec.now.Format(time.RFC3339))
 }
 
 // skipBacklog records the newest of entries (sorted oldest-to-newest) as the
