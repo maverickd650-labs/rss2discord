@@ -50,11 +50,21 @@ import (
 // duration is already the exact minimum wait Discord demands, not a
 // self-chosen periodicity that benefits from desynchronization.
 func (r *FeedGroupReconciler) settleGroup(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, cad cadence, decision requeueDecision, webhookErr error) (ctrl.Result, error) {
+	return r.settle(ctx, feedGroup, original, cad, decision, webhookErr, true)
+}
+
+// settle is settleGroup, with observed false for a pass that did not get
+// through the group (a feed panicked): ObservedGeneration is then left as it
+// was, so the next reconcile still sees a changed spec and forces every feed
+// due.
+func (r *FeedGroupReconciler) settle(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, cad cadence, decision requeueDecision, webhookErr error, observed bool) (ctrl.Result, error) {
 	// A parse error in the cadence already fell back to the default; it is
 	// reported via cad.err below, for both fields at once.
 	duration := decision.wait()
 
-	feedGroup.Status.ObservedGeneration = feedGroup.Generation
+	if observed {
+		feedGroup.Status.ObservedGeneration = feedGroup.Generation
+	}
 	if warning, emit := summarizeGroup(feedGroup, cad, webhookErr); emit && r.Recorder != nil {
 		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, eventActionInvalidConfig, "%s", warning)
 	}

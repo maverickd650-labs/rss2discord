@@ -1396,14 +1396,20 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(fs.LastSeenEntry).To(Equal("panic-older-article"))
 			Expect(fs.LastSent).To(HaveLen(1))
 			Expect(fs.ETag).To(BeEmpty())
+			Expect(fs.LastError).To(ContainSubstring(errDeliveryPanicked.Error()))
+			By("Verifying the incomplete pass did not advance ObservedGeneration")
+			Expect(updated.Status.ObservedGeneration).To(BeZero())
 
-			By("Reconciling again with a working sender")
+			By("Reconciling again at once, with a working sender")
 			reconciler.DiscordClientBuilder = realBuilder
-			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			_, err = reconcileFeedGroupNow(ctx, reconciler, feedGroupName)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying only the unsent entry was delivered, not the one sent before the panic")
 			Expect(discordServer.MessageCount()).To(Equal(2))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
+			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
+			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(BeEmpty())
 		})
 
 		It("should persist status and send once when the interval cannot be parsed", func() {

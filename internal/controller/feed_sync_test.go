@@ -579,13 +579,21 @@ func TestProcessFeed_PanicAfterASendKeepsTheSentEntryRecorded(t *testing.T) {
 	if fs.ETag != "" {
 		t.Fatalf("ETag = %q, want it unset: the unsent entry must be fetched again", fs.ETag)
 	}
+	// The interruption is recorded as a failure, so the feed reads as failing
+	// and is due again at once, not only at its next poll.
+	if !strings.Contains(fs.LastError, errDeliveryPanicked.Error()) || fs.RetryCount != 1 {
+		t.Fatalf("LastError = %q, RetryCount = %d; want the interrupted delivery recorded as one failure", fs.LastError, fs.RetryCount)
+	}
+	if !feedDue(fs, time.Hour, testReconcileInstant, false) {
+		t.Fatal("a feed whose delivery a panic interrupted is not due until its next poll")
+	}
 }
 
 func TestFeedSync_SecureAfterPanicLeavesAStartedCloseAlone(t *testing.T) {
 	fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "after-close"}
 	s := openFeedSync(fs, oneEntryFetch(), feedSyncSpec{catchUpLimit: defaultCatchUpLimit, now: testReconcileInstant})
 	s.closing = true
-	s.secureAfterPanic(&v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "before"})
+	s.secureAfterPanic(&v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "before"}, feedAttempt{}, nil)
 	if fs.LastSeenEntry != "after-close" || fs.Initialized {
 		t.Fatalf("secureAfterPanic changed a status close had started settling: %+v", fs)
 	}

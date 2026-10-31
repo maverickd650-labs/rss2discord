@@ -138,7 +138,10 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if panicked != nil {
 		// Write what the pass got done, then fail the reconcile as the panic
 		// would have: controller-runtime logs it and requeues with backoff.
-		if _, err := r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), nil); err != nil {
+		// The pass stopped at the panicking feed, so the feeds after it are
+		// not observed at this generation: ObservedGeneration stays put, and
+		// a spec change still forces them due on the retry.
+		if _, err := r.settle(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), nil, false); err != nil {
 			return ctrl.Result{}, errors.Join(panicked, err)
 		}
 		return ctrl.Result{}, panicked
@@ -269,14 +272,21 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	fs := feedStatusFor(run.group, run.feed.RSSUrl)
 	before := fs.DeepCopy()
 	syncer := openFeedSync(fs, run.fetched.result, feedSyncSpecFor(run.group, run.now))
+	attempt := run.newAttempt(fs)
 	defer func() {
 		if p := recover(); p != nil {
-			syncer.secureAfterPanic(before)
+			syncer.secureAfterPanic(before, attempt, fmt.Errorf("%w: %v", errDeliveryPanicked, p))
 			panic(&feedPanic{url: run.feed.RSSUrl, value: p, stack: debug.Stack()})
 		}
 	}()
-	return syncer.apply(ctx, run, run.newAttempt(fs))
+	return syncer.apply(ctx, run, attempt)
 }
+
+// errDeliveryPanicked is the failure recorded for a feed whose delivery a
+// panic interrupted after it had handled an entry (see
+// feedSync.secureAfterPanic), so the feed reads as failing and is retried on
+// the reconcile's error backoff rather than its next poll.
+var errDeliveryPanicked = errors.New("delivery interrupted by a panic")
 
 // feedPanic is a panic raised while processFeed applied one feed's fetch,
 // re-raised once that feed's status was secured (see processFeed). It is the

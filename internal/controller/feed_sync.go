@@ -320,14 +320,20 @@ func (s *feedSync) markHandled(entry rss.Entry) {
 //     and the watermark (markHandled writes both, entry by entry), so the
 //     sync is settled as pending: those entries are not posted again, and no
 //     validators are stored, so the unhandled ones are fetched and retried.
+//     The interruption is first recorded through attempt as a failed send of
+//     cause err: LastChecked is already fresh from this fetch, so without a
+//     failure the feed would read as healthy and not be due again until its
+//     next poll. (If recording panics too, that panic propagates as is and
+//     nothing is written.)
 //   - Panicked inside close: close only settles what its verdict allows, and
 //     every step of it is safe to persist on its own, so fs is left as it is.
-func (s *feedSync) secureAfterPanic(before *v1alpha1.FeedStatus) {
+func (s *feedSync) secureAfterPanic(before *v1alpha1.FeedStatus, attempt feedAttempt, err error) {
 	switch {
 	case s.closing:
 	case s.handled == 0:
 		*s.fs = *before
 	default:
+		attempt.record(attemptOutcome{kind: attemptSendFailed}, err)
 		s.close(syncPending)
 	}
 }
