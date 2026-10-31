@@ -48,27 +48,6 @@ func TestParseHexColor(t *testing.T) {
 	}
 }
 
-func TestHTTPURLOrEmpty(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "https kept", input: "https://example.com/a", want: "https://example.com/a"},
-		{name: "http kept", input: "http://example.com/a", want: "http://example.com/a"},
-		{name: "javascript dropped", input: jsAlertURL, want: ""},
-		{name: "data dropped", input: "data:text/html,<script>", want: ""},
-		{name: "empty dropped", input: "", want: ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := httpURLOrEmpty(tc.input); got != tc.want {
-				t.Fatalf("httpURLOrEmpty(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestResolveEmbedSpec(t *testing.T) {
 	feedEmbed := &v1alpha1.EmbedSpec{Color: "#feed00"}
 	groupEmbed := &v1alpha1.EmbedSpec{Color: "#9009ff"}
@@ -139,7 +118,7 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 	}
 
 	entry := rss.Entry{Author: "Jane Doe", Categories: []string{"Go", "Kubernetes"}}
-	got, err := renderTemplate(tmpl, entry)
+	got, err := renderTemplate(tmpl, displayOf(entry))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +127,7 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 	}
 
 	t.Run("empty author and categories render blank", func(t *testing.T) {
-		got, err := renderTemplate(tmpl, rss.Entry{})
+		got, err := renderTemplate(tmpl, displayOf(rss.Entry{}))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -168,7 +147,7 @@ func TestRenderTemplate_Published(t *testing.T) {
 	}
 
 	t.Run("zero published renders empty", func(t *testing.T) {
-		got, err := renderTemplate(tmpl, rss.Entry{})
+		got, err := renderTemplate(tmpl, displayOf(rss.Entry{}))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -179,7 +158,7 @@ func TestRenderTemplate_Published(t *testing.T) {
 
 	t.Run("non-zero published unchanged", func(t *testing.T) {
 		entry := rss.Entry{Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
-		got, err := renderTemplate(tmpl, entry)
+		got, err := renderTemplate(tmpl, displayOf(entry))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -198,7 +177,7 @@ func TestRenderTemplate_NewFields(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		got, err := renderTemplate(tmpl, entry)
+		got, err := renderTemplate(tmpl, displayOf(entry))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -349,7 +328,7 @@ func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	}
 
 	entry := rss.Entry{Title: "<b>Breaking</b> News &amp; Views"}
-	got, err := renderTemplate(tmpl, entry)
+	got, err := renderTemplate(tmpl, displayOf(entry))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

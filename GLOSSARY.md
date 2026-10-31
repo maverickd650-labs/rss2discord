@@ -120,6 +120,14 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
   clears it), inferred from the feed's `Reachable` condition not being False.
 
+**Display entry** (`displayEntry`, `displayOf`, `display.go`)
+: An `rss.Entry` as Discord shows it: title, description, feed title, link, image,
+  published (RFC 3339 and Unix), author and categories, built once per entry by `displayOf`.
+  Both the embed (`feedRenderer.build`) and the message templates (`templateData`) read from
+  it and never sanitize raw entry fields themselves, so the per-field rules (`stripHTML`,
+  `httpURLOrEmpty`, in `sanitize.go`) are readable in one place. The body is kept raw and
+  stripped by `content()` only when a template references `{{.Content}}`.
+
 **Message template sandbox** (`msgtemplate`, `internal/msgtemplate`)
 : The only place user-supplied message templates are parsed or run. `Compile` trims,
   falls back when blank, parses with the helper funcs and rejects unbounded constructs

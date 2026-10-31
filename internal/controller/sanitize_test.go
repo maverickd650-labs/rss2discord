@@ -148,3 +148,24 @@ func TestStripHTML(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPURLOrEmpty(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "https kept", input: "https://example.com/a", want: "https://example.com/a"},
+		{name: "http kept", input: "http://example.com/a", want: "http://example.com/a"},
+		{name: "javascript dropped", input: jsAlertURL, want: ""},
+		{name: "data dropped", input: "data:text/html,<script>", want: ""},
+		{name: "empty dropped", input: "", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := httpURLOrEmpty(tc.input); got != tc.want {
+				t.Fatalf("httpURLOrEmpty(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

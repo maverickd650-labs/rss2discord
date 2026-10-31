@@ -43,13 +43,6 @@ var trackingQueryParams = map[string]bool{
 	"spm":     true,
 }
 
-// schemeHTTP/schemeHTTPS are the only URL schemes normalizeIdentity and
-// httpURLOrEmpty treat as a URL rather than opaque text.
-const (
-	schemeHTTP  = "http"
-	schemeHTTPS = "https"
-)
-
 // normalizeIdentity normalizes id when it's an http(s) URL (a GUID is
 // frequently just the entry's permalink): lowercases the scheme/host, drops
 // the fragment, and strips known tracking query parameters, so that churn
