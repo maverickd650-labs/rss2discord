@@ -597,7 +597,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 						}
 						for _, name := range values.Names {
 							declared, ok := info.Defs[name].(*types.Const)
-							if !ok || declared.Val().Kind() != constant.String {
+							if !ok || declared.Val() == nil || declared.Val().Kind() != constant.String {
 								continue
 							}
 							s := constant.StringVal(declared.Val())
@@ -609,7 +609,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 								pos: name.Pos(), canonical: canonical,
 							})
 							if !canonical {
-								problems[fmt.Sprintf("%s: constant %s duplicates a reason value outside its canonical declaration", fset.Position(name.Pos()), name.Name)] = true
+								problems[fmt.Sprintf("%s: string %s is declared by constant %s outside its canonical declaration", fset.Position(name.Pos()), strconv.Quote(s), name.Name)] = true
 							}
 						}
 					}
