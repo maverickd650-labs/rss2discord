@@ -90,7 +90,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 **Feed run** (`feedRun`, `feedgroup_controller.go`)
 : Everything one feed's handling in one reconcile needs, as one value: the group, the feed's
   spec, its `fetchOutcome`, the `MessageSender`, the group's `cadence`, the Event recorder (nil
-  drops Events) the reconcile's timestamp (for `LastChecked` and handled entries) and a clock read when an outcome is recorded (the permanent-failure backoff deadline and the success gauge; nil is `time.Now`). `newAttempt` opens the `feedAttempt` from it.
+  drops Events), the reconcile's timestamp (for `LastChecked` and handled entries) and a clock read when an outcome is recorded (the permanent-failure backoff deadline and the success gauge; nil is `time.Now`). `newAttempt` opens the `feedAttempt` from it.
 
 **Feed attempt** (`feedAttempt`, `attempt.go`)
 : The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
