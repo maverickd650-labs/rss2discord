@@ -106,10 +106,12 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
   delivery, meaning render and send (`Reachable` True, `Delivered` False). A run belongs to
   its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
-  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The rule is written once, in `feedAttempt.record`.
+  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The type is `retryRun` (`runOf(fs)`, `backoff.go`),
+  the only code that touches `RetryCount` and `BackoffUntil` and the only place the phase rule (read
+  from `Reachable`, never stored) is written; `feedAttempt.record` drives it.
 
 **Feed check** (`feedCheck`, `check.go`)
-: A view over a `FeedStatus` of its last check, in the style of `feedBackoff`: `failed` (an error is
+: A view over a `FeedStatus` of its last check, in the style of `retryRun`: `failed` (an error is
   in status; what Ready's `FeedErrors` count and the `feed_healthy` gauge mean), `failedOrRetrying`
   (the scheduler's wider notion, which also counts a retry run still in progress), and the parsed
   `lastChecked` / `untilDue` that `feedDue` and `planFeeds` share.
@@ -141,9 +143,9 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   transient failure instead retries until `RetryCount` reaches the retry limit, and one
   Event announces that.
 
-**Feed backoff** (`feedBackoff`, `backoff.go`)
-: A feed's permanent-failure backoff, as a view over its `FeedStatus` (`backoffOf(fs)`) and the
-  only code that touches `BackoffUntil`. `extend(base, now)` sets it to `base * 2^RetryCount`
+**Feed backoff** (`retryRun.extend`, `backoff.go`)
+: A feed's permanent-failure backoff, part of its retry run (a view over its `FeedStatus`,
+  `runOf(fs)`). `extend(base, now)` sets it to `base * 2^RetryCount`
   capped at `maxPermanentBackoff` (6h) and reports `firstCapped`, true only for the failure
   whose backoff first reaches the cap (the caller fires the `BackoffCapped` Event once);
   `active(now)` is what `planFeeds` skips on (a malformed value is not a backoff);
