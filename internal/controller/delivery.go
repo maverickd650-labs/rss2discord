@@ -135,12 +135,14 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 // otherEntryRenders reports whether any entry other than skip renders
 // successfully with the feed's templates, which distinguishes "this entry is
 // the problem" from "the template is broken for everything". It scans the whole
-// plan window, deliberately counting entries before the watermark, already sent
-// ones and ones the filter rejects (build does not apply the filter), but not
-// entries the catch-up trim left out; skip is excluded by identity.
+// plan window, counting entries before the watermark and already sent ones
+// (they passed the filter when they were delivered), but not entries the
+// catch-up trim left out, and not ones the filter rejects: an entry that would
+// never be delivered is no evidence the templates work for those that would.
+// skip is excluded by identity.
 func (d entryDelivery) otherEntryRenders(skip rss.Entry) bool {
 	for _, other := range d.syncer.scan {
-		if entryIdentity(other) == entryIdentity(skip) {
+		if entryIdentity(other) == entryIdentity(skip) || !d.renderer.matches(other) {
 			continue
 		}
 		if _, _, err := d.renderer.build(other); err == nil {

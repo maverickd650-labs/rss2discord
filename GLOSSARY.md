@@ -122,8 +122,8 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   the render-failure policy (`renderFailed`): an entry that still fails to render after its
   retries are exhausted is skipped (marked handled, recorded as skipped) only if another entry
   of the window renders (`entryDelivery.otherEntryRenders`, which owns that scan: the window counts
-  entries before the watermark, already sent and filtered-out ones, but not those the catch-up
-  trim left out), otherwise the scan holds. It is the only caller of
+  entries before the watermark and already sent ones, but not filtered-out ones -- which would
+  never be delivered, so prove nothing -- nor those the catch-up trim left out), otherwise the scan holds. It is the only caller of
   `groupMetrics.overflow`. Its result is an attempt verdict.
 
 **Attempt verdict** (`attemptVerdict`)

@@ -1492,10 +1492,12 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 	}
 }
 
-// TestProcessFeed_SkipProbeOverflowOnFilteredSibling characterizes the same
-// for a filtered-out entry: it still counts as evidence, but is never sent, so
-// its overflow is not observed.
-func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
+// TestProcessFeed_SkipProbeIgnoresFilteredSibling asserts a filtered-out entry
+// is no evidence that the templates work: it would never be delivered, so its
+// rendering says nothing about the entries that would. With it as the only
+// sibling, the poison entry is held rather than skipped, and nothing is sent or
+// observed.
+func TestProcessFeed_SkipProbeIgnoresFilteredSibling(t *testing.T) {
 	long := strings.Repeat("f", discord.MaxContentLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-filtered", Title: long, Description: "drop", Seq: 3},
@@ -1509,8 +1511,11 @@ func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
 	if got := server.MessageCount(); got != 0 {
 		t.Fatalf("messages sent = %d, want 0 (the sibling is filtered out)", got)
 	}
-	if fs.LastSeenEntry != entries[1].ID {
-		t.Fatalf("poison entry should be skipped using the filtered sibling as the only evidence: LastSeenEntry = %q", fs.LastSeenEntry)
+	if fs.LastSeenEntry == entries[1].ID {
+		t.Fatal("poison entry was skipped on the evidence of a filtered-out sibling; it must be held")
+	}
+	if got := outcomeCount(ns, name, outcomeSkipped); got != 0 {
+		t.Fatalf("skipped outcomes = %v, want 0", got)
 	}
 	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
