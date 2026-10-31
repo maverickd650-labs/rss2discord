@@ -76,6 +76,9 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 	if fs.StateVersion >= currentStateVersion {
 		return legacyState{}
 	}
+	// The one place legacy reads the status without a ledger: it runs at open
+	// time, before any fetch, to decide whether the fetch needs the legacy
+	// reading at all.
 	sentEmptyIdentity := identitySent(fs.LastSent, "")
 	delivered := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
 	noWatermark := fs.LastSeenEntry == ""
@@ -85,7 +88,7 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 		legacy:         true,
 		identities:     !noWatermark || len(fs.LastSent) > 0,
 		emptyWatermark: emptyWatermark,
-		ambiguous:      noWatermark && fs.LastChecked != "" && (!fs.Initialized || emptyWatermark),
+		ambiguous:      noWatermark && checkOf(fs).checked() && (!fs.Initialized || emptyWatermark),
 	}
 }
 
@@ -163,20 +166,25 @@ func (s *legacyState) settleOnClose(fs *v1alpha1.FeedStatus, verdict syncVerdict
 // legacy empty identity rather than no watermark at all. Legacy values that
 // match no entry are left as they are: a watermark that matches nothing
 // falls back to the catch-up cap either way.
+//
+// The current identities, keys and uniqueness come from the ledger's records;
+// only the legacy identities, and how many entries share each (a count in the
+// legacy key space, which the ledger does not index), are computed here, so
+// they go with this file.
 func migrateLegacyIdentities(ledger *deliveryLedger, emptyWatermark bool, replayLimit int) {
 	entries := ledger.entries
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
 	for i, entry := range entries {
-		current[i], legacy[i] = entryIdentity(entry), legacyEntryIdentity(entry)
+		current[i], legacy[i] = ledger.record(i).identity, legacyEntryIdentity(entry)
 		sharing[legacy[i]]++
 	}
 
 	watermark := -1
-	if ledger.fs.LastSeenEntry != "" || emptyWatermark {
+	if ledger.hasWatermark() || emptyWatermark {
 		for i := range entries {
-			if ledger.moveWatermark(legacy[i], current[i]) {
+			if ledger.moveWatermark(legacy[i], i) {
 				watermark = i
 				break
 			}
@@ -196,27 +204,24 @@ func migrateLegacyIdentities(ledger *deliveryLedger, emptyWatermark bool, replay
 		if current[i] == legacy[i] {
 			continue
 		}
-		sentAt, ok := ledger.sentAt(legacy[i])
+		sentAt, ok := ledger.forgetIdentity(legacy[i])
 		if !ok {
 			continue
 		}
 		if sharing[legacy[i]] == 1 {
-			// A link's legacy identity is its stripped form; like
-			// deliveryLedger.markHandled, record it only when it is this
-			// entry's own and unique in the fetch, or a sibling sharing it
-			// would later be taken as sent.
-			ledger.setSent(current[i], ledger.ownStripped(entries[i], legacy[i]), sentAt)
+			// A link's legacy identity is its stripped form; recordSentAt
+			// writes its stripped key only when it is this entry's own and
+			// unique in the fetch, or a sibling sharing it would later be
+			// taken as sent.
+			ledger.recordSentAt(i, sentAt, legacy[i])
 		}
-		ledger.forgetSent(legacy[i])
 	}
 
 	// With no watermark found, limitCatchUp already caps the whole fetch.
 	if watermark < 0 {
 		return
 	}
-	sent := func(i int) bool {
-		return ledger.sentIdentity(current[i])
-	}
+	sent := ledger.entryKeySent
 	replay := 0
 	for i := watermark + 1; i < len(entries); i++ {
 		if colliding[legacy[i]] && !sent(i) {
@@ -241,6 +246,6 @@ func migrateLegacyIdentities(ledger *deliveryLedger, emptyWatermark bool, replay
 		moved = i
 	}
 	if moved > watermark {
-		ledger.setWatermark(current[moved])
+		ledger.setWatermark(moved)
 	}
 }

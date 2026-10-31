@@ -34,16 +34,23 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **Delivery ledger** (`deliveryLedger`, `ledger.go`)
 : A feed's delivery bookkeeping over one fetch, and the single identity index of it: the
-  `LastSeenEntry` watermark and the `LastSent` dedup keys, the whole sorted fetch, and the
-  stripped-identity counts they depend on. `feedSync.begin` builds it once per fetch, after the
-  sort and before the identity migrations (which change only the status, so the counts are the
-  same on either side), over the whole untrimmed fetch, so an entry's stripped identity is only
-  unique if it is across the feed, however the entries are later trimmed. It alone writes the
-  watermark and `LastSent` (apart from status normalization and pruning) and owns the key scheme
-  -- an entry's own key (`computeEntryKey`) plus, when its stripped link identity is unique in
-  the fetch, the stripped key (`strippedKey`). The migrations go through its methods
-  (`moveWatermark`, `setWatermark`, `setSent`, `forgetSent`, `rekeySent`) rather than building
-  keys or clamping watermarks themselves.
+  `LastSeenEntry` watermark and the `LastSent` dedup keys, the whole sorted fetch, one
+  `identityRecord` per entry (identity, watermark form, entry key, stripped identity, the
+  stripped identity when unique, the keys that record it, and for an entry the parser moved off
+  an earlier `PreviousID` its previous identity and keys) and every uniqueness count those
+  rules need (`claims`, `identities`, `previousIdentities`, `previousStripped`), all computed
+  once at construction. `feedSync.begin` builds it once per fetch, after the sort and before
+  the identity migrations (which change only the status, so the records are the same on either
+  side), over the whole untrimmed fetch, so an entry's stripped identity is only unique if it
+  is across the feed, however the entries are later trimmed. It alone writes the watermark and
+  `LastSent` (apart from status normalization and pruning) and owns the key scheme -- an
+  entry's own key (`computeEntryKey`) plus, when its stripped link identity is unique in the
+  fetch, the stripped key (`strippedKey`). Delivery uses `sent`/`markHandled`; the migrations
+  use entry-index methods (`carriesOver`, `ownsPrevious`, `rekeySent`, `moveWatermark`,
+  `setWatermark`) and the record's `unique`, so every "is this identity unique" rule is decided
+  in `ledger.go`. Nothing in `ledger.go` is legacy-only: the legacy pass composes the same
+  key-level primitives (`sentAtKey`, `recordKey`, `moveSent`) that `sent`, `markHandled` and
+  `rekeySent` use.
 
 **Identity migration** (`migrateIdentities`, `identity_migration.go`)
 : Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
@@ -51,11 +58,13 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, in `legacy.go`, only for a
   status written before `stateVersion` 1) and the previous-identity pass
   (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
-  Both take the fetch's delivery ledger, read its entries, and write only through it. Before
-  writing a stripped key they ask the ledger's `ownStripped` (is this stripped identity the
-  entry's own and unique in the fetch?) and `ownsPrevious` (can an old stripped key only have
-  been this one moved entry's?). A stripped key a sibling shares is never recorded, or the
-  sibling, alone under it later, would be taken as sent.
+  Both take the fetch's delivery ledger and write only through it. Before writing a stripped
+  key they ask it: the legacy pass hands it the recovered identities (`forgetIdentity`, `recordSentAt`,
+  which writes a stripped key only when it is the entry's own and unique in the fetch), the previous-identity pass asks `carriesOver` (full identities: may the stored entry
+  key move?) and, inside `rekeySent`, `ownsPrevious` (stripped identities: can an old stripped
+  key only have been this one moved entry's?). The two rules differ on purpose and both live in
+  the ledger. A stripped key a sibling shares is never recorded, or the sibling, alone under it
+  later, would be taken as sent.
 
 **Watermark** (`FeedStatus.LastSeenEntry`)
 : The identity of the last entry handled; a later scan resumes just past it.

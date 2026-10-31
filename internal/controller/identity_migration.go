@@ -56,25 +56,10 @@ func migrateIdentities(ledger *deliveryLedger, legacy *legacyState, replayLimit 
 // identity more than one entry now has: it can't be told which entry the stored
 // value stands for.
 func migratePreviousIdentities(ledger *deliveryLedger) {
-	entries := ledger.entries
-	type move struct{ previous, current rss.Entry }
-	var moves []move
-	shared := make(map[string]int)
-	currentCounts := make(map[string]int, len(entries))
-	for _, entry := range entries {
-		currentCounts[entryIdentity(entry)]++
-		if previous, changed := previouslyIdentified(entry); changed {
-			moves = append(moves, move{previous: previous, current: entry})
-			shared[entryIdentity(previous)]++
+	for i := range ledger.entries {
+		if ledger.carriesOver(i) {
+			ledger.moveWatermark(ledger.record(i).previous, i)
+			ledger.rekeySent(i)
 		}
-	}
-
-	for _, m := range moves {
-		old, now := entryIdentity(m.previous), entryIdentity(m.current)
-		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
-			continue
-		}
-		ledger.moveWatermark(old, now)
-		ledger.rekeySent(m.previous, m.current)
 	}
 }

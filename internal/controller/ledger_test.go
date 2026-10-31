@@ -237,3 +237,16 @@ func TestComputeEntryKey_IgnoresLinkAndTitleChurn(t *testing.T) {
 		t.Fatal("expected entries sharing an ID to produce the same key despite a link and title edit")
 	}
 }
+
+// An entry with no ID is identified by its content hash, so two of them that
+// differ only in content must not share a record: handling one leaves the other
+// unsent.
+func TestDeliveryLedger_EntriesWithoutIDAreToldApartByContent(t *testing.T) {
+	a, b := rss.Entry{Description: "first"}, rss.Entry{Description: "second"}
+	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+	ledger := newDeliveryLedger(fs, []rss.Entry{a, b})
+	ledger.markHandled(a, ledgerTestNow)
+	if !ledger.sent(a) || ledger.sent(b) {
+		t.Fatalf("sent(a), sent(b) = %v, %v; want true, false", ledger.sent(a), ledger.sent(b))
+	}
+}

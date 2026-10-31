@@ -122,7 +122,7 @@ func entryIdentity(entry rss.Entry) string {
 // whose ID didn't come from its link. Some feeds rotate those between
 // fetches (share-tracking plugins, CDN rewrites) on an otherwise unchanged
 // article, so dedup and the watermark fall back to this form; see
-// strippedCounts.
+// deliveryLedger (identityRecord.unique).
 func strippedLinkIdentity(entry rss.Entry) string {
 	if entry.IDSource != rss.IDFromLink || entry.ID == "" {
 		return ""
