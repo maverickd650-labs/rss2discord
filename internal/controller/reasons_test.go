@@ -19,17 +19,21 @@ package controller
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/parser"
 	"go/token"
-	"os"
+	"go/types"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/go/ssa"
 )
 
 // reasonArgs are the calls that take a condition or Event reason, by function
-// or method name, with the position of that argument. The checker adds to
-// them every function that passes one of its own parameters on to one.
+// or method name, with the position of that argument (the receiver aside).
 var reasonArgs = map[string]int{
 	"setFeedCondition": 3, // (fs, condType, status, reason, message, generation)
 	"setCondition":     2, // feedAttempt: (condType, status, reason, message)
@@ -40,52 +44,64 @@ var reasonArgs = map[string]int{
 // reasonFields are the struct fields that hold a condition reason.
 var reasonFields = []string{"Reason", "conditionReason"}
 
-// reasonChecker finds string literals that reach a condition or Event reason
-// anywhere in a package. A reason sink -- a reasonFields field (keyed in a
-// literal, assigned after construction, or the reason element of an unkeyed
-// failureClass literal) or a reason argument -- is traced back through the
-// package: local variables to everything assigned to them, whatever they are
-// called; package-level variables to their initializers; calls to the
-// package's functions to what those return (by result position); and a
-// function's own parameters to every caller's argument, by turning that
-// parameter into a sink. Struct fields are not traced through, since every
-// write to one is itself a sink. Named constants pass, so a reason's value is
-// always one of the declarations in conditions.go and classify.go, which are
-// user-visible API. Two name-based checks back it up: a variable named for a
-// reason must not be given a literal, and neither may a function named for
-// one return it.
-type reasonChecker struct {
-	fset     *token.FileSet
-	files    []*ast.File
-	funcs    map[string][]*ast.FuncDecl // by function or method name
-	globals  map[string]ast.Expr        // package-level var initializers
-	sinks    map[string]map[int]bool    // reason parameters, by callee name
-	traced   map[string]bool            // what trace has already followed
-	problems map[string]bool
+// reasonFlow finds the string constants that reach a condition or Event reason
+// in one package, on its SSA form (golang.org/x/tools/go/ssa), where every
+// value has exactly one definition: shadowing, tuples, named results, closures
+// and methods are all plain values and calls there.
+//
+// The sinks are a reasonArgs argument, a store to a reasonFields field (keyed,
+// unkeyed and elided literals and later assignments all lower to one), and
+// what a function named for a reason (dominantErrorReason) returns. From each,
+// the value is traced back through phis, conversions and operators; a call to
+// the package's own functions, methods or closures to what they return; a
+// parameter or free variable to every caller's argument or closure's binding;
+// a load to every store to that variable, global or field (any field, not only
+// the reason ones); and a map, slice or pointer to everything written into it.
+// A call into another package is traced through its arguments, since its
+// result can only be made from them.
+//
+// SSA folds named constants into their values, so a constant that arrives is
+// accepted only if its value is that of one of the package's named string
+// constants, and checkReasonSpelling then requires that value to be spelled
+// nowhere but in its const declaration. Together: every reason is one of the
+// declarations in conditions.go and classify.go, which are user-visible API.
+type reasonFlow struct {
+	fset         *token.FileSet
+	named        map[string]bool // values of the package's string constants
+	funcs        []*ssa.Function // the package's, closures included
+	calls        []ssa.CallInstruction
+	globalWrites map[*ssa.Global][]ssa.Value
+	fieldWrites  map[*types.Var][]ssa.Value
+	bindings     map[*ssa.Function][]*ssa.MakeClosure
+	seen         map[ssa.Value]bool
+	seenValues   map[ssa.Value]bool // maps whose values traceMapValues followed
+	reached      map[string]bool    // named values found at a sink
+	problems     map[string]bool
+	where        string    // the sink being traced
+	pos          token.Pos // and its position
 }
 
-// checkReasonLiterals runs a reasonChecker over the files of one package and
-// returns its findings, sorted.
-func checkReasonLiterals(fset *token.FileSet, files []*ast.File) []string {
-	c := &reasonChecker{
-		fset: fset, files: files,
-		funcs: map[string][]*ast.FuncDecl{}, globals: map[string]ast.Expr{},
-		sinks: map[string]map[int]bool{}, traced: map[string]bool{}, problems: map[string]bool{},
+// checkReasons runs reasonFlow and checkReasonSpelling over pkg, whose syntax
+// is files, and returns their findings, sorted.
+func checkReasons(fset *token.FileSet, pkg *ssa.Package, files []*ast.File) []string {
+	f := &reasonFlow{
+		fset: fset, named: map[string]bool{},
+		globalWrites: map[*ssa.Global][]ssa.Value{}, fieldWrites: map[*types.Var][]ssa.Value{},
+		bindings: map[*ssa.Function][]*ssa.MakeClosure{},
+		seen:     map[ssa.Value]bool{}, seenValues: map[ssa.Value]bool{},
+		reached: map[string]bool{}, problems: map[string]bool{},
 	}
-	for name, i := range reasonArgs {
-		c.sinks[name] = map[int]bool{i: true}
-	}
-	c.index()
-	// A parameter found to feed a sink makes a new sink, whose callers must
-	// then be checked too: repeat until no new one appears.
-	for before := -1; before != c.sinkCount(); {
-		before = c.sinkCount()
-		for _, file := range files {
-			c.checkFile(file)
+	scope := pkg.Pkg.Scope()
+	for _, name := range scope.Names() {
+		if c, ok := scope.Lookup(name).(*types.Const); ok && c.Val().Kind() == constant.String {
+			f.named[constant.StringVal(c.Val())] = true
 		}
 	}
+	f.index(pkg)
+	f.checkSinks()
+	checkReasonSpelling(fset, files, f.reached, f.problems)
 	return slices.Sorted(func(yield func(string) bool) {
-		for p := range c.problems {
+		for p := range f.problems {
 			if !yield(p) {
 				return
 			}
@@ -93,22 +109,111 @@ func checkReasonLiterals(fset *token.FileSet, files []*ast.File) []string {
 	})
 }
 
-// index records the package's functions and package-level variables.
-func (c *reasonChecker) index() {
-	for _, file := range c.files {
-		for _, decl := range file.Decls {
-			switch d := decl.(type) {
-			case *ast.FuncDecl:
-				c.funcs[d.Name.Name] = append(c.funcs[d.Name.Name], d)
-			case *ast.GenDecl:
-				if d.Tok != token.VAR {
-					continue
+// index records pkg's functions (closures included), call sites, and every
+// value stored to a package variable or a struct field, or bound into a
+// closure.
+func (f *reasonFlow) index(pkg *ssa.Package) {
+	var add func(fn *ssa.Function)
+	add = func(fn *ssa.Function) {
+		if fn == nil || fn.Pkg != pkg || slices.Contains(f.funcs, fn) {
+			return
+		}
+		f.funcs = append(f.funcs, fn)
+		for _, anon := range fn.AnonFuncs {
+			add(anon)
+		}
+	}
+	for _, member := range pkg.Members {
+		switch m := member.(type) {
+		case *ssa.Function:
+			add(m)
+			if m.Name() == "init" {
+				// The package initializer calls the init funcs declared.
+				for _, block := range m.Blocks {
+					for _, instr := range block.Instrs {
+						if call, ok := instr.(*ssa.Call); ok {
+							add(call.Call.StaticCallee())
+						}
+					}
 				}
-				for _, spec := range d.Specs {
-					vs := spec.(*ast.ValueSpec)
-					for i, id := range vs.Names {
-						if i < len(vs.Values) {
-							c.globals[id.Name] = vs.Values[i]
+			}
+		case *ssa.Type:
+			for _, t := range []types.Type{m.Type(), types.NewPointer(m.Type())} {
+				for method := range pkg.Prog.MethodSets.MethodSet(t).Methods() {
+					if fn := pkg.Prog.MethodValue(method); fn != nil && fn.Synthetic == "" {
+						add(fn) // not the wrappers *T has for T's methods
+					}
+				}
+			}
+		}
+	}
+	for _, fn := range f.funcs {
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				f.indexInstr(instr)
+			}
+		}
+	}
+}
+
+func (f *reasonFlow) indexInstr(instr ssa.Instruction) {
+	switch in := instr.(type) {
+	case ssa.CallInstruction:
+		f.calls = append(f.calls, in)
+	case *ssa.MakeClosure:
+		fn := in.Fn.(*ssa.Function)
+		f.bindings[fn] = append(f.bindings[fn], in)
+	case *ssa.Store:
+		switch addr := in.Addr.(type) {
+		case *ssa.Global:
+			f.globalWrites[addr] = append(f.globalWrites[addr], in.Val)
+		case *ssa.FieldAddr:
+			field := fieldOf(addr.X.Type(), addr.Field)
+			f.fieldWrites[field] = append(f.fieldWrites[field], in.Val)
+		}
+	}
+}
+
+// fieldOf is field i of the struct typ is or points to.
+func fieldOf(typ types.Type, i int) *types.Var {
+	if ptr, ok := typ.Underlying().(*types.Pointer); ok {
+		typ = ptr.Elem()
+	}
+	return typ.Underlying().(*types.Struct).Field(i)
+}
+
+// checkSinks traces every reason sink in the package.
+func (f *reasonFlow) checkSinks() {
+	for _, call := range f.calls {
+		common := call.Common()
+		name, offset := "", 0
+		if common.IsInvoke() {
+			name = common.Method.Name()
+		} else if callee := common.StaticCallee(); callee != nil {
+			name = callee.Name()
+			if callee.Signature.Recv() != nil {
+				offset = 1 // a static method call's receiver is Args[0]
+			}
+		}
+		if i, ok := reasonArgs[name]; ok && i+offset < len(common.Args) {
+			f.sink(common.Args[i+offset], call.Pos(), "the reason argument of "+name)
+		}
+	}
+	for _, fn := range f.funcs {
+		reasonNamed := strings.Contains(strings.ToLower(fn.Name()), "reason")
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				switch in := instr.(type) {
+				case *ssa.Store:
+					if fa, ok := in.Addr.(*ssa.FieldAddr); ok {
+						if name := fieldOf(fa.X.Type(), fa.Field).Name(); slices.Contains(reasonFields, name) {
+							f.sink(in.Val, in.Pos(), "the "+name+" field")
+						}
+					}
+				case *ssa.Return:
+					if reasonNamed {
+						for _, result := range in.Results {
+							f.sink(result, in.Pos(), "a result of "+fn.Name())
 						}
 					}
 				}
@@ -117,293 +222,278 @@ func (c *reasonChecker) index() {
 	}
 }
 
-func (c *reasonChecker) sinkCount() int {
-	n := 0
-	for _, params := range c.sinks {
-		n += len(params)
-	}
-	return n
+// sink traces v, which reaches the sink described by where at pos.
+func (f *reasonFlow) sink(v ssa.Value, pos token.Pos, where string) {
+	f.where, f.pos = where, pos
+	f.trace(v)
 }
 
-// checkFile checks every reason sink in file, each in the function it is in
-// (nil at package level).
-func (c *reasonChecker) checkFile(file *ast.File) {
-	for _, decl := range file.Decls {
-		fn, _ := decl.(*ast.FuncDecl)
-		if fn != nil {
-			c.checkReasonResults(fn)
+// trace follows v back to the constants it is made from.
+func (f *reasonFlow) trace(v ssa.Value) {
+	if v == nil || f.seen[v] {
+		return
+	}
+	f.seen[v] = true
+	f.traceDef(v)
+	switch v.Type().Underlying().(type) {
+	case *types.Map, *types.Slice, *types.Pointer:
+		f.traceWrites(v, false)
+	}
+}
+
+// traceDef follows v to the values its definition is made from.
+func (f *reasonFlow) traceDef(v ssa.Value) {
+	switch v := v.(type) {
+	case *ssa.Const:
+		f.checkConst(v)
+	case *ssa.Call:
+		f.traceCallResult(v, 0)
+	case *ssa.Extract:
+		if call, ok := v.Tuple.(*ssa.Call); ok {
+			f.traceCallResult(call, v.Index)
+		} else {
+			f.trace(v.Tuple)
 		}
-		ast.Inspect(decl, func(n ast.Node) bool {
-			if gd, ok := n.(*ast.GenDecl); ok && gd.Tok == token.CONST {
-				return false // consts are where reasons are declared
+	case *ssa.Parameter:
+		f.traceCallers(v)
+	case *ssa.FreeVar:
+		fn := v.Parent()
+		i := slices.Index(fn.FreeVars, v)
+		for _, mc := range f.bindings[fn] {
+			f.trace(mc.Bindings[i])
+		}
+	case *ssa.Global:
+		for _, w := range f.globalWrites[v] {
+			f.trace(w)
+		}
+	case *ssa.Field:
+		f.traceField(fieldOf(v.X.Type(), v.Field))
+	case *ssa.FieldAddr:
+		f.traceField(fieldOf(v.X.Type(), v.Field))
+	case *ssa.Lookup:
+		if _, isMap := v.X.Type().Underlying().(*types.Map); isMap {
+			f.traceMapValues(v.X) // the key looked up is not the value
+		} else {
+			f.trace(v.X)
+		}
+	case *ssa.IndexAddr:
+		f.trace(v.X)
+	case *ssa.Index:
+		f.trace(v.X)
+	case *ssa.Alloc, *ssa.MakeMap, *ssa.MakeSlice, *ssa.MakeChan, *ssa.Function, *ssa.MakeClosure, *ssa.Builtin:
+		// Made empty, or code: what is put in them is traced by traceWrites.
+	case ssa.Instruction:
+		// Phis, operators, conversions, loads, ranges, slicing: made from
+		// their operands.
+		for _, op := range v.Operands(nil) {
+			f.trace(*op)
+		}
+	}
+}
+
+// traceMapValues follows the values (not the keys) a map is given.
+func (f *reasonFlow) traceMapValues(m ssa.Value) {
+	if f.seenValues[m] {
+		return
+	}
+	f.seenValues[m] = true
+	f.traceDef(m)
+	f.traceWrites(m, true)
+}
+
+// traceWrites follows everything written into the map, slice or pointer v:
+// map updates (only their values if valuesOnly), stores through it or an
+// element of it, and what a closure or function it is handed stores through
+// it.
+func (f *reasonFlow) traceWrites(v ssa.Value, valuesOnly bool) {
+	refs := v.Referrers()
+	if refs == nil {
+		return
+	}
+	for _, ref := range *refs {
+		switch r := ref.(type) {
+		case *ssa.MapUpdate:
+			if r.Map == v {
+				if !valuesOnly {
+					f.trace(r.Key)
+				}
+				f.trace(r.Value)
 			}
-			c.checkNode(n, fn)
+		case *ssa.Store:
+			if r.Addr == v {
+				f.trace(r.Val)
+			}
+		case *ssa.IndexAddr:
+			if r.X == v {
+				f.trace(r)
+			}
+		case *ssa.Slice:
+			if r.X == v {
+				f.trace(r)
+			}
+		case *ssa.MakeClosure:
+			for i, b := range r.Bindings {
+				if b == v {
+					f.trace(r.Fn.(*ssa.Function).FreeVars[i])
+				}
+			}
+		case ssa.CallInstruction:
+			f.traceHandedTo(r.Common(), v)
+		}
+	}
+}
+
+// traceHandedTo follows what the package's callees of common store through v,
+// which it passes them.
+func (f *reasonFlow) traceHandedTo(common *ssa.CallCommon, v ssa.Value) {
+	for i, arg := range common.Args {
+		if arg != v {
+			continue
+		}
+		for _, callee := range f.callees(common) {
+			if j := i + receiverShift(common, callee); j < len(callee.Params) {
+				f.trace(callee.Params[j])
+			}
+		}
+	}
+}
+
+// traceField follows every value stored to field, anywhere in the package.
+func (f *reasonFlow) traceField(field *types.Var) {
+	for _, w := range f.fieldWrites[field] {
+		f.trace(w)
+	}
+}
+
+// traceCallResult follows result i of call: what the package's callees
+// return there, or, for a call out of the package, its arguments.
+func (f *reasonFlow) traceCallResult(call *ssa.Call, i int) {
+	callees := f.callees(&call.Call)
+	if len(callees) == 0 {
+		for _, arg := range call.Call.Args {
+			f.trace(arg)
+		}
+		return
+	}
+	for _, callee := range callees {
+		for _, block := range callee.Blocks {
+			if ret, ok := block.Instrs[len(block.Instrs)-1].(*ssa.Return); ok && i < len(ret.Results) {
+				f.trace(ret.Results[i])
+			}
+		}
+	}
+}
+
+// traceCallers follows parameter p to the matching argument of every call
+// that can reach its function.
+func (f *reasonFlow) traceCallers(p *ssa.Parameter) {
+	fn := p.Parent()
+	index := slices.Index(fn.Params, p)
+	for _, call := range f.calls {
+		common := call.Common()
+		if !slices.Contains(f.callees(common), fn) {
+			continue
+		}
+		if i := index - receiverShift(common, fn); i >= 0 && i < len(common.Args) {
+			f.trace(common.Args[i])
+		}
+	}
+}
+
+// callees are the package's functions with a body that common can call: its
+// static callee; for an interface call, the package's methods of that name
+// whose receiver implements the interface; for a call through a func value,
+// every function of the package with the same signature.
+func (f *reasonFlow) callees(common *ssa.CallCommon) []*ssa.Function {
+	if callee := common.StaticCallee(); callee != nil {
+		if slices.Contains(f.funcs, callee) && len(callee.Blocks) > 0 {
+			return []*ssa.Function{callee}
+		}
+		return nil
+	}
+	if _, builtin := common.Value.(*ssa.Builtin); builtin {
+		return nil
+	}
+	var out []*ssa.Function
+	for _, fn := range f.funcs {
+		recv := fn.Signature.Recv()
+		switch {
+		case len(fn.Blocks) == 0:
+		case common.IsInvoke():
+			if recv != nil && fn.Name() == common.Method.Name() &&
+				types.Implements(recv.Type(), common.Value.Type().Underlying().(*types.Interface)) {
+				out = append(out, fn)
+			}
+		case recv == nil && types.Identical(fn.Signature, common.Signature()):
+			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+// receiverShift is how far callee's Params run ahead of common's Args: an
+// interface call leaves the receiver out of Args, a static method call does
+// not.
+func receiverShift(common *ssa.CallCommon, callee *ssa.Function) int {
+	if common.IsInvoke() && callee.Signature.Recv() != nil {
+		return 1
+	}
+	return 0
+}
+
+// checkConst records a string constant that reaches a sink: the empty zero
+// value passes, a named constant's value is noted for checkReasonSpelling,
+// and anything else is a problem.
+func (f *reasonFlow) checkConst(c *ssa.Const) {
+	if c.Value == nil || c.Value.Kind() != constant.String {
+		return
+	}
+	s := constant.StringVal(c.Value)
+	switch {
+	case s == "":
+	case f.named[s]:
+		f.reached[s] = true
+	default:
+		f.problems[fmt.Sprintf("%s: string %s reaches %s", f.fset.Position(f.pos), strconv.Quote(s), f.where)] = true
+	}
+}
+
+// checkReasonSpelling reports a string literal outside a const declaration
+// whose value is one of the reasons in use: a reason's value is spelled once,
+// in its constant.
+func checkReasonSpelling(fset *token.FileSet, files []*ast.File, reasons, problems map[string]bool) {
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.GenDecl:
+				return n.Tok != token.CONST && n.Tok != token.IMPORT
+			case *ast.BasicLit:
+				if s, err := strconv.Unquote(n.Value); n.Kind == token.STRING && err == nil && reasons[s] {
+					problems[fmt.Sprintf("%s: string %s spells a reason; use its constant", fset.Position(n.Pos()), n.Value)] = true
+				}
+			}
 			return true
 		})
 	}
 }
 
-// checkNode checks n if it is a reason sink, inside fn.
-func (c *reasonChecker) checkNode(n ast.Node, fn *ast.FuncDecl) {
-	switch n := n.(type) {
-	case *ast.KeyValueExpr:
-		if key, ok := n.Key.(*ast.Ident); ok && slices.Contains(reasonFields, key.Name) {
-			c.trace(n.Value, fn, key.Name)
-		}
-	case *ast.CompositeLit:
-		if isFailureClass(n.Type) {
-			c.checkFailureClassLit(n, fn)
-		}
-		if elem := elemType(n.Type); isFailureClass(elem) {
-			// []failureClass{{metric, reason, permanent}}: the inner
-			// literals elide their type.
-			for _, elt := range n.Elts {
-				if kv, ok := elt.(*ast.KeyValueExpr); ok {
-					elt = kv.Value
-				}
-				if inner, ok := elt.(*ast.CompositeLit); ok && inner.Type == nil {
-					c.checkFailureClassLit(inner, fn)
-				}
-			}
-		}
-	case *ast.CallExpr:
-		name := calleeName(n.Fun)
-		for i := range c.sinks[name] {
-			if i < len(n.Args) {
-				c.trace(n.Args[i], fn, "the reason argument of "+name)
-			}
-		}
-	case *ast.AssignStmt:
-		c.checkAssignment(n, fn)
-	case *ast.ValueSpec:
-		for i, id := range n.Names {
-			if namesAReason(id.Name) && i < len(n.Values) {
-				c.trace(n.Values[i], fn, id.Name)
+// buildSSA builds the SSA form of a type-checked package, with types-only
+// packages for everything it imports.
+func buildSSA(fset *token.FileSet, pkg *types.Package, files []*ast.File, info *types.Info) *ssa.Package {
+	prog := ssa.NewProgram(fset, 0)
+	var create func([]*types.Package)
+	create = func(pkgs []*types.Package) {
+		for _, p := range pkgs {
+			if prog.Package(p) == nil {
+				prog.CreatePackage(p, nil, nil, true)
+				create(p.Imports())
 			}
 		}
 	}
-}
-
-// checkFailureClassLit checks the reason element of an unkeyed failureClass
-// literal (keyed ones are reasonFields).
-func (c *reasonChecker) checkFailureClassLit(lit *ast.CompositeLit, fn *ast.FuncDecl) {
-	if len(lit.Elts) > 1 {
-		if _, keyed := lit.Elts[1].(*ast.KeyValueExpr); !keyed {
-			c.trace(lit.Elts[1], fn, "failureClass.conditionReason")
-		}
-	}
-}
-
-// isFailureClass reports whether typ names the failureClass type.
-func isFailureClass(typ ast.Expr) bool {
-	id, ok := typ.(*ast.Ident)
-	return ok && id.Name == "failureClass"
-}
-
-// elemType is the element type of a slice, array or map type expression, or
-// nil.
-func elemType(typ ast.Expr) ast.Expr {
-	switch t := typ.(type) {
-	case *ast.ArrayType:
-		return t.Elt
-	case *ast.MapType:
-		return t.Value
-	}
-	return nil
-}
-
-// checkAssignment checks a value assigned to a reason-named variable or to a
-// reasonFields field after construction (cond.Reason = ...).
-func (c *reasonChecker) checkAssignment(n *ast.AssignStmt, fn *ast.FuncDecl) {
-	if len(n.Lhs) != len(n.Rhs) {
-		return
-	}
-	for i, lhs := range n.Lhs {
-		switch dst := lhs.(type) {
-		case *ast.Ident:
-			if namesAReason(dst.Name) {
-				c.trace(n.Rhs[i], fn, dst.Name)
-			}
-		case *ast.SelectorExpr:
-			if slices.Contains(reasonFields, dst.Sel.Name) {
-				c.trace(n.Rhs[i], fn, dst.Sel.Name)
-			}
-		}
-	}
-}
-
-// checkReasonResults checks what a function named for a reason
-// (dominantErrorReason) returns.
-func (c *reasonChecker) checkReasonResults(fn *ast.FuncDecl) {
-	if namesAReason(fn.Name.Name) && fn.Body != nil {
-		c.traceResults(fn, 0, "a result of "+fn.Name.Name)
-	}
-}
-
-// trace reports a non-empty string literal in expr, which reaches a reason
-// sink (described by where) from inside fn, and follows the identifiers and
-// local calls expr is made of back to their values.
-func (c *reasonChecker) trace(expr ast.Expr, fn *ast.FuncDecl, where string) {
-	ast.Inspect(expr, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncLit, *ast.SelectorExpr:
-			// A closure's body runs elsewhere; a field read is covered where
-			// the field is written.
-			return false
-		case *ast.IndexExpr:
-			// m["key"]: what is looked up is not the value.
-			c.trace(n.X, fn, where)
-			return false
-		case *ast.KeyValueExpr:
-			// map[string]string{"key": reasonX}: only the value can arrive.
-			c.trace(n.Value, fn, where)
-			return false
-		case *ast.BasicLit:
-			if n.Kind == token.STRING && n.Value != `""` {
-				c.problems[fmt.Sprintf("%s: string literal %s reaches %s", c.fset.Position(n.Pos()), n.Value, where)] = true
-			}
-		case *ast.Ident:
-			c.traceIdent(n.Name, fn, where)
-		case *ast.CallExpr:
-			for _, arg := range n.Args {
-				c.trace(arg, fn, where)
-			}
-			if id, ok := n.Fun.(*ast.Ident); ok {
-				for _, g := range c.funcs[id.Name] {
-					c.traceResults(g, 0, where)
-				}
-			}
-			return false
-		}
-		return true
-	})
-}
-
-// traceIdent follows name, used inside fn, to its values: fn's parameter (which
-// becomes a sink), a variable assigned in fn, or a package-level variable.
-// Constants and anything else (types, builtins) need nothing.
-func (c *reasonChecker) traceIdent(name string, fn *ast.FuncDecl, where string) {
-	key := fmt.Sprintf("%p/%s", fn, name)
-	if c.traced[key] {
-		return
-	}
-	c.traced[key] = true
-	if fn != nil {
-		if i, ok := paramIndex(fn, name); ok {
-			if c.sinks[fn.Name.Name] == nil {
-				c.sinks[fn.Name.Name] = map[int]bool{}
-			}
-			c.sinks[fn.Name.Name][i] = true
-			return
-		}
-		if fn.Body != nil && c.traceLocal(name, fn, where) {
-			return
-		}
-	}
-	if value, ok := c.globals[name]; ok {
-		c.trace(value, nil, where)
-	}
-}
-
-// traceLocal traces every value assigned to the local variable name in fn,
-// and reports whether name is one.
-func (c *reasonChecker) traceLocal(name string, fn *ast.FuncDecl, where string) bool {
-	found := false
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.AssignStmt:
-			for i, lhs := range n.Lhs {
-				if id, ok := lhs.(*ast.Ident); ok && id.Name == name {
-					found = true
-					c.traceAssigned(n.Rhs, i, len(n.Lhs), fn, where)
-				}
-			}
-		case *ast.ValueSpec:
-			for i, id := range n.Names {
-				if id.Name == name {
-					found = true
-					c.traceAssigned(n.Values, i, len(n.Names), fn, where)
-				}
-			}
-		}
-		return true
-	})
-	return found
-}
-
-// traceAssigned traces the value the i-th of n destinations gets from rhs:
-// rhs[i], or the i-th result of a single call (r, m := pair()).
-func (c *reasonChecker) traceAssigned(rhs []ast.Expr, i, n int, fn *ast.FuncDecl, where string) {
-	switch {
-	case len(rhs) == n:
-		c.trace(rhs[i], fn, where)
-	case len(rhs) == 1:
-		if call, ok := rhs[0].(*ast.CallExpr); ok {
-			if id, ok := call.Fun.(*ast.Ident); ok {
-				for _, g := range c.funcs[id.Name] {
-					c.traceResults(g, i, where)
-				}
-			}
-		}
-	}
-}
-
-// traceResults traces the result at position i of every return in fn.
-func (c *reasonChecker) traceResults(fn *ast.FuncDecl, i int, where string) {
-	key := fmt.Sprintf("%p/result%d", fn, i)
-	if c.traced[key] || fn.Body == nil {
-		return
-	}
-	c.traced[key] = true
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.ReturnStmt:
-			if i < len(n.Results) {
-				c.trace(n.Results[i], fn, where)
-			}
-		}
-		return true
-	})
-}
-
-// paramIndex is the position of the parameter name in fn's signature (the
-// receiver aside), as the call's argument index.
-func paramIndex(fn *ast.FuncDecl, name string) (int, bool) {
-	i := 0
-	for _, field := range fn.Type.Params.List {
-		if len(field.Names) == 0 {
-			i++
-			continue
-		}
-		for _, id := range field.Names {
-			if id.Name == name {
-				return i, true
-			}
-			i++
-		}
-	}
-	return 0, false
-}
-
-// calleeName is the function or method name a call expression calls.
-func calleeName(fun ast.Expr) string {
-	switch f := fun.(type) {
-	case *ast.Ident:
-		return f.Name
-	case *ast.SelectorExpr:
-		return f.Sel.Name
-	}
-	return ""
-}
-
-// namesAReason reports whether a variable's or function's name says it holds
-// or computes a reason (reason, eventReason, dominantErrorReason, ...).
-func namesAReason(name string) bool {
-	return strings.Contains(strings.ToLower(name), "reason")
+	create(pkg.Imports())
+	ssaPkg := prog.CreatePackage(pkg, files, info, false)
+	ssaPkg.Build()
+	return ssaPkg
 }
 
 // TestProductionReasonsAreNamedConstants enforces CLAUDE.md's "every reason
@@ -412,57 +502,147 @@ func namesAReason(name string) bool {
 // of the named declarations, never a literal that reaches a reason, however
 // indirectly.
 func TestProductionReasonsAreNamedConstants(t *testing.T) {
-	entries, err := os.ReadDir(".")
+	pkgs, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax}, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fset := token.NewFileSet()
-	var files []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		files = append(files, file)
+	if len(pkgs) != 1 || len(pkgs[0].Errors) > 0 || len(pkgs[0].Syntax) == 0 {
+		t.Fatalf("loading the package: %v", pkgs)
 	}
-	if len(files) == 0 {
-		t.Fatal("no production files were checked")
-	}
-	if problems := checkReasonLiterals(fset, files); len(problems) > 0 {
+	p := pkgs[0]
+	if problems := checkReasons(p.Fset, buildSSA(p.Fset, p.Types, p.Syntax, p.TypesInfo), p.Syntax); len(problems) > 0 {
 		t.Fatalf("condition/Event reasons must be named constants (conditions.go, classify.go):\n%s",
 			strings.Join(problems, "\n"))
 	}
 }
 
-// TestCheckReasonLiterals_CatchesEverySink keeps the guard above from passing
+// reasonPrelude declares what the self-test's snippets use: the sinks, a
+// condition type and some constants, as the production package has them.
+const reasonPrelude = `package controller
+
+import (
+	"ext"
+	metav1 "meta"
+)
+
+type failureClass struct {
+	metricReason, conditionReason string
+	permanent                     bool
+}
+type feedAttempt struct{}
+
+func (feedAttempt) setCondition(condType, status, reason, message string) {}
+func (feedAttempt) warn(reason, action, format string, args ...any)      {}
+func setFeedCondition(fs any, condType, status, reason, message string, generation int64) {}
+
+type recorder interface {
+	Eventf(regarding, related any, eventtype, reason, action, note string, args ...any)
+}
+
+const (
+	reasonOther       = "Other"
+	reasonReconciled  = "Reconciled"
+	reasonFeedErrors  = "FeedErrors"
+	reasonConfigError = "ConfigError"
+	reasonOops        = "Oops2"
+	metricOther       = "other"
+)
+
+var (
+	a                       feedAttempt
+	r                       recorder
+	fs, g                   any
+	t, s, m, action, u, typ string
+	c                       bool
+	cond                    metav1.Condition
+	class                   failureClass
+	err                     error
+	_                       = ext.Upper
+)
+`
+
+// snippetHeader starts each snippet's file, with the prelude's imports.
+const snippetHeader = "package controller\n\nimport (\n\t\"ext\"\n\tmetav1 \"meta\"\n)\n\nvar (\n\t_ metav1.Condition\n\t_ = ext.Upper\n)\n\n"
+
+// fakeImports are the packages the prelude imports: a condition type, and a
+// function of another package.
+var fakeImports = map[string]string{
+	"meta": "package meta\ntype Condition struct {\n\tType, Status, Reason, Message string\n\tObservedGeneration int64\n}\n",
+	"ext":  "package ext\nfunc Upper(s string) string { return s }\n",
+}
+
+type fakeImporter map[string]*types.Package
+
+func (imp fakeImporter) Import(path string) (*types.Package, error) {
+	if p, ok := imp[path]; ok {
+		return p, nil
+	}
+	return nil, fmt.Errorf("no package %q", path)
+}
+
+// checkSnippet type-checks src beside reasonPrelude and runs checkReasons
+// over the two.
+func checkSnippet(t *testing.T, src string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	imp := fakeImporter{}
+	for path, code := range fakeImports {
+		file, err := parser.ParseFile(fset, path+".go", code, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if imp[path], err = (&types.Config{}).Check(path, fset, []*ast.File{file}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := make([]*ast.File, 0, 2)
+	for _, f := range []struct{ name, code string }{{"prelude.go", reasonPrelude}, {"sink.go", snippetHeader + src + "\n"}} {
+		file, err := parser.ParseFile(fset, f.name, f.code, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
+	}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
+		Uses: map[*ast.Ident]types.Object{}, Implicits: map[ast.Node]types.Object{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{}, Scopes: map[ast.Node]*types.Scope{},
+		Instances: map[*ast.Ident]types.Instance{}, FileVersions: map[*ast.File]string{},
+	}
+	pkg, err := (&types.Config{Importer: imp}).Check("controller", fset, files, info)
+	if err != nil {
+		t.Fatalf("snippet does not type-check: %v\n%s", err, src)
+	}
+	return checkReasons(fset, buildSSA(fset, pkg, files, info), files)
+}
+
+// TestCheckReasons_CatchesEverySink keeps the guard above from passing
 // vacuously: each sink and each path it traces is flagged when it carries a
 // literal, and the constant forms production uses are not.
-func TestCheckReasonLiterals_CatchesEverySink(t *testing.T) {
-	// planted is the literal (as source text) most cases plant at a sink.
+func TestCheckReasons_CatchesEverySink(t *testing.T) {
+	// planted is the string (quoted) most cases plant at a sink.
 	const planted = `"Oops"`
 	for _, tc := range []struct {
 		name, src string
-		// want is the literal the checker must report ("" for none).
+		// want is the quoted string a problem must name ("" for none).
 		want string
 	}{
 		{name: "Reason field", src: `func f() { _ = metav1.Condition{Reason: "Oops"} }`, want: planted},
+		{name: "unkeyed Condition", src: `func f() { _ = metav1.Condition{t, s, "Oops", m, 1} }`, want: planted},
 		{name: "conditionReason field", src: `func f() { _ = failureClass{conditionReason: "Oops"} }`, want: planted},
-		{name: "unkeyed failureClass", src: `var c = failureClass{metricOther, "Oops", false}`, want: planted},
+		{name: "unkeyed failureClass", src: `var cs = failureClass{metricOther, "Oops", false}`, want: planted},
 		{name: "setFeedCondition", src: `func f() { setFeedCondition(fs, t, s, "Oops", m, 1) }`, want: planted},
 		{name: "setCondition", src: `func f() { a.setCondition(t, s, "Oops", m) }`, want: planted},
 		{name: "warn", src: `func f() { a.warn("Oops", action, "f") }`, want: planted},
 		{name: "Eventf", src: `func f() { r.Eventf(g, nil, typ, "Oops", action, "f") }`, want: planted},
-		{name: "concatenated literal", src: `func f() { _ = metav1.Condition{Reason: reasonOther + "2"} }`, want: `"2"`},
+		{name: "concatenated constant", src: `func f() { _ = metav1.Condition{Reason: reasonOther + "2"} }`, want: `"Other2"`},
+		{name: "concatenated at run time", src: `func f() { _ = metav1.Condition{Reason: u + "Oops"} }`, want: planted},
 		{name: "Reason field assigned", src: `func f() { cond.Reason = "Oops" }`, want: planted},
 		{name: "conditionReason field assigned", src: `func f() { class.conditionReason = "Oops" }`, want: planted},
-		{name: "reason variable", src: `func f() { reason := "Oops"; _ = reason }`, want: planted},
-		{name: "reason var declaration", src: "func f() {\nvar eventReason = \"Oops\"\n_ = eventReason\n}", want: planted},
 		{name: "reason helper result", src: `func dominantReason() string { return "Oops" }`, want: planted},
-		{name: "a local constant used as a reason", src: "func f() {\nconst x = \"Oops\"\na.warn(x, action, \"f\")\n}", want: planted},
+		{name: "a local constant", src: "func f() {\nconst x = \"Oops\"\na.warn(x, action, \"f\")\n}", want: planted},
+		{name: "a constant's value spelled out", src: `func f() { a.warn("Other", action, "f") }`, want: `"Other"`},
+		{name: "through another package", src: `func f() { a.warn(ext.Upper("Oops"), action, "f") }`, want: planted},
 
 		// Indirect paths, through names that say nothing about reasons.
 		{name: "through a local variable", src: `func f() { x := "Oops"; a.warn(x, action, "f") }`, want: planted},
@@ -475,47 +655,73 @@ func f() { r, m := pair(); a.warn(r, action, m) }`, want: planted},
 func f() { a.warn(bad, action, "f") }`, want: planted},
 		{name: "through a parameter", src: `func h(r string) { a.warn(r, action, "f") }
 func f() { h("Oops") }`, want: planted},
-		{name: "through two parameters", src: `func h(r string) { g(r) }
-func g(r string) { a.warn(r, action, "f") }
+		{name: "through two parameters", src: `func h(r string) { k(r) }
+func k(r string) { a.warn(r, action, "f") }
 func f() { h("Oops") }`, want: planted},
 		{name: "through a method parameter", src: `func (a feedAttempt) h(x int, r string) { a.warn(r, action, "f") }
 func f() { a.h(1, "Oops") }`, want: planted},
-
 		{name: "an elided failureClass in a slice", src: "var cs = []failureClass{{metricOther, \"Oops\", false}}", want: planted},
 		{name: "an elided failureClass in a map", src: "var cs = map[string]failureClass{\"k\": {metricOther, \"Oops\", false}}", want: planted},
 		{name: "through a map value", src: `func f() { m := map[string]string{"k": "Oops"}; a.warn(m["k"], action, "f") }`, want: planted},
+		{name: "through a slice element", src: `func f() { xs := []string{reasonOther}; xs[0] = "Oops"; a.warn(xs[0], action, "f") }`, want: planted},
+
+		// The paths a syntactic trace missed.
+		{name: "through a closure's result", src: `func f() { pick := func() string { return "Oops" }; a.warn(pick(), action, "f") }`, want: planted},
+		{name: "through a closure's write", src: `func f() { x := reasonOther; set := func() { x = "Oops" }; set(); a.warn(x, action, "f") }`, want: planted},
+		{name: "through a package variable set in init", src: `var bad string
+func init() { bad = "Oops" }
+func f() { a.warn(bad, action, "f") }`, want: planted},
+		{name: "through a forwarded tuple", src: `func pair() (string, string) { return reasonOther, "Oops" }
+func fwd() (string, string) { return pair() }
+func f() { _, r := fwd(); a.warn(r, action, "f") }`, want: planted},
+		{name: "through a neutral field", src: `type holder struct{ v string }
+func f() { h := &holder{}; h.v = "Oops"; a.warn(h.v, action, "f") }`, want: planted},
+		{name: "through a tuple-initialized global", src: `func pair() (string, string) { return reasonOther, "Oops" }
+var x, chosen = pair()
+func f() { a.warn(chosen, action, "f") }`, want: planted},
+		{name: "through a method's result", src: `func (feedAttempt) pick() string { return "Oops" }
+func f() { a.warn(a.pick(), action, "f") }`, want: planted},
+		{name: "through an interface method", src: `type picker interface{ pick() string }
+type lit struct{}
+func (lit) pick() string { return "Oops" }
+func f(p picker) { a.warn(p.pick(), action, "f") }`, want: planted},
+		{name: "through a shadowed parameter", src: `func h(r string) { if c { r := "Oops"; a.warn(r, action, "f") } }
+func f() { h(reasonOther) }`, want: planted},
+		{name: "through a tuple assignment", src: `func pair() (string, string) { return reasonOther, "Oops" }
+func f() { var other, x string; other, x = pair(); a.warn(x, action, other) }`, want: planted},
+		{name: "through a named result", src: `func pick() (out string) { out = "Oops"; return }
+func f() { a.warn(pick(), action, "f") }`, want: planted},
+		{name: "through a pointer", src: `func set(p *string) { *p = "Oops" }
+func f() { x := reasonOther; set(&x); a.warn(x, action, "f") }`, want: planted},
 
 		// What production does, which must pass.
-		{name: "named constants", src: `func f() { reason := reasonReconciled; reason = reasonFeedErrors; _ = metav1.Condition{Reason: reason}; a.warn(reasonConfigError, action, "feed %s", u) }`},
+		{name: "named constants", src: `func f() { reason := reasonReconciled; if c { reason = reasonFeedErrors }; _ = metav1.Condition{Reason: reason}; a.warn(reasonConfigError, action, "feed %s", u) }`},
 		{name: "a helper's other result", src: `func pair() (string, string) { return reasonOther, "message" }
 func f() { r, m := pair(); a.warn(r, action, m) }`},
 		{name: "a parameter given constants", src: `func h(r string) { a.warn(r, action, "f") }
 func f() { h(reasonOther) }`},
-		{name: "a field read", src: `func f() { a.setCondition(t, s, class.conditionReason, err.Error()) }`},
-		{name: "empty zero value", src: `func f() { prevReason, prevMessage := "", ""; _, _ = prevReason, prevMessage }`},
+		{name: "a field given constants", src: `func f() { a.setCondition(t, s, class.conditionReason, err.Error()) }`},
+		{name: "empty zero value", src: `func f() { var r string; if c { r = reasonOther }; a.warn(r, action, "f") }`},
 		{name: "a message beside the reason", src: `func f() { msg := "message"; a.setCondition(t, s, reasonOther, msg) }`},
 		{name: "Reason field assigned a constant", src: `func f() { cond.Reason = reasonOther }`},
 		{name: "reason helper returning a constant", src: `func dominantReason() string { return reasonOther }`},
 		{name: "a map key and index", src: `func f() { m := map[string]string{"k": reasonOther}; a.warn(m["k"], action, "f") }`},
+		{name: "a helper's unrelated input", src: `func pick(key string) string { return reasonOther }
+func f() { a.warn(pick("key"), action, "f") }`},
 		{name: "elided failureClass constants", src: "var cs = []failureClass{{metricOther, reasonOther, false}}"},
-		{name: "reason constants declared", src: "const reasonOops = \"Oops\"\nfunc f() {\nconst reason = reasonOops\na.warn(reason, action, \"f\")\n}"},
+		{name: "a local constant naming a reason", src: "func f() {\nconst reason = reasonOops\na.warn(reason, action, \"f\")\n}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, "sink.go", "package controller\n"+tc.src+"\n", 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			problems := checkReasonLiterals(fset, []*ast.File{file})
+			problems := checkSnippet(t, tc.src)
 			if tc.want == "" {
 				if len(problems) > 0 {
 					t.Fatalf("flagged %v, want nothing for:\n%s", problems, tc.src)
 				}
 				return
 			}
-			// Each problem names its literal; the one the case plants must be
-			// among them, not just some other literal in the snippet.
-			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "literal "+tc.want+" ") }) {
+			// Each problem names its string; the one the case plants must be
+			// among them, not just some other string in the snippet.
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "string "+tc.want+" ") }) {
 				t.Fatalf("problems %v do not report %s for:\n%s", problems, tc.want, tc.src)
 			}
 		})
