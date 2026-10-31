@@ -78,7 +78,7 @@ type feedSync struct {
 	resumeAt int
 	// cappedAmbiguousLegacy says the catch-up was capped at
 	// defaultCatchUpLimit because fs is an ambiguous legacy status; set by
-	// begin, and logged by apply.
+	// begin, and logged by logLegacyCatchUpCap (legacy.go).
 	cappedAmbiguousLegacy bool
 	// skippedBacklog is how many existing entries the begin step skipped over, for a
 	// first sync with catchUpLimit 0 (see skipBacklog); 0 otherwise. apply
@@ -214,10 +214,7 @@ func (s *feedSync) apply(ctx context.Context, run feedRun, attempt feedAttempt) 
 	}
 
 	s.begin()
-	if s.cappedAmbiguousLegacy {
-		log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
-			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
-	}
+	s.logLegacyCatchUpCap(ctx, feed.RSSUrl)
 	if s.skippedBacklog > 0 {
 		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: s.skippedBacklog}, nil)
 	}
