@@ -16,7 +16,7 @@ limitations under the License.
 
 package controller
 
-import "github.com/maverickd650/rss2discord-operator/internal/rss"
+import "github.com/maverickd650-labs/rss2discord/internal/rss"
 
 // previouslyIdentified returns entry carrying the ID earlier releases picked for
 // it, and whether that is a different one (see rss.Entry.PreviousID).

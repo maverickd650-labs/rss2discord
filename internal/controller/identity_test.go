@@ -19,7 +19,7 @@ package controller
 import (
 	"testing"
 
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 func TestEntryIdentity_NormalizesTrackingParamsOnURLIdentity(t *testing.T) {

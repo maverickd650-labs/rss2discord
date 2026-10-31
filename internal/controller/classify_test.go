@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // http404Status is the HTTP status string for a 404 Not Found response,

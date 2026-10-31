@@ -19,7 +19,7 @@ package controller
 import (
 	"context"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"

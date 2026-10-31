@@ -24,7 +24,7 @@ const defaultTimeout = 15 * time.Second
 // userAgent identifies fetches as coming from this operator rather than Go's
 // default "Go-http-client/1.1", which several CDNs (Cloudflare, Reddit, ...)
 // block outright.
-const userAgent = "rss2discord-operator (+https://github.com/maverickd650/rss2discord-operator)"
+const userAgent = "rss2discord-operator (+https://github.com/maverickd650-labs/rss2discord)"
 
 // HTTPStatusError is returned by FetchEntries when a feed responds with a
 // non-2xx, non-304 status. Carrying the status code as a typed field (rather

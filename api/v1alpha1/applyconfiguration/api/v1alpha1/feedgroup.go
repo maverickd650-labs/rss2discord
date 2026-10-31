@@ -18,8 +18,8 @@ limitations under the License.
 package v1alpha1
 
 import (
-	apiv1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	internal "github.com/maverickd650/rss2discord-operator/api/v1alpha1/applyconfiguration/internal"
+	apiv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	internal "github.com/maverickd650-labs/rss2discord/api/v1alpha1/applyconfiguration/internal"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	managedfields "k8s.io/apimachinery/pkg/util/managedfields"

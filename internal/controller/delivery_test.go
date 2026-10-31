@@ -23,9 +23,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // deliveryEntry is an entry that renders under the plain "{{.Title}}" format;

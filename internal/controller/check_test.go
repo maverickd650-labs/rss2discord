@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // The scheduler counts a retrying feed as failing; the Ready condition and the

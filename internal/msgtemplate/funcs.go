@@ -21,7 +21,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
 
 // maxTemplateReplaceBytes bounds each replace result before allocating it,

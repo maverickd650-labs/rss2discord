@@ -1,11 +1,11 @@
 # rss2discord-operator
 
-[![codecov](https://codecov.io/gh/maverickd650/rss2discord-operator/graph/badge.svg)](https://codecov.io/gh/maverickd650/rss2discord-operator)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/maverickd650/rss2discord-operator/badge)](https://scorecard.dev/viewer/?uri=github.com/maverickd650/rss2discord-operator)
-[![Tests](https://github.com/maverickd650/rss2discord-operator/actions/workflows/test.yml/badge.svg)](https://github.com/maverickd650/rss2discord-operator/actions/workflows/test.yml)
-[![Lint](https://github.com/maverickd650/rss2discord-operator/actions/workflows/lint.yml/badge.svg)](https://github.com/maverickd650/rss2discord-operator/actions/workflows/lint.yml)
-[![Latest release](https://img.shields.io/github/v/release/maverickd650/rss2discord-operator)](https://github.com/maverickd650/rss2discord-operator/releases)
-[![License](https://img.shields.io/github/license/maverickd650/rss2discord-operator)](LICENSE)
+[![codecov](https://codecov.io/gh/maverickd650-labs/rss2discord/graph/badge.svg)](https://codecov.io/gh/maverickd650-labs/rss2discord)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/maverickd650-labs/rss2discord/badge)](https://scorecard.dev/viewer/?uri=github.com/maverickd650-labs/rss2discord)
+[![Tests](https://github.com/maverickd650-labs/rss2discord/actions/workflows/test.yml/badge.svg)](https://github.com/maverickd650-labs/rss2discord/actions/workflows/test.yml)
+[![Lint](https://github.com/maverickd650-labs/rss2discord/actions/workflows/lint.yml/badge.svg)](https://github.com/maverickd650-labs/rss2discord/actions/workflows/lint.yml)
+[![Latest release](https://img.shields.io/github/v/release/maverickd650-labs/rss2discord)](https://github.com/maverickd650-labs/rss2discord/releases)
+[![License](https://img.shields.io/github/license/maverickd650-labs/rss2discord)](LICENSE)
 
 A Kubernetes operator that watches RSS feeds and posts new entries to Discord via webhooks. Feeds are configured declaratively with a `FeedGroup` custom resource.
 
@@ -274,7 +274,7 @@ Located in `dist/chart/`. Key values in `dist/chart/values.yaml`:
 ```yaml
 manager:
   image:
-    repository: ghcr.io/maverickd650/rss2discord-operator
+    repository: ghcr.io/maverickd650-labs/rss2discord
     # tag: ""   # defaults to the chart's appVersion
   # maxConcurrentReconciles: 1   # --max-concurrent-feedgroup-reconciles
   # otlpEndpoint: ""             # --otlp-endpoint (tracing off when empty)

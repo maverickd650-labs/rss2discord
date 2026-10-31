@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // Whole-scenario checks of the group schedule: which feeds a reconcile
