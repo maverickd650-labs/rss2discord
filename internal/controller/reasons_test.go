@@ -89,7 +89,7 @@ type reasonFlow struct {
 
 // checkReasons runs reasonFlow and checkReasonSpelling over pkg, whose syntax
 // is files, and returns their findings, sorted.
-func checkReasons(fset *token.FileSet, pkg *ssa.Package, files []*ast.File) []string {
+func checkReasons(fset *token.FileSet, pkg *ssa.Package, info *types.Info, files []*ast.File) []string {
 	f := &reasonFlow{
 		fset: fset, named: map[string]bool{},
 		globalWrites: map[*ssa.Global][]ssa.Value{}, fieldWrites: map[*types.Var][]ssa.Value{},
@@ -106,7 +106,7 @@ func checkReasons(fset *token.FileSet, pkg *ssa.Package, files []*ast.File) []st
 	}
 	f.index(pkg)
 	f.checkSinks()
-	checkReasonSpelling(fset, files, f.reached, f.problems)
+	checkReasonSpelling(fset, files, info, f.reached, f.problems)
 	return slices.Sorted(func(yield func(string) bool) {
 		for p := range f.problems {
 			if !yield(p) {
@@ -513,7 +513,9 @@ func receiverShift(common *ssa.CallCommon, callee *ssa.Function) int {
 
 // checkConst records a string constant that reaches a sink: the empty zero
 // value passes, a named constant's value is noted for checkReasonSpelling,
-// and anything else is a problem.
+// and anything else is a problem. SSA folds concatenations such as
+// "Recon" + "ciled" into the same constant value, so the syntax-level
+// spelling check must verify that a canonical value came from its named const.
 func (f *reasonFlow) checkConst(c *ssa.Const) {
 	if c.Value == nil || c.Value.Kind() != constant.String {
 		return
@@ -528,10 +530,44 @@ func (f *reasonFlow) checkConst(c *ssa.Const) {
 	}
 }
 
+// stringConstant returns the value of expr when Go's type checker knows it
+// is a constant string expression.
+func stringConstant(info *types.Info, expr ast.Expr) (string, bool) {
+	if info == nil {
+		return "", false
+	}
+	value, ok := info.Types[expr]
+	if !ok || value.Value == nil || value.Value.Kind() != constant.String {
+		return "", false
+	}
+	return constant.StringVal(value.Value), true
+}
+
+// containsNonEmptyStringLiteral reports whether expr contains a non-empty
+// string literal. Empty strings appended to a named reason constant do not
+// turn that named value into a split literal spelling.
+func containsNonEmptyStringLiteral(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return !found
+		}
+		value, err := strconv.Unquote(lit.Value)
+		if err == nil && value != "" {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
+}
+
 // checkReasonSpelling reports a reason spelling outside its one canonical
-// const declaration. A reason value may be declared only once, and only in
-// the designated reason files.
-func checkReasonSpelling(fset *token.FileSet, files []*ast.File, reasons, problems map[string]bool) {
+// const declaration. It evaluates typed constant expressions as well as
+// individual literals, so concatenated fragments cannot spell a reason
+// without using its named constant.
+func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Info, reasons, problems map[string]bool) {
 	type spelling struct {
 		pos       token.Pos
 		canonical bool
@@ -540,46 +576,60 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, reasons, proble
 	constSpellings := map[string][]spelling{}
 	for _, file := range files {
 		filename := filepath.Base(fset.Position(file.Pos()).Filename)
+		packageConsts := map[*ast.GenDecl]bool{}
+		for _, decl := range file.Decls {
+			if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
+				packageConsts[gen] = true
+			}
+		}
+
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch n := n.(type) {
-			case *ast.GenDecl:
+		case *ast.GenDecl:
 				if n.Tok == token.CONST {
-					// Do not exempt every const declaration: only the canonical
-					// reason files may introduce a reason spelling, and each value
-					// must be spelled there exactly once.
+					// Count each declared constant by its evaluated value. This also
+					// catches aliases and split-literal initialisers, even when the
+					// reason spelling does not appear as one BasicLit.
 					for _, spec := range n.Specs {
 						values, ok := spec.(*ast.ValueSpec)
 						if !ok {
 							continue
 						}
-						for _, value := range values.Values {
-							ast.Inspect(value, func(n ast.Node) bool {
-								lit, ok := n.(*ast.BasicLit)
-								if !ok || lit.Kind != token.STRING {
-									return true
+						for _, name := range values.Names {
+							declared, ok := info.Defs[name].(*types.Const)
+							if !ok || declared.Val().Kind() != constant.String {
+								continue
+							}
+							s := constant.StringVal(declared.Val())
+								if !reasons[s] {
+									continue
 								}
-								s, err := strconv.Unquote(lit.Value)
-								if err != nil || !reasons[s] {
-									return true
-								}
-
-								canonical := reasonFiles[filename]
-								constSpellings[s] = append(constSpellings[s], spelling{
-									pos: lit.Pos(), canonical: canonical,
-								})
-								if !canonical {
-									problems[fmt.Sprintf("%s: string %s duplicates a reason spelling outside its canonical const", fset.Position(lit.Pos()), lit.Value)] = true
-								}
-								return true
+							canonical := packageConsts[n] && reasonFiles[filename]
+							constSpellings[s] = append(constSpellings[s], spelling{
+								pos: name.Pos(), canonical: canonical,
 							})
+							if !canonical {
+								problems[fmt.Sprintf("%s: constant %s duplicates a reason value outside its canonical declaration", fset.Position(name.Pos()), name.Name)] = true
+							}
 						}
 					}
 					return false
 				}
 				return n.Tok != token.IMPORT
 			case *ast.BasicLit:
-				if s, err := strconv.Unquote(n.Value); n.Kind == token.STRING && err == nil && reasons[s] {
+				if s, ok := stringConstant(info, n); ok && reasons[s] {
 					problems[fmt.Sprintf("%s: string %s spells a reason; use its constant", fset.Position(n.Pos()), n.Value)] = true
+				}
+			case ast.Expr:
+				// A direct identifier may be the approved named constant. Other
+				// expressions that fold to a reason and contain literal fragments
+				// must not bypass the check.
+				if _, isIdent := n.(*ast.Ident); isIdent {
+					return true
+				}
+				if s, ok := stringConstant(info, n); ok && reasons[s] && containsNonEmptyStringLiteral(n) {
+					problems[fmt.Sprintf("%s: constant expression spells reason %s; use its named constant", fset.Position(n.Pos()), strconv.Quote(s))] = true
+					return false
 				}
 			}
 			return true
@@ -593,7 +643,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, reasons, proble
 				continue
 			}
 			if canonicalSeen {
-				problems[fmt.Sprintf("%s: string %s duplicates a reason spelling; keep it in one canonical const", fset.Position(spelling.pos), strconv.Quote(reason))] = true
+				problems[fmt.Sprintf("%s: constant value %s duplicates a reason spelling; keep it in one canonical const", fset.Position(spelling.pos), strconv.Quote(reason))] = true
 				continue
 			}
 			canonicalSeen = true
@@ -632,9 +682,16 @@ const (
 	if err != nil {
 		t.Fatal(err)
 	}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{},
+		Defs:  map[*ast.Ident]types.Object{},
+	}
+	if _, err := (&types.Config{}).Check("controller", fset, []*ast.File{file}, info); err != nil {
+		t.Fatal(err)
+	}
 
 	problems := map[string]bool{}
-	checkReasonSpelling(fset, []*ast.File{file}, map[string]bool{"Reconciled": true}, problems)
+	checkReasonSpelling(fset, []*ast.File{file}, info, map[string]bool{"Reconciled": true}, problems)
 	if len(problems) == 0 {
 		t.Fatal("duplicate reason spelling was not reported")
 	}
@@ -654,7 +711,7 @@ func TestProductionReasonsAreNamedConstants(t *testing.T) {
 		t.Fatalf("loading the package: %v", pkgs)
 	}
 	p := pkgs[0]
-	if problems := checkReasons(p.Fset, buildSSA(p.Fset, p.Types, p.Syntax, p.TypesInfo), p.Syntax); len(problems) > 0 {
+	if problems := checkReasons(p.Fset, buildSSA(p.Fset, p.Types, p.Syntax, p.TypesInfo), p.TypesInfo, p.Syntax); len(problems) > 0 {
 		t.Fatalf("condition/Event reasons must be named constants (conditions.go, classify.go):\n%s",
 			strings.Join(problems, "\n"))
 	}
@@ -685,7 +742,7 @@ type recorder interface {
 
 const (
 	reasonOther       = "Other"
-	reasonReconciled  = "Reconciled"
+	reasonReconciled  = "Recon" + "ciled"
 	reasonFeedErrors  = "FeedErrors"
 	reasonConfigError = "ConfigError"
 	reasonOops        = "Oops2"
@@ -757,7 +814,7 @@ func checkSnippet(t *testing.T, src string) []string {
 	if err != nil {
 		t.Fatalf("snippet does not type-check: %v\n%s", err, src)
 	}
-	return checkReasons(fset, buildSSA(fset, pkg, files, info), files)
+	return checkReasons(fset, buildSSA(fset, pkg, files, info), info, files)
 }
 
 // TestCheckReasons_CatchesEverySink keeps the guard above from passing
@@ -786,6 +843,9 @@ func TestCheckReasons_CatchesEverySink(t *testing.T) {
 		{name: "reason helper result", src: `func dominantReason() string { return "Oops" }`, want: planted},
 		{name: "a local constant", src: "func f() {\nconst x = \"Oops\"\na.warn(x, action, \"f\")\n}", want: planted},
 		{name: "a constant's value spelled out", src: `func f() { a.warn("Other", action, "f") }`, want: `"Other"`},
+		{name: "split canonical reason spelling", src: `func f() { a.warn("Recon" + "ciled", action, "f") }`, want: `"Reconciled"`},
+		{name: "split canonical reason constant outside declaration", src: `const splitReason = "Recon" + "ciled"
+func f() { a.warn(splitReason, action, "f") }`, want: `"Reconciled"`},
 		{name: "through another package", src: `func f() { a.warn(ext.Upper("Oops"), action, "f") }`, want: planted},
 
 		// Indirect paths, through names that say nothing about reasons.
