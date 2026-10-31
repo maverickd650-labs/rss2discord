@@ -55,15 +55,14 @@ func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
 // how entries, sorted oldest-to-newest, are identified now. It runs the two
 // migrations in order -- first legacy's stateVersion 0 translation (a no-op for
 // a current status; see migrateLegacyIdentities for replayLimit), then the move
-// off PreviousID identities (migratePreviousIdentities) -- over one
-// strippedOwnership of the fetch, so neither writes a stripped LastSent key a
+// off PreviousID identities (migratePreviousIdentities) -- through the one
+// deliveryLedger of the fetch, so neither writes a stripped LastSent key a
 // sibling entry shares. The legacy pass has to go first: it reads the previous
 // ID as the legacy identity and writes under the current one, which is where
 // the second pass then finds it. Both are idempotent and run on every fetch.
-func migrateIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, legacy *legacyState, replayLimit int) {
-	owners := newStrippedOwnership(entries)
-	legacy.migrate(fs, entries, replayLimit, owners)
-	migratePreviousIdentities(fs, entries, owners)
+func migrateIdentities(ledger *deliveryLedger, legacy *legacyState, replayLimit int) {
+	legacy.migrate(ledger, replayLimit)
+	migratePreviousIdentities(ledger)
 }
 
 // migratePreviousIdentities carries a feed's stored identities over for the
@@ -78,7 +77,8 @@ func migrateIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, legacy *leg
 // that is another entry's current identity, is left alone, as is a move onto an
 // identity more than one entry now has: it can't be told which entry the stored
 // value stands for.
-func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, owners strippedOwnership) {
+func migratePreviousIdentities(ledger *deliveryLedger) {
+	entries := ledger.entries
 	type move struct{ previous, current rss.Entry }
 	var moves []move
 	shared := make(map[string]int)
@@ -96,10 +96,8 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, own
 		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
 			continue
 		}
-		if fs.LastSeenEntry == clampWatermark(old) {
-			fs.LastSeenEntry = clampWatermark(now)
-		}
-		rekeySent(fs.LastSent, m.previous, m.current, owners)
+		ledger.moveWatermark(old, now)
+		ledger.rekeySent(m.previous, m.current)
 	}
 }
 
@@ -149,14 +147,14 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 	}
 }
 
-// migrate translates fs's legacy identities using entries, sorted
-// oldest-to-newest; see migrateLegacyIdentities for replayLimit. It is a
+// migrate translates the legacy identities in the ledger's status using its
+// entries, sorted oldest-to-newest; see migrateLegacyIdentities for replayLimit. It is a
 // no-op for a current status.
-func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry, replayLimit int, owners strippedOwnership) {
+func (s *legacyState) migrate(ledger *deliveryLedger, replayLimit int) {
 	if !s.legacy {
 		return
 	}
-	migrateLegacyIdentities(fs, entries, s.emptyWatermark, replayLimit, owners)
+	migrateLegacyIdentities(ledger, s.emptyWatermark, replayLimit)
 	s.migrated = true
 }
 
@@ -168,8 +166,8 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 }
 
 // migrateLegacyIdentities rewrites a stateVersion 0 watermark and dedup keys
-// into the current identity scheme, using entries (sorted oldest-to-newest)
-// to recover which entry each legacy value stood for. For an unshared legacy
+// into the current identity scheme, using the ledger's entries (sorted
+// oldest-to-newest) to recover which entry each legacy value stood for. For an unshared legacy
 // identity, changed dedup keys retain their recorded send time.
 //
 // A legacy identity can stand for several entries in entries (links that
@@ -188,7 +186,8 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 // legacy empty identity rather than no watermark at all. Legacy values that
 // match no entry are left as they are: a watermark that matches nothing
 // falls back to the catch-up cap either way.
-func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool, replayLimit int, owners strippedOwnership) {
+func migrateLegacyIdentities(ledger *deliveryLedger, emptyWatermark bool, replayLimit int) {
+	entries := ledger.entries
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
@@ -198,10 +197,9 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 	}
 
 	watermark := -1
-	if fs.LastSeenEntry != "" || emptyWatermark {
+	if ledger.fs.LastSeenEntry != "" || emptyWatermark {
 		for i := range entries {
-			if clampWatermark(legacy[i]) == fs.LastSeenEntry {
-				fs.LastSeenEntry = clampWatermark(current[i])
+			if ledger.moveWatermark(legacy[i], current[i]) {
 				watermark = i
 				break
 			}
@@ -221,7 +219,7 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 		if current[i] == legacy[i] {
 			continue
 		}
-		sentAt, ok := sentTime(fs.LastSent, legacy[i])
+		sentAt, ok := ledger.sentAt(legacy[i])
 		if !ok {
 			continue
 		}
@@ -230,9 +228,9 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			// deliveryLedger.markHandled, record it only when it is this
 			// entry's own and unique in the fetch, or a sibling sharing it
 			// would later be taken as sent.
-			setSent(fs.LastSent, current[i], owners.ownStripped(entries[i], legacy[i]), sentAt)
+			ledger.setSent(current[i], ledger.ownStripped(entries[i], legacy[i]), sentAt)
 		}
-		forgetSent(fs.LastSent, legacy[i])
+		ledger.forgetSent(legacy[i])
 	}
 
 	// With no watermark found, limitCatchUp already caps the whole fetch.
@@ -240,7 +238,7 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 		return
 	}
 	sent := func(i int) bool {
-		return identitySent(fs.LastSent, current[i])
+		return ledger.sentIdentity(current[i])
 	}
 	replay := 0
 	for i := watermark + 1; i < len(entries); i++ {
@@ -266,6 +264,6 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 		moved = i
 	}
 	if moved > watermark {
-		fs.LastSeenEntry = clampWatermark(current[moved])
+		ledger.setWatermark(current[moved])
 	}
 }

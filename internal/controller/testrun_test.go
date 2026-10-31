@@ -18,6 +18,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -36,7 +37,8 @@ func testRun(t testing.TB, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, resul
 		fetched: fetchOutcome{result: result, err: fetchErr},
 		sender:  sender,
 		cadence: cadenceOf(&fg.Spec),
-		now:     testReconcileTime,
+		now:     testReconcileInstant,
+		clock:   func() time.Time { return testReconcileInstant },
 	}
 }
 
@@ -45,13 +47,22 @@ func (run feedRun) withRecorder(recorder events.EventRecorder) feedRun {
 	return run
 }
 
-func (run feedRun) withNow(now string) feedRun {
+// withNow pins both the run's time and its clock to now.
+func (run feedRun) withNow(now time.Time) feedRun {
 	run.now = now
+	run.clock = func() time.Time { return now }
+	return run
+}
+
+// withClock sets the run's clock alone, for a test in which the outcome is
+// recorded later than the reconcile started.
+func (run feedRun) withClock(clock func() time.Time) feedRun {
+	run.clock = clock
 	return run
 }
 
 // testAttempt is the feedAttempt for fg's feed at url, with no Event recorder.
-func testAttempt(t testing.TB, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url, now string) feedAttempt {
+func testAttempt(t testing.TB, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url string, now time.Time) feedAttempt {
 	return testRun(t, fg, v1alpha1.FeedSpec{RSSUrl: url}, rss.FetchResult{}, nil, nil).withNow(now).newAttempt(fs)
 }
 

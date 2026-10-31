@@ -6,8 +6,8 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The application of one fetch of one feed to that feed's `FeedStatus`. It is opened
   with `openFeedSync`, begun with `begin` once the feed's filter and templates are known to
   compile, and closed exactly once with a `syncVerdict`. It owns the order in which a
-  fetch is applied (title stamping, sort, identity migrations, delivery ledger over the
-  untrimmed fetch, watermark lookup, delivery plan, catch-up limit, backlog skip) and is
+  fetch is applied (title stamping, sort, delivery ledger over the untrimmed fetch,
+  identity migrations, watermark lookup, delivery plan, catch-up limit, backlog skip) and is
   the only place that settles the status. It hands the send loop the entries to consider
   (`entries`) and two ledger operations (`sent`, `markHandled`).
 
@@ -31,14 +31,17 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   instead (`BacklogSkipped`): the newest entry becomes the watermark and nothing is sent.
 
 **Delivery ledger** (`deliveryLedger`, `ledger.go`)
-: A feed's delivery bookkeeping over one fetch: the `LastSeenEntry` watermark and the
-  `LastSent` dedup keys, plus the stripped-identity counts they depend on. The counts are
-  taken once, over the whole untrimmed fetch, so an entry's stripped identity is only
-  unique if it is across the feed, however the entries are later trimmed. It alone owns
-  the `LastSent` key scheme -- an entry's own key (`computeEntryKey`) plus, when its
-  stripped link identity is unique in the fetch, the stripped key (`strippedKey`) -- and
-  the identity migrations (`identity_migration.go`) re-key through its helpers
-  (`rekeySent`, `setSent`, `forgetSent`) rather than building keys themselves.
+: A feed's delivery bookkeeping over one fetch, and the single identity index of it: the
+  `LastSeenEntry` watermark and the `LastSent` dedup keys, the whole sorted fetch, and the
+  stripped-identity counts they depend on. `feedSync.begin` builds it once per fetch, after the
+  sort and before the identity migrations (which change only the status, so the counts are the
+  same on either side), over the whole untrimmed fetch, so an entry's stripped identity is only
+  unique if it is across the feed, however the entries are later trimmed. It alone writes the
+  watermark and `LastSent` (apart from status normalization and pruning) and owns the key scheme
+  -- an entry's own key (`computeEntryKey`) plus, when its stripped link identity is unique in
+  the fetch, the stripped key (`strippedKey`). The migrations go through its methods
+  (`moveWatermark`, `setWatermark`, `setSent`, `forgetSent`, `rekeySent`) rather than building
+  keys or clamping watermarks themselves.
 
 **Identity migration** (`migrateIdentities`, `identity_migration.go`)
 : Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
@@ -46,8 +49,8 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, only for a
   status written before `stateVersion` 1) and the previous-identity pass
   (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
-  Both write through the ledger's helpers and ask one `strippedOwnership` (`ledger.go`, built
-  once per fetch) before writing a stripped key: `ownStripped` (is this stripped identity the
+  Both take the fetch's delivery ledger, read its entries, and write only through it. Before
+  writing a stripped key they ask the ledger's `ownStripped` (is this stripped identity the
   entry's own and unique in the fetch?) and `ownsPrevious` (can an old stripped key only have
   been this one moved entry's?). A stripped key a sibling shares is never recorded, or the
   sibling, alone under it later, would be taken as sent.
@@ -56,7 +59,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The identity of the last entry handled; a later scan resumes just past it.
 
 **Watermark lookup** (`watermarkLookup`, `deliveryLedger.resume`, `ledger.go`)
-: Where a feed's watermark stands against one fetch, as one value: `watermarkNone` (no
+: Where a feed's watermark stands against the ledger's fetch, as one value: `watermarkNone` (no
   watermark stored), `watermarkFound` (it stands for the entry at `index`, matched by
   identity or by unique stripped identity) or `watermarkLost` (stored, but no entry of the
   fetch it stands for). `planDelivery` decides from it: found resumes past the entry; lost
@@ -87,13 +90,15 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 **Feed run** (`feedRun`, `feedgroup_controller.go`)
 : Everything one feed's handling in one reconcile needs, as one value: the group, the feed's
   spec, its `fetchOutcome`, the `MessageSender`, the group's `cadence`, the Event recorder (nil
-  drops Events) and the reconcile's timestamp. `newAttempt` opens the `feedAttempt` from it.
+  drops Events), the reconcile's timestamp (for `LastChecked` and handled entries) and a clock read when an outcome is recorded (the permanent-failure backoff deadline and the success gauge; nil is `time.Now`). `newAttempt` opens the `feedAttempt` from it.
 
 **Feed attempt** (`feedAttempt`, `attempt.go`)
 : The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
   an entry failing to render, failing to send, being rate limited, sent or skipped, a
   skipped backlog, a config error -- each applied through the single entry point
-  `record(outcome, failureClass, err)`. It owns the outcome metric label, the `Reachable` /
+  `record(outcome, err)`, which classifies the error itself (a fetch failure by
+  `classifyFetchError`, a send failure by `classifySendError`, a `*discord.RateLimitError`
+  becoming the rate-limited outcome), so callers only report what went wrong. It owns the outcome metric label, the `Reachable` /
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision.
 

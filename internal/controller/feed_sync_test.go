@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -32,8 +33,10 @@ import (
 // test, which marks entries handled (a send that worked) or closes with
 // syncPending (one that did not).
 
+// syncTestNow is the time every test sync runs at.
+var syncTestNow = time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+
 const (
-	syncTestNow      = "2026-02-03T04:05:06Z"
 	syncTestModified = "Thu, 01 Jan 2026 00:00:00 GMT"
 	syncTestOldMod   = "Wed, 31 Dec 2025 00:00:00 GMT"
 	// syncTestTitle is the feed title of every fetch; syncTestLegacyChecked is

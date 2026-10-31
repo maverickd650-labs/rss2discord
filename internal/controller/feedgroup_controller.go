@@ -190,7 +190,7 @@ func reconcilePass(
 
 	run := feedRun{
 		group: feedGroup, sender: sender, cadence: cad, recorder: recorder,
-		now: now.Format(time.RFC3339),
+		now: now,
 	}
 	var verdict attemptVerdict
 	for i, feed := range activeFeeds {
@@ -223,8 +223,15 @@ type feedRun struct {
 	cadence cadence
 	// recorder receives the Warning Events; nil drops them.
 	recorder events.EventRecorder
-	// now is the RFC3339 status timestamp of the reconcile.
-	now string
+	// now is the reconcile's clock reading; status timestamps are formatted
+	// from it where they are written.
+	now time.Time
+	// clock reads the time a failure or success is recorded at, for the
+	// permanent-failure backoff deadline and the success gauge: those must
+	// count from when the attempt happened, not from the reconcile's start, or
+	// a slow fetch or a rate-limit wait would eat into the backoff. nil is
+	// time.Now; tests pin it (withNow) so their assertions are exact.
+	clock func() time.Time
 }
 
 // processFeed handles a completed fetch for a single feed: it records the
@@ -257,7 +264,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 		// *successful* check, so a feed stuck failing shows an aging
 		// LastChecked rather than looking freshly checked every retry.
 		log.Error(fetchErr, "failed to fetch RSS feed", "url", feed.RSSUrl)
-		return attempt.record(attemptOutcome{kind: attemptFetchFailed}, classifyFetchError(fetchErr), fetchErr)
+		return attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchErr)
 	}
 
 	// A 304 is just as much a successful check as one that found something to
@@ -266,7 +273,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	// else changed (settleGroup diffs on the whole status), so a
 	// quiet feed now costs one status write per poll interval instead of
 	// zero.
-	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, noClass, nil)
+	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, nil)
 
 	if v, done := syncer.withoutEntries(); done {
 		settlement = v
@@ -280,7 +287,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	if err != nil {
 		settlement = syncConfigError
 		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
-		return attempt.record(attemptOutcome{kind: attemptConfigError}, noClass, err)
+		return attempt.record(attemptOutcome{kind: attemptConfigError}, err)
 	}
 
 	syncer.begin()
@@ -289,7 +296,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
 	}
 	if syncer.skippedBacklog > 0 {
-		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, noClass, nil)
+		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, nil)
 	}
 
 	verdict := entryDelivery{

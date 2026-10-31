@@ -36,15 +36,17 @@ type attemptKind int
 const (
 	// attemptFetchSucceeded: the feed was fetched (or a 304 confirmed it).
 	attemptFetchSucceeded attemptKind = iota + 1
-	// attemptFetchFailed: the fetch failed; the failureClass says how.
+	// attemptFetchFailed: the fetch failed; classifyFetchError says how.
 	attemptFetchFailed
 	// attemptRenderFailed: an entry's message could not be rendered.
 	attemptRenderFailed
-	// attemptSendFailed: Discord refused or never received a message; the
-	// failureClass says how.
+	// attemptSendFailed: Discord refused or never received a message;
+	// classifySendError says how. A *discord.RateLimitError is recorded as
+	// attemptRateLimited instead.
 	attemptSendFailed
 	// attemptRateLimited: Discord rate limited the webhook (a
-	// *discord.RateLimitError), which spends no retry.
+	// *discord.RateLimitError), which spends no retry. Callers report such a
+	// send as attemptSendFailed; record resolves it.
 	attemptRateLimited
 	// attemptSent: an entry was delivered.
 	attemptSent
@@ -70,9 +72,6 @@ type attemptOutcome struct {
 	count int
 }
 
-// noClass is the failureClass of an outcome that has none.
-var noClass = failureClass{}
-
 // metricLabel is the outcome label the outcome increments
 // feedOperationsTotal with, or "" for an outcome that isn't counted. At most
 // one label per outcome; fetch_error and send_error are only ever recorded
@@ -95,14 +94,26 @@ func (o attemptOutcome) metricLabel(class failureClass) string {
 	return ""
 }
 
-// sendFailureOutcome says which outcome a failed SendMessage is: a rate limit
-// (which the webhook's Retry-After drives, not the retry count) or a classified
-// send failure.
-func sendFailureOutcome(err error) (attemptOutcome, failureClass) {
-	if _, ok := errors.AsType[*discord.RateLimitError](err); ok {
-		return attemptOutcome{kind: attemptRateLimited}, classRateLimited
+// resolve settles what a reported failure is, from its kind and err alone, so
+// callers only say what went wrong, never how it classifies. A fetch failure is
+// classified by classifyFetchError; a send failure is a rate limit (which the
+// webhook's Retry-After drives, not the retry count) when err holds a
+// *discord.RateLimitError, and otherwise a send failure classified by
+// classifySendError. A render failure carries a class of its own and never
+// backs off; every other kind has none.
+func (o attemptOutcome) resolve(err error) (attemptOutcome, failureClass) {
+	switch o.kind {
+	case attemptFetchFailed:
+		return o, classifyFetchError(err)
+	case attemptSendFailed:
+		if _, ok := errors.AsType[*discord.RateLimitError](err); ok {
+			return attemptOutcome{kind: attemptRateLimited}, classRateLimited
+		}
+		return o, classifySendError(err)
+	case attemptRenderFailed:
+		return o, failureClass{conditionReason: reasonRenderError}
 	}
-	return attemptOutcome{kind: attemptSendFailed}, classifySendError(err)
+	return o, failureClass{}
 }
 
 // attemptVerdict is what recording an outcome means for the rest of the
@@ -147,18 +158,30 @@ type feedAttempt struct {
 	group *v1alpha1.FeedGroup
 	fs    *v1alpha1.FeedStatus
 	url   string
-	// now is the RFC3339 timestamp of the reconcile, for LastChecked.
-	now string
+	// now is the reconcile's clock reading, for LastChecked.
+	now time.Time
+	// clock is the run's clock (feedRun.clock): the success gauge and the
+	// backoff deadline read it when the outcome is recorded. nil is time.Now.
+	clock func() time.Time
 	// cadence is the group's retry limit and backoff base.
 	cadence cadence
 	// recorder receives the attempt's Warning Events; nil drops them.
 	recorder events.EventRecorder
 }
 
+// recordedAt is when the attempt's outcome is being recorded: the run's clock,
+// or the wall clock when it has none.
+func (a feedAttempt) recordedAt() time.Time {
+	if a.clock == nil {
+		return time.Now()
+	}
+	return a.clock()
+}
+
 // newAttempt opens the attempt for the run's feed, whose status is fs.
 func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 	return feedAttempt{
-		group: run.group, fs: fs, url: run.feed.RSSUrl, now: run.now,
+		group: run.group, fs: fs, url: run.feed.RSSUrl, now: run.now, clock: run.clock,
 		cadence: run.cadence, recorder: run.recorder,
 	}
 }
@@ -166,9 +189,10 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 // record applies one outcome to the feed's status and says what the reconcile
 // should do next.
 //
-// class is only read for the failures it classifies (attemptFetchFailed and
-// attemptSendFailed); err is the failure itself, or the cause of a skip or
-// config error. The effects, per kind:
+// err is the failure itself, or the cause of a skip or config error; record
+// classifies it (see resolve), so a send failure is reported as
+// attemptSendFailed and becomes attemptRateLimited when Discord limited the
+// webhook. The effects, per kind:
 //
 //   - attemptFetchSucceeded: LastChecked, the success gauge, Reachable True.
 //   - attemptFetchFailed / attemptSendFailed: LastError, RetryCount++, the
@@ -192,15 +216,16 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 // RetryInterval. A transient one asks for a retry while RetryCount is below the
 // limit; at the reconcile RetryCount first equals it (== rather than >=, so an
 // ongoing failure doesn't re-fire) one Warning Event announces the exhaustion.
-func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) attemptVerdict {
+func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
+	o, class := o.resolve(err)
 	if label := o.metricLabel(class); label != "" {
 		metricsFor(a.group).operation(a.url, label)
 	}
 
 	switch o.kind {
 	case attemptFetchSucceeded:
-		a.fs.LastChecked = a.now
-		metricsFor(a.group).checkSucceeded(time.Now())
+		a.fs.LastChecked = a.now.Format(time.RFC3339)
+		metricsFor(a.group).checkSucceeded(a.recordedAt())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
 			reasonFetchSucceeded, "Feed fetched successfully")
 		return attemptVerdict{}
@@ -209,8 +234,7 @@ func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) att
 		return a.failed(v1alpha1.FeedConditionTypeReachable, class, eventReasonFetchFailed, err)
 
 	case attemptRenderFailed:
-		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered,
-			failureClass{conditionReason: reasonRenderError}, eventReasonRenderFailed, err)
+		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered, class, eventReasonRenderFailed, err)
 		verdict.pending = true
 		return verdict
 
@@ -319,7 +343,7 @@ func (a feedAttempt) pastRetryLimit() bool {
 // keeps being retried, waiting at most the cap between attempts (or longer if
 // the group's Interval is longer).
 func (a feedAttempt) backOff(reason string, err error) {
-	if backoffOf(a.fs).extend(a.cadence.retry, time.Now().UTC()) {
+	if backoffOf(a.fs).extend(a.cadence.retry, a.recordedAt().UTC()) {
 		a.warn(reason, eventActionBackoffCapped, "feed %s: still failing permanently, backoff now capped at %s: %v",
 			a.url, maxPermanentBackoff, err)
 	}
