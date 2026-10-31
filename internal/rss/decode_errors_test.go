@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const msgWantSyntaxError = "expected *xml.SyntaxError, got %T: %v"
+
 // The bounded unmarshalers hand each matching element to DecodeElement and
 // must surface its error instead of retaining a half-decoded value. A
 // mismatched end tag inside the element is a syntax error the decoder reports
@@ -20,7 +22,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 			Links *atomLinks `xml:"link"`
 		}{Links: &links})
 		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
-			t.Fatalf("expected *xml.SyntaxError, got %T: %v", err, err)
+			t.Fatalf(msgWantSyntaxError, err, err)
 		}
 		if len(links) != 0 {
 			t.Fatalf("a failed link must not be retained, got %v", links)
@@ -30,7 +32,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 	t.Run("atomLinks through parseAtom", func(t *testing.T) {
 		entries, title, err := parseAtom([]byte(atomOpen + `<link href="https://example.com/a"></bad>` + atomClose))
 		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
-			t.Fatalf("expected *xml.SyntaxError, got %T: %v", err, err)
+			t.Fatalf(msgWantSyntaxError, err, err)
 		}
 		if entries != nil || title != "" {
 			t.Fatalf("got entries=%v title=%q, want none", entries, title)
@@ -41,7 +43,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 		var g mediaGroup
 		err := xml.Unmarshal([]byte(`<group><thumbnail url="https://example.com/t.png"></bad></group>`), &g)
 		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
-			t.Fatalf("expected *xml.SyntaxError, got %T: %v", err, err)
+			t.Fatalf(msgWantSyntaxError, err, err)
 		}
 		if g.Thumbnail != "" {
 			t.Fatalf("a failed thumbnail must not be retained, got %q", g.Thumbnail)
@@ -52,7 +54,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 		var g mediaGroup
 		err := xml.Unmarshal([]byte(`<group><content url="https://example.com/c.png" type="image/png"></bad></group>`), &g)
 		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
-			t.Fatalf("expected *xml.SyntaxError, got %T: %v", err, err)
+			t.Fatalf(msgWantSyntaxError, err, err)
 		}
 		if g.ImageContent != "" {
 			t.Fatalf("a failed content must not be retained, got %q", g.ImageContent)
@@ -69,7 +71,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 			if _, _, err := parseAtom([]byte(doc)); err == nil {
 				t.Fatalf("expected an error for %s", child)
 			} else if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
-				t.Fatalf("expected *xml.SyntaxError, got %T: %v", err, err)
+				t.Fatalf(msgWantSyntaxError, err, err)
 			}
 		}
 	})
