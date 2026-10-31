@@ -79,7 +79,11 @@ type FeedGroupReconciler struct {
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
+// move the current state of the cluster closer to the desired state. For one
+// FeedGroup it resolves the webhook (webhook), builds the timed clients
+// (clientsFor), plans which feeds are due (planFeeds), fetches them
+// concurrently (fetchAll), folds each feed's outcome through processFeed, and
+// writes status and the next requeue (requeueWithStatus).
 func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("feedgroup", req.NamespacedName)
 	ctx = logf.IntoContext(ctx, log)
@@ -129,66 +133,20 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// nothing actually changed.
 	statusSnapshot := feedGroup.Status.DeepCopy()
 
-	webhookURL, secretVersion, err := r.resolveWebhookURL(ctx, &feedGroup)
+	webhookURL, err := r.webhook(ctx, &feedGroup)
 	if err != nil {
-		log.Error(err, "failed to resolve Discord webhook URL")
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
-	}
-	noteWebhookSecretVersion(&feedGroup, secretVersion)
-
-	if webhookURL == "" {
-		err = fmt.Errorf("discord webhook URL is empty")
-		log.Error(err, "invalid webhook secret")
 		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	rssClient := r.RSSClient
-	if rssClient == nil {
-		rssClient = rss.NewClient(nil)
-	}
-	var discordClient MessageSender
-	if r.DiscordClientBuilder != nil {
-		discordClient = r.DiscordClientBuilder(webhookURL)
-	} else {
-		discordClient = discord.NewClient(webhookURL)
-	}
-	// The request-duration histogram is owned by these timing adapters, not by
-	// the fetch goroutine or sendNewEntries.
-	rssClient = newTimedFetcher(rssClient, feedGroup.Namespace, feedGroup.Name)
-	discordClient = newTimedSender(discordClient, feedGroup.Namespace, feedGroup.Name)
+	rssClient, discordClient := r.clientsFor(&feedGroup, webhookURL)
 
 	// An unparsable Interval is reported by requeueWithStatus below; the plan
 	// only uses it for the due check.
 	plan := planFeeds(&feedGroup, time.Now().UTC(), specChanged)
 	activeFeeds := plan.active
 
-	// Feeds are independent network fetches, so fetch them concurrently
-	// rather than paying each feed's fetch timeout sequentially. A semaphore
-	// caps how many run at once, since a FeedGroup at the Feeds.MaxItems
-	// limit would otherwise open that many simultaneous outbound connections
-	// every reconcile. Sending and status-map updates below remain
-	// single-threaded, so no locking is needed for the rest of the
-	// reconcile. Reading (not writing) feedGroup.Status here is safe
-	// concurrently with itself, since nothing mutates it until after
-	// wg.Wait().
-	fetched := make([]rss.FetchResult, len(activeFeeds))
-	fetchErrs := make([]error, len(activeFeeds))
-	sem := make(chan struct{}, maxConcurrentFetches)
-	var wg sync.WaitGroup
-	for i, feed := range activeFeeds {
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			fs := feedStatusFor(&feedGroup, feed.RSSUrl)
-			validators := rss.CacheValidators{
-				ETag:         fs.ETag,
-				LastModified: fs.LastModified,
-			}
-			fetched[i], fetchErrs[i] = rssClient.FetchEntries(ctx, feed.RSSUrl, validators)
-		})
-	}
-	wg.Wait()
+	fetched := fetchAll(ctx, rssClient, &feedGroup, activeFeeds)
 
 	var verdict attemptVerdict
 	for i, feed := range activeFeeds {
@@ -199,7 +157,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if verdict.retryAfter > 0 {
 			break
 		}
-		verdict = verdict.fold(r.processFeed(ctx, &feedGroup, feed, fetched[i], fetchErrs[i], discordClient, now))
+		verdict = verdict.fold(r.processFeed(ctx, &feedGroup, feed, fetched[i].result, fetched[i].err, discordClient, now))
 	}
 
 	decision := plan.requeue(&feedGroup.Spec, verdict.retry, verdict.retryAfter)
@@ -370,7 +328,14 @@ func (r *FeedGroupReconciler) sendNewEntries(
 	return attemptVerdict{}
 }
 
-func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (webhookURL, resourceVersion string, err error) {
+// webhook returns the group's Discord webhook URL, read uncached from its
+// Secret. It owns every outcome of that lookup: a failed Get or a missing key
+// is an error; the Secret's resourceVersion is then recorded with
+// noteWebhookSecretVersion (so a replaced Secret is noticed even when its new
+// value is unusable); and a blank value is an error. Errors are logged here and
+// returned for Reconcile to surface through requeueWithStatus.
+func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
+	log := logf.FromContext(ctx)
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Name:      feedGroup.Spec.DiscordWebhookSecretRef.Name,
@@ -378,15 +343,82 @@ func (r *FeedGroupReconciler) resolveWebhookURL(ctx context.Context, feedGroup *
 	}
 
 	if err := r.Get(ctx, secretKey, secret); err != nil {
-		return "", "", err
+		log.Error(err, "failed to resolve Discord webhook URL")
+		return "", err
 	}
 
 	value, ok := secret.Data[feedGroup.Spec.DiscordWebhookSecretRef.Key]
 	if !ok {
-		return "", "", fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
+		err := fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
+		log.Error(err, "failed to resolve Discord webhook URL")
+		return "", err
 	}
+	noteWebhookSecretVersion(feedGroup, secret.ResourceVersion)
 
-	return strings.TrimSpace(string(value)), secret.ResourceVersion, nil
+	webhookURL := strings.TrimSpace(string(value))
+	if webhookURL == "" {
+		err := fmt.Errorf("discord webhook URL is empty")
+		log.Error(err, "invalid webhook secret")
+		return "", err
+	}
+	return webhookURL, nil
+}
+
+// clientsFor returns the feed fetcher and message sender for one reconcile,
+// defaulting r.RSSClient / r.DiscordClientBuilder to the real clients. Both are
+// wrapped in the timing adapters, which are the only place feedRequestDuration
+// is observed -- not the fetch goroutines or sendNewEntries.
+func (r *FeedGroupReconciler) clientsFor(feedGroup *v1alpha1.FeedGroup, webhookURL string) (FeedFetcher, MessageSender) {
+	fetcher := r.RSSClient
+	if fetcher == nil {
+		fetcher = rss.NewClient(nil)
+	}
+	var sender MessageSender
+	if r.DiscordClientBuilder != nil {
+		sender = r.DiscordClientBuilder(webhookURL)
+	} else {
+		sender = discord.NewClient(webhookURL)
+	}
+	return newTimedFetcher(fetcher, feedGroup.Namespace, feedGroup.Name),
+		newTimedSender(sender, feedGroup.Namespace, feedGroup.Name)
+}
+
+// fetchOutcome is one feed's fetch: the result and the error FetchEntries
+// returned for it.
+type fetchOutcome struct {
+	result rss.FetchResult
+	err    error
+}
+
+// fetchAll fetches every feed concurrently and returns the outcomes in the
+// same order as feeds. Feeds are independent network fetches, so this avoids
+// paying each fetch timeout sequentially; a semaphore caps how many run at
+// once (maxConcurrentFetches), since a FeedGroup at the Feeds.MaxItems limit
+// would otherwise open that many simultaneous outbound connections.
+//
+// Invariant: feedGroup.Status is only read here (to look up each feed's cache
+// validators), concurrently with itself, and is never written until fetchAll
+// returns -- wg.Wait() is the barrier. Everything after it (sending, status
+// updates) is single-threaded, so no locking is needed. Do not mutate the
+// FeedGroup from the fetch goroutines.
+func fetchAll(ctx context.Context, f FeedFetcher, feedGroup *v1alpha1.FeedGroup, feeds []v1alpha1.FeedSpec) []fetchOutcome {
+	outcomes := make([]fetchOutcome, len(feeds))
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+	for i, feed := range feeds {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			fs := feedStatusFor(feedGroup, feed.RSSUrl)
+			validators := rss.CacheValidators{
+				ETag:         fs.ETag,
+				LastModified: fs.LastModified,
+			}
+			outcomes[i].result, outcomes[i].err = f.FetchEntries(ctx, feed.RSSUrl, validators)
+		})
+	}
+	wg.Wait()
+	return outcomes
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -406,7 +438,7 @@ func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// A replaced webhook Secret lets a feed backed off after a permanent
 		// send failure retry right away (see noteWebhookSecretVersion).
 		// Metadata only: the informer never holds Secret data, and the
-		// webhook URL itself is still read uncached in resolveWebhookURL.
+		// webhook URL itself is still read uncached in webhook.
 		b = b.Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.feedGroupsForSecret),
 			builder.OnlyMetadata, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}))
 	}

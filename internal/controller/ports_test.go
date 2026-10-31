@@ -19,11 +19,14 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
@@ -255,5 +258,67 @@ func TestProcessFeed_FakeSenderSuccess(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent)); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=sent} = %v, want 1", got)
+	}
+}
+
+// concurrencyFetcher is a FeedFetcher that tracks how many calls are in flight
+// at once and returns a result whose title identifies the requested URL.
+type concurrencyFetcher struct {
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+	calls    int
+	errFor   map[string]error
+}
+
+func (f *concurrencyFetcher) FetchEntries(_ context.Context, url string, _ rss.CacheValidators) (rss.FetchResult, error) {
+	f.mu.Lock()
+	f.inFlight++
+	f.calls++
+	f.peak = max(f.peak, f.inFlight)
+	f.mu.Unlock()
+
+	time.Sleep(5 * time.Millisecond) // let overlapping calls pile up
+
+	f.mu.Lock()
+	f.inFlight--
+	f.mu.Unlock()
+	return rss.FetchResult{FeedTitle: url}, f.errFor[url]
+}
+
+func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
+	const n = maxConcurrentFetches*3 + 1
+	fg := &v1alpha1.FeedGroup{}
+	feeds := make([]v1alpha1.FeedSpec, n)
+	errFor := map[string]error{}
+	for i := range feeds {
+		feeds[i].RSSUrl = fmt.Sprintf("https://example.com/feed-%d.xml", i)
+	}
+	fg.Spec.Feeds = feeds
+	ensureFeedStatuses(fg)
+	errFor[feeds[3].RSSUrl] = errors.New(testBoom)
+	f := &concurrencyFetcher{errFor: errFor}
+
+	got := fetchAll(t.Context(), f, fg, feeds)
+
+	if len(got) != n || f.calls != n {
+		t.Fatalf("got %d outcomes from %d calls, want %d of each", len(got), f.calls, n)
+	}
+	for i, o := range got {
+		if o.result.FeedTitle != feeds[i].RSSUrl {
+			t.Fatalf("outcome %d is for %q, want %q (input order)", i, o.result.FeedTitle, feeds[i].RSSUrl)
+		}
+		if (o.err != nil) != (i == 3) {
+			t.Fatalf("outcome %d err = %v, want error only at index 3", i, o.err)
+		}
+	}
+	if f.peak < 2 || f.peak > maxConcurrentFetches {
+		t.Fatalf("peak concurrency = %d, want within [2, %d]", f.peak, maxConcurrentFetches)
+	}
+}
+
+func TestFetchAll_NoFeeds(t *testing.T) {
+	if got := fetchAll(t.Context(), &fakeFetcher{}, &v1alpha1.FeedGroup{}, nil); len(got) != 0 {
+		t.Fatalf("got %d outcomes, want none", len(got))
 	}
 }
