@@ -38,11 +38,11 @@ const defaultCatchUpLimit = 5
 // processFeed:
 //
 //   - the ORDER in which a fetch is applied: legacy state is read before
-//     anything changes; entries are stamped and sorted; both identity
-//     migrations run; only then is the delivery ledger built, and it is built
-//     over the whole fetch, before the catch-up trim, so an entry's stripped
-//     identity is only unique if it is across the feed; the watermark lookup
-//     and planDelivery follow, then the catch-up limit and the backlog skip.
+//     anything changes; entries are stamped and sorted; the delivery ledger is
+//     built once, over the whole sorted fetch and before the catch-up trim, so
+//     an entry's stripped identity is only unique if it is across the feed;
+//     both identity migrations run through it; the watermark lookup and
+//     planDelivery follow, then the catch-up limit and the backlog skip.
 //   - SETTLEMENT: whether the fetch is accounted for, which is the only thing
 //     that decides FeedStatus.Initialized, the legacy stateVersion, whether the
 //     response's validators are stored, whether a failure is cleared, and
@@ -166,8 +166,8 @@ func (s *feedSync) withoutEntries() (syncVerdict, bool) {
 }
 
 // begin applies the fetch's entries to fs up to the point of sending: it
-// stamps the feed's title on each entry, sorts them, runs both identity
-// migrations, builds the ledger over the whole fetch, plans the delivery
+// stamps the feed's title on each entry, sorts them, builds the ledger over the
+// whole fetch, runs both identity migrations through it, plans the delivery
 // (catch-up limit included) and, for a first sync with catchUpLimit 0, skips the
 // backlog. It must be called at most once, and only after the feed's
 // configuration is known to be usable: a configuration error must leave fs as it
@@ -202,14 +202,14 @@ func (s *feedSync) begin() {
 		return cmp.Compare(b.Seq, a.Seq)
 	})
 
-	migrateIdentities(s.fs, entries, &s.legacy, s.spec.catchUpLimit)
-
-	// Built over the whole fetch, before any catch-up trim below, so an
-	// entry's stripped identity is only unique if it is across the feed.
+	// The one identity index of this fetch: built over the whole sorted fetch,
+	// before the migrations (which only change fs) and any catch-up trim below,
+	// so an entry's stripped identity is only unique if it is across the feed.
 	s.ledger = newDeliveryLedger(s.fs, entries)
+	migrateIdentities(s.ledger, &s.legacy, s.spec.catchUpLimit)
 	plan := planDelivery(deliveryInputs{
 		entries:         entries,
-		watermark:       s.ledger.resume(entries),
+		watermark:       s.ledger.resume(),
 		catchUpLimit:    s.spec.catchUpLimit,
 		legacyAmbiguous: s.legacy.ambiguous,
 		wasInitialized:  s.wasInitialized,
@@ -250,7 +250,7 @@ func (s *feedSync) markHandled(entry rss.Entry) {
 // identity is the same one markHandled would have stored after sending that
 // entry, so the next forward-scan resumes right behind it.
 func (s *feedSync) skipBacklog(entries []rss.Entry) {
-	s.ledger.markNewest(entries)
+	s.ledger.markNewest()
 	s.skippedBacklog = len(entries)
 }
 

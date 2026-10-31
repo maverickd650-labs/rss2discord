@@ -1095,7 +1095,7 @@ func TestWatermarkIndex_LinkFallback(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := &v1alpha1.FeedStatus{LastSeenEntry: watermark}
-			if got := newDeliveryLedger(fs, tc.entries).resume(tc.entries); got.index != tc.want || (got.state == watermarkFound) != (tc.want >= 0) {
+			if got := newDeliveryLedger(fs, tc.entries).resume(); got.index != tc.want || (got.state == watermarkFound) != (tc.want >= 0) {
 				t.Fatalf("resume = %+v, want index %d", got, tc.want)
 			}
 		})

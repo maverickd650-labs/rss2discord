@@ -56,7 +56,7 @@ func TestStrippedOwnership_OwnStripped(t *testing.T) {
 		{name: "an entry without a link identity", entries: []rss.Entry{guidIsLink}, entry: guidIsLink, stripped: guidIsLink.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := newStrippedOwnership(tc.entries).ownStripped(tc.entry, tc.stripped); got != tc.want {
+			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownStripped(tc.entry, tc.stripped); got != tc.want {
 				t.Errorf("ownStripped = %q, want %q", got, tc.want)
 			}
 		})
@@ -87,7 +87,7 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			previous, _ := previouslyIdentified(tc.mover)
-			if got := newStrippedOwnership(tc.entries).ownsPrevious(previous); got != tc.want {
+			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(previous); got != tc.want {
 				t.Errorf("ownsPrevious = %v, want %v", got, tc.want)
 			}
 		})
@@ -154,7 +154,7 @@ func TestMigrateIdentities_LegacyThenPrevious(t *testing.T) {
 	}
 	state := readLegacyState(fs)
 	for range 2 {
-		migrateIdentities(fs, []rss.Entry{moved}, &state, defaultCatchUpLimit)
+		migrateIdentities(newDeliveryLedger(fs, []rss.Entry{moved}), &state, defaultCatchUpLimit)
 	}
 
 	if !state.migrated {
@@ -180,7 +180,7 @@ func TestMigrateIdentities_CurrentStatusSkipsTheLegacyPass(t *testing.T) {
 		LastSent:      map[string]string{hashIdentity(prevIDOld): prevSentAt},
 	}
 	state := readLegacyState(fs)
-	migrateIdentities(fs, []rss.Entry{moved}, &state, defaultCatchUpLimit)
+	migrateIdentities(newDeliveryLedger(fs, []rss.Entry{moved}), &state, defaultCatchUpLimit)
 
 	if state.migrated {
 		t.Error("the legacy pass ran for a current status")
