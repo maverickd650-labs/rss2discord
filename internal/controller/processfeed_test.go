@@ -329,11 +329,11 @@ func TestPermanentBackoffDuration_ClampsRetryCountBelowOne(t *testing.T) {
 	}
 }
 
-// TestFeedInBackoff verifies the active-feeds skip predicate: empty or
+// TestFeedBackoffActive verifies the active-feeds skip predicate: empty or
 // malformed BackoffUntil values are treated as "not in backoff" so a bad
 // value can never permanently wedge a feed, and the comparison is a strict
 // "now before until".
-func TestFeedInBackoff(t *testing.T) {
+func TestFeedBackoffActive(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name         string
@@ -348,15 +348,15 @@ func TestFeedInBackoff(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := feedInBackoff(tc.backoffUntil, now); got != tc.want {
-				t.Errorf("feedInBackoff(%q, %v) = %v, want %v", tc.backoffUntil, now, got, tc.want)
+			if got := backoffOf(&v1alpha1.FeedStatus{BackoffUntil: tc.backoffUntil}).active(now); got != tc.want {
+				t.Errorf("active(%q, %v) = %v, want %v", tc.backoffUntil, now, got, tc.want)
 			}
 		})
 	}
 }
 
 // TestNextBackoffUntil verifies the RFC3339 formatting of a computed backoff
-// expiry, and that the result round-trips through feedInBackoff as expected.
+// expiry, and that the result round-trips through feedBackoff.active as expected.
 func TestNextBackoffUntil(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	got := nextBackoffUntil(now, 10*time.Minute)
@@ -364,11 +364,11 @@ func TestNextBackoffUntil(t *testing.T) {
 	if got != want {
 		t.Fatalf("nextBackoffUntil() = %q, want %q", got, want)
 	}
-	if !feedInBackoff(got, now) {
-		t.Fatalf("feedInBackoff(%q, %v) = false, want true (still in the future)", got, now)
+	if !backoffOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now) {
+		t.Fatalf("active(%q, %v) = false, want true (still in the future)", got, now)
 	}
-	if feedInBackoff(got, now.Add(10*time.Minute)) {
-		t.Fatalf("feedInBackoff(%q, %v) = true, want false (backoff expired)", got, now.Add(10*time.Minute))
+	if backoffOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now.Add(10 * time.Minute)) {
+		t.Fatalf("active(%q, %v) = true, want false (backoff expired)", got, now.Add(10*time.Minute))
 	}
 }
 
@@ -497,7 +497,7 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 		t.Fatalf("unexpected repeat Event: %s", ev)
 	default:
 	}
-	if feedInBackoff(feedStatusFor(fg, feed.RSSUrl).BackoffUntil, time.Now().UTC().Add(maxPermanentBackoff+time.Minute)) {
+	if backoffOf(feedStatusFor(fg, feed.RSSUrl)).active(time.Now().UTC().Add(maxPermanentBackoff + time.Minute)) {
 		t.Error("feed should become retryable again once the capped backoff elapses")
 	}
 }
