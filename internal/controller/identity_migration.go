@@ -75,6 +75,15 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 		}
 	}
 
+	counts := countStripped(entries)
+	// How many moved entries had each stripped identity as their previous one;
+	// with counts this says whether a single entry can own an old stripped key.
+	previousStripped := make(map[string]int, len(moves))
+	for _, m := range moves {
+		if stripped := strippedLinkIdentity(m.previous); stripped != "" {
+			previousStripped[stripped]++
+		}
+	}
 	for _, m := range moves {
 		old, now := entryIdentity(m.previous), entryIdentity(m.current)
 		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
@@ -83,7 +92,9 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 		if fs.LastSeenEntry == clampWatermark(old) {
 			fs.LastSeenEntry = clampWatermark(now)
 		}
-		rekeySent(fs.LastSent, m.previous, m.current)
+		oldStripped := strippedLinkIdentity(m.previous)
+		owns := oldStripped != "" && previousStripped[oldStripped] == 1 && counts[oldStripped] == 0
+		rekeySent(fs.LastSent, m.previous, m.current, counts, owns)
 	}
 }
 
@@ -176,6 +187,7 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
+	counts := countStripped(entries)
 	for i, entry := range entries {
 		current[i], legacy[i] = entryIdentity(entry), legacyEntryIdentity(entry)
 		sharing[legacy[i]]++
@@ -210,9 +222,12 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			continue
 		}
 		if sharing[legacy[i]] == 1 {
-			// A link's legacy identity is its stripped form; see deliveryLedger.markHandled.
+			// A link's legacy identity is its stripped form; like
+			// deliveryLedger.markHandled, record it only when it is this
+			// entry's own and unique in the fetch, or a sibling sharing it
+			// would later be taken as sent.
 			stripped := ""
-			if entries[i].IDSource == rss.IDFromLink {
+			if entries[i].IDSource == rss.IDFromLink && counts.unique(entries[i]) == legacy[i] {
 				stripped = legacy[i]
 			}
 			setSent(fs.LastSent, current[i], stripped, sentAt)

@@ -69,6 +69,19 @@ func TestMigratePreviousIdentities(t *testing.T) {
 			wantSent:  map[string]string{hashIdentity(prevLinkNew): prevSentAt, strippedKey(prevLinkNew): prevSentAt},
 		},
 		{
+			name: "link to link onto a stripped identity a sibling shares drops the stripped key",
+			entries: []rss.Entry{
+				changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink),
+				{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink},
+			},
+			watermark: prevLinkOld,
+			sent:      map[string]string{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
+			wantMark:  clampWatermark(entryIdentity(rss.Entry{ID: prevLinkNew + "#a", IDSource: rss.IDFromLink})),
+			wantSent: map[string]string{
+				computeEntryKey(rss.Entry{ID: prevLinkNew + "#a", IDSource: rss.IDFromLink}): prevSentAt,
+			},
+		},
+		{
 			name:      "link to guid drops the old stripped key",
 			entries:   []rss.Entry{changedID(prevIDNew, rss.IDFromGUID, prevLinkOld, rss.IDFromLink)},
 			watermark: prevLinkOld,
@@ -191,5 +204,98 @@ func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 		t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, prevIDOther)
 	} else if _, ok := fs.LastSent[hashIdentity(prevIDNew)]; !ok {
 		t.Fatalf("the moved entry's dedup key is missing: %v", fs.LastSent)
+	}
+}
+
+// A sibling that is alone under a stripped identity must not be taken as sent
+// because a migration recorded that stripped identity for another entry. Here
+// the sibling shares the new stripped identity of a moved entry.
+func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T) {
+	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	sibling := rss.Entry{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink, Title: "sibling"}
+	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
+		hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt,
+	}}
+	migratePreviousIdentities(fs, []rss.Entry{moved, sibling})
+
+	// The moved entry leaves the feed; the sibling is now alone under the
+	// stripped identity.
+	if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
+		t.Fatalf("sibling taken as sent; LastSent = %v", fs.LastSent)
+	}
+}
+
+// The legacy migration records a link's legacy (stripped) identity only when it
+// is the entry's own unique stripped identity: an entry whose legacy identity
+// came from its previous ID must not leave a key a sibling would later match.
+func TestMigrateLegacyIdentities_StrippedKeyOnlyForOwnUniqueIdentity(t *testing.T) {
+	const (
+		ownLink    = "https://previous-identity.example.test/own"
+		sharedLink = "https://previous-identity.example.test/shared"
+	)
+	moved := changedID(ownLink, rss.IDFromLink, sharedLink+"#p", rss.IDFromLink)
+	sibling := changedID(sharedLink+"#b", rss.IDFromLink, "urn:previous-identity:sibling", rss.IDFromGUID)
+	entries := []rss.Entry{moved, sibling}
+	legacy := legacyEntryIdentity(moved)
+	if legacy != normalizeIdentity(sharedLink+"#p") {
+		t.Fatalf("legacy identity = %q, test assumption broken", legacy)
+	}
+	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{hashIdentity(legacy): prevSentAt}}
+	migrateLegacyIdentities(fs, slices.Clone(entries), false, defaultCatchUpLimit)
+
+	if _, ok := fs.LastSent[computeEntryKey(moved)]; !ok {
+		t.Errorf("moved entry's key not carried over; LastSent = %v", fs.LastSent)
+	}
+	if _, ok := fs.LastSent[strippedKey(legacy)]; ok {
+		t.Errorf("stripped key %q recorded for a legacy identity that is not the entry's own", legacy)
+	}
+	if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
+		t.Errorf("sibling taken as sent; LastSent = %v", fs.LastSent)
+	}
+}
+
+// When pruning has left a moved entry's send recorded only under its old
+// stripped key and its new stripped identity is shared, that record falls back
+// to the entry's new key, so the entry is not sent again; but only when no
+// other entry can claim the old stripped identity.
+func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T) {
+	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	sibling := rss.Entry{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink, Title: "sibling"}
+	for _, tc := range []struct {
+		name      string
+		entries   []rss.Entry
+		wantMoved bool
+	}{
+		{name: "sole owner keeps its record", entries: []rss.Entry{moved, sibling}, wantMoved: true},
+		{
+			name: "an entry now under the old stripped identity makes it ambiguous",
+			entries: []rss.Entry{moved, sibling,
+				{ID: prevLinkOld + "#z", IDSource: rss.IDFromLink, Title: "claimant"}},
+		},
+		{
+			name: "another entry previously under it makes it ambiguous",
+			entries: []rss.Entry{moved, sibling,
+				changedID(prevIDOther, rss.IDFromGUID, prevLinkOld+"#y", rss.IDFromLink)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The full key was pruned; only the stripped key is left.
+			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
+			migratePreviousIdentities(fs, slices.Clone(tc.entries))
+
+			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
+				t.Errorf("old stripped key kept; LastSent = %v", fs.LastSent)
+			}
+			if _, ok := fs.LastSent[strippedKey(normalizeIdentity(prevLinkNew))]; ok {
+				t.Errorf("shared new stripped key recorded; LastSent = %v", fs.LastSent)
+			}
+			got, ok := fs.LastSent[computeEntryKey(moved)]
+			if ok != tc.wantMoved || (ok && got != prevSentAt) {
+				t.Errorf("moved entry key = %q (present %v), want present %v at %q", got, ok, tc.wantMoved, prevSentAt)
+			}
+			if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
+				t.Errorf("sibling taken as sent; LastSent = %v", fs.LastSent)
+			}
+		})
 	}
 }
