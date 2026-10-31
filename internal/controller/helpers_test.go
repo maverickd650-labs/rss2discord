@@ -2,7 +2,6 @@ package controller
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -120,78 +119,12 @@ func TestStripHTML(t *testing.T) {
 	}
 }
 
-func TestParseDurationWithDefault(t *testing.T) {
-	fallback := 5 * time.Minute
-
-	cases := []struct {
-		name    string
-		in      string
-		want    time.Duration
-		wantErr bool
-	}{
-		{name: "blank uses fallback", in: "  ", want: fallback},
-		{name: "valid duration parsed", in: "90s", want: 90 * time.Second},
-		{name: "invalid duration returns fallback and error", in: notParsable, want: fallback, wantErr: true},
-		// The CRD's Pattern validation on Interval/RetryInterval
-		// (feedgroup_types.go) accepts unbounded digit runs, so a value like
-		// this passes admission but still overflows time.ParseDuration.
-		{name: "overflowing duration returns fallback and error", in: "99999999999999999999h", want: fallback, wantErr: true},
-		// "1ns" (or "0s") passes the CRD's Pattern validation, but fed
-		// straight into ctrl.Result{RequeueAfter: ...} would requeue in a
-		// tight loop; parseDurationWithDefault floors it instead.
-		{name: "tiny duration is floored", in: "1ns", want: minParsedInterval},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseDurationWithDefault(tc.in, fallback)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
-			}
-			if got != tc.want {
-				t.Fatalf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestInvalidIntervalError asserts both interval fields are checked (so a bad
-// retryInterval is reported even on reconciles that requeue on interval), and
-// that blank or valid values are not flagged. The overflow case passes the
-// CRD's Pattern and MaxLength but is rejected by time.ParseDuration.
-func TestInvalidIntervalError(t *testing.T) {
-	cases := []struct {
-		name         string
-		spec         v1alpha1.FeedGroupSpec
-		wantContains string // empty means no error expected
-	}{
-		{name: "both blank", spec: v1alpha1.FeedGroupSpec{}},
-		{name: "both valid", spec: v1alpha1.FeedGroupSpec{Interval: "30m", RetryInterval: "1m"}},
-		{name: "overflowing interval", spec: v1alpha1.FeedGroupSpec{Interval: overflowingInterval}, wantContains: `spec.interval: invalid duration "` + overflowingInterval + `"`},
-		{name: "overflowing retryInterval", spec: v1alpha1.FeedGroupSpec{Interval: "30m", RetryInterval: overflowingInterval}, wantContains: `spec.retryInterval: invalid duration "` + overflowingInterval + `"`},
-		{name: "interval reported first", spec: v1alpha1.FeedGroupSpec{Interval: notParsable, RetryInterval: notParsable}, wantContains: "spec.interval"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := invalidIntervalError(&tc.spec)
-			if tc.wantContains == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantContains) {
-				t.Fatalf("err = %v, want it to contain %q", err, tc.wantContains)
-			}
-		})
-	}
-}
-
 // TestSetReadyCondition_InvalidIntervalPrecedence asserts InvalidInterval
 // outranks the per-feed summary (the spec is wrong however the feeds fared)
 // but yields to WebhookUnresolved (no feed was processed, so the webhook
 // failure is the more fundamental problem).
 func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
-	intervalErr := invalidIntervalError(&v1alpha1.FeedGroupSpec{Interval: overflowingInterval})
+	intervalErr := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: overflowingInterval}).err
 	webhookErr := errors.New("secret missing")
 
 	readyReason := func(fg *v1alpha1.FeedGroup) string {
@@ -240,22 +173,6 @@ func TestJitterDuration(t *testing.T) {
 		}
 		if max := time.Duration(1.1 * float64(base)); got > max {
 			t.Fatalf("jittered duration %v exceeds %v (base + %.0f%%)", got, max, requeueJitterMaxFactor*100)
-		}
-	}
-}
-
-func TestMaxRetryCount(t *testing.T) {
-	cases := []struct {
-		in, want int32
-	}{
-		{in: -1, want: 1},
-		{in: 0, want: 1},
-		{in: 1, want: 1},
-		{in: 5, want: 5},
-	}
-	for _, tc := range cases {
-		if got := maxRetryCount(tc.in); got != tc.want {
-			t.Fatalf("maxRetryCount(%d) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 }

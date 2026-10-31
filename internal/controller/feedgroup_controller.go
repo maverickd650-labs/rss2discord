@@ -133,17 +133,19 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// nothing actually changed.
 	statusSnapshot := feedGroup.Status.DeepCopy()
 
+	cad := cadenceOf(&feedGroup.Spec)
+
 	webhookURL, err := r.webhook(ctx, &feedGroup)
 	if err != nil {
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
+		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rssClient, discordClient := r.clientsFor(&feedGroup, webhookURL)
 
 	// An unparsable Interval is reported by requeueWithStatus below; the plan
-	// only uses it for the due check.
-	plan := planFeeds(&feedGroup, time.Now().UTC(), specChanged)
+	// only uses the cadence's default for the due check.
+	plan := planFeeds(&feedGroup, cad, time.Now().UTC(), specChanged)
 	activeFeeds := plan.active
 
 	fetched := fetchAll(ctx, rssClient, &feedGroup, activeFeeds)
@@ -160,8 +162,8 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		verdict = verdict.fold(r.processFeed(ctx, &feedGroup, feed, fetched[i].result, fetched[i].err, discordClient, now))
 	}
 
-	decision := plan.requeue(&feedGroup.Spec, verdict.retry, verdict.retryAfter)
-	return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, decision, nil)
+	decision := plan.requeue(cad, verdict.retry, verdict.retryAfter)
+	return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, cad, decision, nil)
 }
 
 // processFeed handles a completed fetch for a single feed: it records the

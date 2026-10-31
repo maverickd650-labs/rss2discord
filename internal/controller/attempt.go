@@ -149,10 +149,13 @@ type feedAttempt struct {
 	url   string
 	// now is the RFC3339 timestamp of the reconcile, for LastChecked.
 	now string
+	// cadence is the group's retry limit and backoff base, resolved from
+	// group.Spec when the attempt is created.
+	cadence cadence
 }
 
 func (r *FeedGroupReconciler) newFeedAttempt(group *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url, now string) feedAttempt {
-	return feedAttempt{r: r, group: group, fs: fs, url: url, now: now}
+	return feedAttempt{r: r, group: group, fs: fs, url: url, now: now, cadence: cadenceOf(&group.Spec)}
 }
 
 // record applies one outcome to the feed's status and says what the reconcile
@@ -279,7 +282,7 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 		return attemptVerdict{}
 	}
 
-	maxRetries := maxRetryCount(a.group.Spec.Retries)
+	maxRetries := a.cadence.maxRetries
 	if a.fs.RetryCount < maxRetries {
 		return attemptVerdict{retry: true}
 	}
@@ -299,7 +302,7 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 // retries were already exhausted a full reconcile ago: RetryCount went past
 // the limit, not just up to it.
 func (a feedAttempt) pastRetryLimit() bool {
-	return a.fs.RetryCount > maxRetryCount(a.group.Spec.Retries)
+	return a.fs.RetryCount > a.cadence.maxRetries
 }
 
 // backOff extends fs's permanent backoff (feedBackoff.extend, based on
@@ -311,8 +314,7 @@ func (a feedAttempt) pastRetryLimit() bool {
 // keeps being retried, waiting at most the cap between attempts (or longer if
 // the group's Interval is longer).
 func (a feedAttempt) backOff(reason string, err error) {
-	base, _ := parseDurationWithDefault(a.group.Spec.RetryInterval, fallbackRetryInterval)
-	if backoffOf(a.fs).extend(base, time.Now().UTC()) {
+	if backoffOf(a.fs).extend(a.cadence.retry, time.Now().UTC()) {
 		a.warn(reason, "BackoffCapped", "feed %s: still failing permanently, backoff now capped at %s: %v",
 			a.url, maxPermanentBackoff, err)
 	}

@@ -125,7 +125,7 @@ func TestSummarizeGroup(t *testing.T) {
 		{
 			name:     "no Event when InvalidInterval is already recorded with the same message",
 			interval: badInterval,
-			// Message filled in by the test from invalidIntervalError.
+			// Message filled in by the test from cadenceOf.
 			priorReady:    &metav1.Condition{Type: v1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: reasonInvalidInterval},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  reasonInvalidInterval,
@@ -168,7 +168,7 @@ func TestSummarizeGroup(t *testing.T) {
 				Status:     v1alpha1.FeedGroupStatus{Feeds: tc.feeds},
 			}
 			wantMessage := ""
-			if err := invalidIntervalError(&fg.Spec); err != nil {
+			if err := cadenceOf(&fg.Spec).err; err != nil {
 				wantMessage = err.Error()
 			}
 			if tc.priorReady != nil {
@@ -179,7 +179,7 @@ func TestSummarizeGroup(t *testing.T) {
 				fg.Status.Conditions = []metav1.Condition{prior}
 			}
 
-			warning, emit := summarizeGroup(fg, tc.webhookErr)
+			warning, emit := summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
 
 			if emit != tc.wantEmit {
 				t.Errorf("emit = %v, want %v", emit, tc.wantEmit)
@@ -206,7 +206,7 @@ func TestSummarizeGroup(t *testing.T) {
 			// Summarizing an unchanged status again is a no-op: same
 			// conditions, and never a repeat Event.
 			before := fg.Status.DeepCopy()
-			warning, emit = summarizeGroup(fg, tc.webhookErr)
+			warning, emit = summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
 			if emit || warning != "" {
 				t.Errorf("second summarize emitted %q (emit=%v), want none", warning, emit)
 			}

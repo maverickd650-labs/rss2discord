@@ -689,7 +689,7 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	setFeedReachableCondition(fg)
 	original := fg.Status.DeepCopy()
 
-	if _, err := (&FeedGroupReconciler{}).requeueWithStatus(t.Context(), fg, original, requeueDecision{interval: defaultInterval, fallback: 30 * time.Minute}, nil); err != nil {
+	if _, err := (&FeedGroupReconciler{}).requeueWithStatus(t.Context(), fg, original, cadenceOf(&fg.Spec), requeueDecision{delay: 30 * time.Minute}, nil); err != nil {
 		t.Fatalf("requeueWithStatus: %v", err)
 	}
 

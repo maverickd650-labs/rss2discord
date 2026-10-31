@@ -56,6 +56,15 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for
   the fetch.
 
+**Group cadence** (`cadence`, `cadence.go`)
+: A FeedGroup's timing resolved once from its spec by `cadenceOf`: `poll` (`Spec.Interval`),
+  `retry` (`Spec.RetryInterval`, also the permanent-failure backoff base) and `maxRetries`
+  (`Spec.Retries`, at least 1). Parsed durations are floored at `minParsedInterval`; blank
+  or unparsable ones take `fallbackInterval`/`fallbackRetryInterval`. `err` carries the
+  first unparsable field (interval before retryInterval) for the Ready condition's
+  `InvalidInterval`. `planFeeds`, `requeueDecision`, `feedAttempt` and `summarizeGroup` all
+  read it; none parses those spec fields itself.
+
 **Feed attempt** (`feedAttempt`, `attempt.go`)
 : The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
   an entry failing to render, failing to send, being rate limited, sent or skipped, a

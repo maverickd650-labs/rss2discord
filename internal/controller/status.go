@@ -149,8 +149,8 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 }
 
 // requeueWithStatus persists feedGroup's status and requeues after
-// decision.wait() (the decision's interval, or its fallback if that is unset or
-// invalid, then jittered and bounded; see requeueDecision). The
+// decision.wait() (the decision's delay, jittered and bounded; see
+// requeueDecision). The
 // status write (applyStatus) is skipped when the status hasn't actually
 // changed from original, avoiding an API round trip for unchanged status.
 // webhookErr, if non-nil, means the reconcile never got far enough to
@@ -162,7 +162,7 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 // admits overflowing values) must never abort this function: by now messages
 // may already have been sent, and returning before the status write would
 // discard LastSent/LastSeenEntry/LastChecked, so every error-backoff retry
-// would re-send the same entries. The requeue uses fallback instead, the
+// would re-send the same entries. The cadence has already substituted the default, so the requeue uses it, the
 // problem is surfaced on Ready (see setReadyCondition) plus one Warning Event
 // on the transition. Duration parse errors are not returned; status conversion
 // or API write errors from applyStatus are returned with an empty result.
@@ -172,13 +172,13 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 // externally-dictated wait -- currently only Discord's rate-limit Retry-After -- since that
 // duration is already the exact minimum wait Discord demands, not a
 // self-chosen periodicity that benefits from desynchronization.
-func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, decision requeueDecision, webhookErr error) (ctrl.Result, error) {
-	// A parse error in decision.interval falls back to decision.fallback; it is
-	// reported via invalidIntervalError below, for both fields at once.
+func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, cad cadence, decision requeueDecision, webhookErr error) (ctrl.Result, error) {
+	// A parse error in the cadence already fell back to the default; it is
+	// reported via cad.err below, for both fields at once.
 	duration := decision.wait()
 
 	feedGroup.Status.ObservedGeneration = feedGroup.Generation
-	if warning, emit := summarizeGroup(feedGroup, webhookErr); emit && r.Recorder != nil {
+	if warning, emit := summarizeGroup(feedGroup, cad, webhookErr); emit && r.Recorder != nil {
 		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", warning)
 	}
 
@@ -268,13 +268,13 @@ func statusApplyConfiguration(status *v1alpha1.FeedGroupStatus) (*acv1alpha1.Fee
 // emit is true exactly on the transition into it (or a change of its message).
 // webhookErr outranks the interval problem on Ready, so while it is set no
 // Event is emitted here.
-func summarizeGroup(feedGroup *v1alpha1.FeedGroup, webhookErr error) (warning string, emit bool) {
+func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, webhookErr error) (warning string, emit bool) {
 	prevReason, prevMessage := "", ""
 	if prev := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); prev != nil {
 		prevReason, prevMessage = prev.Reason, prev.Message
 	}
 
-	setReadyCondition(feedGroup, webhookErr, invalidIntervalError(&feedGroup.Spec))
+	setReadyCondition(feedGroup, webhookErr, cad.err)
 	setFeedReachableCondition(feedGroup)
 
 	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
@@ -293,7 +293,7 @@ func summarizeGroup(feedGroup *v1alpha1.FeedGroup, webhookErr error) (warning st
 // even attempted.
 //
 // intervalErr, if set, means spec.interval or spec.retryInterval can't be
-// parsed (see invalidIntervalError) and the controller is polling on its
+// parsed (see cadence.err) and the controller is polling on its
 // default cadence instead. It ranks below webhookErr -- with no feed
 // processed, the webhook failure is the more fundamental problem and its
 // retry cadence is the one that matters -- but above the per-feed summary:
@@ -347,25 +347,6 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr, intervalErr er
 // reason) for a spec.interval/spec.retryInterval that time.ParseDuration
 // rejects.
 const reasonInvalidInterval = "InvalidInterval"
-
-// invalidIntervalError reports the first of spec.interval and
-// spec.retryInterval that parseDurationWithDefault rejects, or nil. It checks
-// both fields regardless of which one this reconcile happens to requeue on, so
-// the Ready condition doesn't flap between the normal and retry paths (and
-// re-fire its Event each time) while only one of them is bad. The CRD Pattern
-// admits values like "9999999999999h" that overflow time.ParseDuration, and
-// objects admitted under an older schema may hold others.
-func invalidIntervalError(spec *v1alpha1.FeedGroupSpec) error {
-	for _, field := range []struct{ name, value string }{
-		{"interval", spec.Interval},
-		{"retryInterval", spec.RetryInterval},
-	} {
-		if _, err := parseDurationWithDefault(field.value, 0); err != nil {
-			return fmt.Errorf("spec.%s: %w; using the default instead", field.name, err)
-		}
-	}
-	return nil
-}
 
 // countFailingFeeds reports how many feeds currently have a non-empty
 // LastError.
