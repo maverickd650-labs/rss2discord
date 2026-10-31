@@ -585,7 +585,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch n := n.(type) {
-		case *ast.GenDecl:
+			case *ast.GenDecl:
 				if n.Tok == token.CONST {
 					// Count each declared constant by its evaluated value. This also
 					// catches aliases and split-literal initialisers, even when the
@@ -601,7 +601,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 								continue
 							}
 							s := constant.StringVal(declared.Val())
-								if !reasons[s] {
+							if !reasons[s] {
 									continue
 								}
 							canonical := packageConsts[n] && reasonFiles[filename]
@@ -822,7 +822,10 @@ func checkSnippet(t *testing.T, src string) []string {
 // literal, and the constant forms production uses are not.
 func TestCheckReasons_CatchesEverySink(t *testing.T) {
 	// planted is the string (quoted) most cases plant at a sink.
-	const planted = `"Oops"`
+	const (
+		planted         = `"Oops"`
+		wantReconciled = `"Reconciled"`
+	)
 	for _, tc := range []struct {
 		name, src string
 		// want is the quoted string a problem must name ("" for none).
@@ -843,9 +846,9 @@ func TestCheckReasons_CatchesEverySink(t *testing.T) {
 		{name: "reason helper result", src: `func dominantReason() string { return "Oops" }`, want: planted},
 		{name: "a local constant", src: "func f() {\nconst x = \"Oops\"\na.warn(x, action, \"f\")\n}", want: planted},
 		{name: "a constant's value spelled out", src: `func f() { a.warn("Other", action, "f") }`, want: `"Other"`},
-		{name: "split canonical reason spelling", src: `func f() { a.warn("Recon" + "ciled", action, "f") }`, want: `"Reconciled"`},
+		{name: "split canonical reason spelling", src: `func f() { a.warn("Recon" + "ciled", action, "f") }`, want: wantReconciled},
 		{name: "split canonical reason constant outside declaration", src: `const splitReason = "Recon" + "ciled"
-func f() { a.warn(splitReason, action, "f") }`, want: `"Reconciled"`},
+func f() { a.warn(splitReason, action, "f") }`, want: wantReconciled},
 		{name: "through another package", src: `func f() { a.warn(ext.Upper("Oops"), action, "f") }`, want: planted},
 
 		// Indirect paths, through names that say nothing about reasons.
@@ -923,7 +926,7 @@ func f() {
 		{name: "a constant declared outside the reason files", src: `const fieldOwner = "feedgroup-controller"
 func f() { a.warn(fieldOwner, action, "f") }`, want: `"feedgroup-controller"`},
 		{name: "a duplicate reason constant", src: `const alias = "Reconciled"
-func f() { a.warn(alias, action, "f") }`, want: `"Reconciled"`},
+func f() { a.warn(alias, action, "f") }`, want: wantReconciled},
 		{name: "through a pointer", src: `func set(p *string) { *p = "Oops" }
 func f() { x := reasonOther; set(&x); a.warn(x, action, "f") }`, want: planted},
 
