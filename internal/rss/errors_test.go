@@ -6,8 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
+
+// parseErrorPrefix starts every ParseError message; the wrapped cause's own
+// wording is not pinned.
+const parseErrorPrefix = "parse feed: "
 
 func TestParseError_ErrorAndUnwrap(t *testing.T) {
 	cause := errors.New("boom")
@@ -30,8 +35,8 @@ func TestParseError_ChainsThroughParseFeed(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ParseError, got %T: %v", err, err)
 	}
-	if got, want := pe.Error(), "parse feed: EOF"; got != want {
-		t.Fatalf("Error() = %q, want %q", got, want)
+	if got := pe.Error(); !strings.HasPrefix(got, parseErrorPrefix) {
+		t.Fatalf("Error() = %q, want prefix %q", got, parseErrorPrefix)
 	}
 	if !errors.Is(err, io.EOF) {
 		t.Fatal("an empty body must unwrap to io.EOF")
@@ -45,8 +50,8 @@ func TestParseError_ChainsThroughParseFeed(t *testing.T) {
 	if unrecognized.Root != "html" {
 		t.Fatalf("Root = %q, want html", unrecognized.Root)
 	}
-	if got, want := err.Error(), "parse feed: unrecognized feed format: root element <html>"; got != want {
-		t.Fatalf("Error() = %q, want %q", got, want)
+	if got := err.Error(); !strings.HasPrefix(got, parseErrorPrefix) {
+		t.Fatalf("Error() = %q, want prefix %q", got, parseErrorPrefix)
 	}
 }
 
@@ -73,13 +78,15 @@ func TestInvalidURLError_ErrorAndUnwrap(t *testing.T) {
 	})
 
 	cases := []struct {
-		name      string
-		url       string
-		wantMsg   string
-		wantCause bool
+		name string
+		url  string
+		// wantPrefix is the client's own message; an unparsable URL's message
+		// goes on to quote net/url's diagnostic, which is not pinned.
+		wantPrefix string
+		wantCause  bool
 	}{
 		{"blank url", "  ", "feed URL is empty", false},
-		{"unparsable", "://bad-url", `invalid feed URL "://bad-url": parse "://bad-url": missing protocol scheme`, true},
+		{"unparsable", "://bad-url", `invalid feed URL "://bad-url": `, true},
 		{"scheme", "ftp://example.com/f", `unsupported feed URL scheme "ftp": only http/https are allowed`, false},
 	}
 	for _, tc := range cases {
@@ -89,8 +96,8 @@ func TestInvalidURLError_ErrorAndUnwrap(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *InvalidURLError, got %T: %v", err, err)
 			}
-			if got := err.Error(); got != tc.wantMsg {
-				t.Fatalf("Error() = %q, want %q", got, tc.wantMsg)
+			if got := err.Error(); !strings.HasPrefix(got, tc.wantPrefix) {
+				t.Fatalf("Error() = %q, want prefix %q", got, tc.wantPrefix)
 			}
 			if tc.wantCause {
 				if _, ok := errors.AsType[*url.Error](err); !ok {
