@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,13 +34,19 @@ const (
 )
 
 // urlFetcher is a FeedFetcher that answers every feed with the same result and
-// records which URLs were fetched.
+// records which URLs were fetched. fetchAll calls it from concurrent
+// goroutines, so the record is guarded; read it only after reconcilePass
+// returns.
 type urlFetcher struct {
-	result  rss.FetchResult
+	result rss.FetchResult
+
+	mu      sync.Mutex
 	fetched []string
 }
 
 func (f *urlFetcher) FetchEntries(_ context.Context, url string, _ rss.CacheValidators) (rss.FetchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.fetched = append(f.fetched, url)
 	return f.result, nil
 }
