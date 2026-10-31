@@ -69,6 +69,9 @@ type FeedGroupReconciler struct {
 	// too. Without it the change is still noticed, on the group's next
 	// scheduled reconcile, with only get on Secrets.
 	WatchWebhookSecrets bool
+
+	// defaultsOnce guards withDefaults.
+	defaultsOnce sync.Once
 }
 
 // +kubebuilder:rbac:groups=rss2discord.maverickd650.dev,resources=feedgroups,verbs=get;list;watch;create;update;patch;delete
@@ -346,23 +349,34 @@ func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.F
 	return webhookURL, nil
 }
 
+// withDefaults fills a nil RSSClient and DiscordClientBuilder with the real
+// clients, once per reconciler (SetupWithManager calls it; a reconciler built
+// as a literal gets it on its first reconcile). The defaulted builder shares one
+// HTTP client and one discord.RateLimiter across every webhook it builds a
+// sender for, so a 429 seen by one FeedGroup holds the others on that webhook,
+// as cmd/main.go's explicit builder does.
+func (r *FeedGroupReconciler) withDefaults() {
+	r.defaultsOnce.Do(func() {
+		if r.RSSClient == nil {
+			r.RSSClient = rss.NewClient(nil)
+		}
+		if r.DiscordClientBuilder == nil {
+			httpClient := discord.NewHTTPClient()
+			limiter := discord.NewRateLimiter()
+			r.DiscordClientBuilder = func(webhookURL string) MessageSender {
+				return discord.NewClient(webhookURL, discord.WithHTTPClient(httpClient), discord.WithRateLimiter(limiter))
+			}
+		}
+	})
+}
+
 // clientsFor returns the feed fetcher and message sender for one reconcile,
-// defaulting r.RSSClient / r.DiscordClientBuilder to the real clients. Both are
 // wrapped in the timing adapters, which are the only place feedRequestDuration
 // is observed -- not the fetch goroutines or entryDelivery.
 func (r *FeedGroupReconciler) clientsFor(feedGroup *v1alpha1.FeedGroup, webhookURL string) (FeedFetcher, MessageSender) {
-	fetcher := r.RSSClient
-	if fetcher == nil {
-		fetcher = rss.NewClient(nil)
-	}
-	var sender MessageSender
-	if r.DiscordClientBuilder != nil {
-		sender = r.DiscordClientBuilder(webhookURL)
-	} else {
-		sender = discord.NewClient(webhookURL)
-	}
-	return newTimedFetcher(fetcher, feedGroup.Namespace, feedGroup.Name),
-		newTimedSender(sender, feedGroup.Namespace, feedGroup.Name)
+	r.withDefaults()
+	return newTimedFetcher(r.RSSClient, feedGroup.Namespace, feedGroup.Name),
+		newTimedSender(r.DiscordClientBuilder(webhookURL), feedGroup.Namespace, feedGroup.Name)
 }
 
 // fetchOutcome is one feed's fetch: the result and the error FetchEntries
@@ -405,6 +419,7 @@ func fetchAll(ctx context.Context, f FeedFetcher, feedGroup *v1alpha1.FeedGroup,
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.withDefaults()
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("feedgroup-controller")
 	}

@@ -108,7 +108,7 @@ func TestSendMessage_DoesNotFollowRedirect(t *testing.T) {
 	client := srv.Client()
 	client.CheckRedirect = NewHTTPClient().CheckRedirect
 
-	c := NewClientWithHTTP("https://"+testWebhookHost+testWebhookPath, client)
+	c := NewClient("https://"+testWebhookHost+testWebhookPath, WithHTTPClient(client))
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected the unfollowed redirect's 3xx status to surface as an error")
@@ -139,8 +139,8 @@ func TestSendMessage_SharedRateLimiterCooldownSkipsRequest(t *testing.T) {
 	// Two separate *Client instances for the same webhook, as
 	// DiscordClientBuilder constructs one per FeedGroup reconcile -- sharing
 	// a limiter is what makes one FeedGroup's 429 also hold off another.
-	c1 := NewClientWithLimiter(webhookURL, httpClient, limiter)
-	c2 := NewClientWithLimiter(webhookURL, httpClient, limiter)
+	c1 := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
+	c2 := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 
 	// First send actually hits the server and gets 429'd, which records the
 	// cooldown.
@@ -169,9 +169,9 @@ func TestSendMessage_SharedRateLimiterCooldownSkipsRequest(t *testing.T) {
 func TestSendMessage_NilRateLimiterDoesNotCooldown(t *testing.T) {
 	webhookURL, httpClient, requests := newRateLimitedServer(t)
 
-	// NewClientWithHTTP (no limiter) must behave exactly as before this
+	// NewClient without a limiter must behave exactly as before this
 	// change: every send reaches the server, with no cross-Client cooldown.
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	_, _ = c.SendMessageText(t.Context(), "first"), c.SendMessageText(t.Context(), "second")
 	if *requests != 2 {
 		t.Fatalf("expected both sends to reach the server without a shared limiter, got %d requests", *requests)
@@ -193,11 +193,11 @@ func TestSendMessage_AcceptsDiscordHost(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	// NewClientWithHTTP lets the test supply a client trusting the
+	// WithHTTPClient lets the test supply a client trusting the
 	// httptest TLS cert. The httptest server resolves to 127.0.0.1, so we
 	// temporarily add it to the allow-list to exercise the "happy path"
 	// without depending on a real discord.com endpoint.
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	if err := c.SendMessageText(t.Context(), "hello"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestSendMessage_SuppressesMentionsByDefault(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessageText(t.Context(), "@everyone breaking news")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -235,7 +235,7 @@ func TestSendMessage_RedactsWebhookURLOnTransportError(t *testing.T) {
 	httpClient := srv.Client()
 	webhookURL := "https://" + testWebhookHost + "/api/webhooks/123456789/SUPER-SECRET-TOKEN"
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected a transport error, got nil")
@@ -267,7 +267,7 @@ func TestSendMessage_ClampsCombinedEmbedLength(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessage(t.Context(), Message{
 		Embed: &Embed{
 			Title:       strings.Repeat("t", 256),
@@ -313,7 +313,7 @@ func TestSendMessage_SendsEmbedWithColorAndThumbnail(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessage(t.Context(), Message{
 		Embed: &Embed{
 			Title:        "Breaking News",
@@ -350,7 +350,7 @@ func TestSendMessage_SetsThreadNameForForumChannel(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessage(t.Context(), Message{Content: "hello", ThreadName: "New Post Title"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -367,7 +367,7 @@ func TestSendMessage_SetsThreadIDQueryParamForExistingThread(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessage(t.Context(), Message{Content: "hello", ThreadID: "123456789"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -383,7 +383,7 @@ func TestSendMessage_SurfacesDiscordErrorDetail(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Invalid Webhook Token","code":50027}`))
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected error for 400 response, got nil")
@@ -400,7 +400,7 @@ func TestSendMessage_ErrorWithoutBodyStillReturnsStatus(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessageText(t.Context(), "hello")
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
@@ -422,7 +422,7 @@ func TestSendMessage_RespectsTimeout(t *testing.T) {
 
 		client := httpClient
 		client.Timeout = 10 * time.Millisecond
-		c := NewClientWithHTTP(webhookURL, client)
+		c := NewClient(webhookURL, WithHTTPClient(client))
 		err := c.SendMessageText(t.Context(), "hello")
 		if err == nil {
 			t.Fatal("expected timeout-related error, got nil")
@@ -452,7 +452,7 @@ func newBucketServer(t *testing.T, remaining, resetAfter string) (webhookURL str
 func TestSendMessage_PacesWhenBucketEmpty(t *testing.T) {
 	webhookURL, httpClient, arrivals := newBucketServer(t, "0", "0.2")
 
-	c := NewClientWithLimiter(webhookURL, httpClient, NewRateLimiter())
+	c := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(NewRateLimiter()))
 	for _, text := range []string{"one", "two"} {
 		if err := c.SendMessageText(t.Context(), text); err != nil {
 			t.Fatalf("send %q: %v", text, err)
@@ -471,7 +471,7 @@ func TestSendMessage_PacesWhenBucketEmpty(t *testing.T) {
 func TestSendMessage_LongResetBecomesCooldown(t *testing.T) {
 	webhookURL, httpClient, arrivals := newBucketServer(t, "0", "30")
 
-	c := NewClientWithLimiter(webhookURL, httpClient, NewRateLimiter())
+	c := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(NewRateLimiter()))
 	if err := c.SendMessageText(t.Context(), "one"); err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestNotePacing_IgnoresUnusableHeaders(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			limiter := NewRateLimiter()
-			c := NewClientWithLimiter(testWebhookURL, nil, limiter)
+			c := NewClient(testWebhookURL, WithRateLimiter(limiter))
 			h := http.Header{}
 			if tc.remaining != "" {
 				h.Set("X-RateLimit-Remaining", tc.remaining)
@@ -536,7 +536,7 @@ func TestNotePacing_IgnoresUnusableHeaders(t *testing.T) {
 // TestNotePacing_NilLimiterIsNoop asserts a Client built without a limiter
 // ignores rate-limit headers instead of dereferencing nil.
 func TestNotePacing_NilLimiterIsNoop(t *testing.T) {
-	c := NewClientWithHTTP(testWebhookURL, nil)
+	c := NewClient(testWebhookURL)
 	c.notePacing(c.webhookURL, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset-After": {"1"}})
 }
 
@@ -548,7 +548,7 @@ func TestSendMessage_ContextCanceledWhilePaced(t *testing.T) {
 
 	limiter := NewRateLimiter()
 	limiter.pace(webhookURL, maxPaceWait)
-	c := NewClientWithLimiter(webhookURL, httpClient, limiter)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
@@ -606,7 +606,7 @@ func TestNotePacing_ResetAfterIsBounded(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			limiter := NewRateLimiter()
-			c := NewClientWithLimiter(testWebhookURL, nil, limiter)
+			c := NewClient(testWebhookURL, WithRateLimiter(limiter))
 			h := http.Header{}
 			h.Set("X-RateLimit-Remaining", "0")
 			h.Set("X-RateLimit-Reset-After", tc.reset)
@@ -634,7 +634,7 @@ func TestSendMessage_ExcessiveResetAfterGivesABoundedRateLimit(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("")),
 		}, nil
 	})
-	c := NewClientWithLimiter(testWebhookURL, &http.Client{Transport: transport}, NewRateLimiter())
+	c := NewClient(testWebhookURL, WithHTTPClient(&http.Client{Transport: transport}), WithRateLimiter(NewRateLimiter()))
 
 	if err := c.SendMessageText(t.Context(), "first"); err != nil {
 		t.Fatalf("first send: %v", err)
@@ -647,4 +647,9 @@ func TestSendMessage_ExcessiveResetAfterGivesABoundedRateLimit(t *testing.T) {
 	if rl.RetryAfter <= maxPaceWait || rl.RetryAfter > maxCooldown {
 		t.Fatalf("RetryAfter = %v, want in (%v, %v]", rl.RetryAfter, maxPaceWait, maxCooldown)
 	}
+}
+
+// SendMessageText sends plain, embed-less content; only tests use it.
+func (c *Client) SendMessageText(ctx context.Context, content string) error {
+	return c.SendMessage(ctx, Message{Content: content})
 }

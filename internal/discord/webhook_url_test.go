@@ -49,7 +49,7 @@ func TestSendMessage_NormalizedURLPreservesThreadTarget(t *testing.T) {
 		requests = append(requests, r)
 		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
-	c := NewClientWithHTTP(" \nhttps://PTB.Discord.com/api/v10/webhooks/1/a%2Fb?wait=true&thread_id=old\t ", httpClient)
+	c := NewClient(" \nhttps://PTB.Discord.com/api/v10/webhooks/1/a%2Fb?wait=true&thread_id=old\t ", WithHTTPClient(httpClient))
 	if err := c.SendMessage(t.Context(), Message{Content: "thread-target", ThreadID: "12345"}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,12 +83,12 @@ func TestSendMessage_NormalizedHostsShareCooldown(t *testing.T) {
 			})}
 			limiter := NewRateLimiter()
 			const path = "/api/webhooks/1/token"
-			first := NewClientWithLimiter("https://"+host+path, httpClient, limiter)
+			first := NewClient("https://"+host+path, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 			if err := first.SendMessageText(t.Context(), "first"); err == nil {
 				t.Fatal("expected first request to be rate limited")
 			}
 			for _, alias := range []string{canonicalWebhookHost, ptbWebhookHost, canaryWebhookHost} {
-				other := NewClientWithLimiter(" \nhttps://"+alias+path+"\t", httpClient, limiter)
+				other := NewClient(" \nhttps://"+alias+path+"\t", WithHTTPClient(httpClient), WithRateLimiter(limiter))
 				err := other.SendMessageText(t.Context(), "held")
 				rle, ok := errors.AsType[*RateLimitError](err)
 				if !ok || rle.RetryAfter <= 0 || rle.RetryAfter > time.Hour {
@@ -99,7 +99,7 @@ func TestSendMessage_NormalizedHostsShareCooldown(t *testing.T) {
 				t.Fatalf("cooldown allowed %d network requests, want 1", requests)
 			}
 			// A different token must retain its own rate-limit bucket.
-			independent := NewClientWithLimiter("https://discord.com/api/webhooks/1/other-token", httpClient, limiter)
+			independent := NewClient("https://discord.com/api/webhooks/1/other-token", WithHTTPClient(httpClient), WithRateLimiter(limiter))
 			if err := independent.SendMessageText(t.Context(), "independent"); err == nil || requests != 2 {
 				t.Fatalf("different webhook did not reach transport: requests=%d err=%v", requests, err)
 			}
@@ -146,7 +146,7 @@ func TestSendMessage_EmbedMediaJSON(t *testing.T) {
 				}
 				return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
 			})}
-			c := NewClientWithHTTP("https://discord.com/api/webhooks/1/token", httpClient)
+			c := NewClient("https://discord.com/api/webhooks/1/token", WithHTTPClient(httpClient))
 			if err := c.SendMessage(t.Context(), Message{Embed: &Embed{Title: "Title", ThumbnailURL: tc.thumbnail, ImageURL: tc.image}}); err != nil {
 				t.Fatal(err)
 			}
@@ -189,7 +189,7 @@ func TestSendMessage_PTBAndCanaryHostsAreSentToDiscordCom(t *testing.T) {
 	for _, host := range []string{"ptb.discord.com", "canary.discord.com", "PTB.Discord.com"} {
 		t.Run(host, func(t *testing.T) {
 			var hosts []string
-			c := NewClientWithHTTP("https://"+host+"/api/webhooks/1/token", recordingClient(&hosts))
+			c := NewClient("https://"+host+"/api/webhooks/1/token", WithHTTPClient(recordingClient(&hosts)))
 			if err := c.SendMessageText(t.Context(), "hi"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -212,7 +212,7 @@ func TestSendMessage_PTBLookalikesStillRejected(t *testing.T) {
 	} {
 		t.Run(raw, func(t *testing.T) {
 			var hosts []string
-			c := NewClientWithHTTP(raw, recordingClient(&hosts))
+			c := NewClient(raw, WithHTTPClient(recordingClient(&hosts)))
 			if err := c.SendMessageText(t.Context(), "hi"); err == nil {
 				t.Fatal("expected the URL to be rejected")
 			}

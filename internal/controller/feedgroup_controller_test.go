@@ -287,7 +287,7 @@ func (d *MockDiscordServer) DeliveryAttempts() int {
 func (d *MockDiscordServer) DiscordClientBuilder() func(webhookURL string) MessageSender {
 	httpClient := d.server.Client()
 	return func(webhookURL string) MessageSender {
-		return discord.NewClientWithHTTP(webhookURL, httpClient)
+		return discord.NewClient(webhookURL, discord.WithHTTPClient(httpClient))
 	}
 }
 
