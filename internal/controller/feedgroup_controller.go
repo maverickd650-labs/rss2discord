@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -132,7 +134,15 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// An unparsable Interval is reported by settleGroup below; the pass only
 	// uses the cadence's default for the due check.
-	verdict, plan := reconcilePass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, cad, time.Now().UTC(), prep.specChanged)
+	verdict, plan, panicked := containedPass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, cad, time.Now().UTC(), prep.specChanged)
+	if panicked != nil {
+		// Write what the pass got done, then fail the reconcile as the panic
+		// would have: controller-runtime logs it and requeues with backoff.
+		if _, err := r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), nil); err != nil {
+			return ctrl.Result{}, errors.Join(panicked, err)
+		}
+		return ctrl.Result{}, panicked
+	}
 
 	decision := plan.requeue(cad, verdict.retry, verdict.retryAfter)
 	return r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, decision, nil)
@@ -246,10 +256,59 @@ type feedRun struct {
 // feedSync.apply. The returned verdict says whether the reconcile should retry
 // sooner than the normal interval and, if Discord rate limited the webhook, how
 // long to wait before the next attempt.
+//
+// A panic while the sync is applied is not settled normally, but it is not
+// left to discard the feed's progress either: entries already posted to
+// Discord would be posted again on the next reconcile, and again on every
+// retry if the panic is deterministic. processFeed secures the feed's status
+// (feedSync.secureAfterPanic: restored to how it was when nothing was handled
+// yet, settled as pending once something was) and re-raises the panic as a
+// *feedPanic, which Reconcile recovers to write the group's status before
+// failing the reconcile.
 func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	fs := feedStatusFor(run.group, run.feed.RSSUrl)
+	before := fs.DeepCopy()
 	syncer := openFeedSync(fs, run.fetched.result, feedSyncSpecFor(run.group, run.now))
+	defer func() {
+		if p := recover(); p != nil {
+			syncer.secureAfterPanic(before)
+			panic(&feedPanic{url: run.feed.RSSUrl, value: p, stack: debug.Stack()})
+		}
+	}()
 	return syncer.apply(ctx, run, run.newAttempt(fs))
+}
+
+// feedPanic is a panic raised while processFeed applied one feed's fetch,
+// re-raised once that feed's status was secured (see processFeed). It is the
+// only panic Reconcile recovers: any other one may have left the status
+// half-written, so it propagates unchanged and nothing is written.
+type feedPanic struct {
+	url   string
+	value any
+	stack []byte
+}
+
+func (p *feedPanic) Error() string {
+	return fmt.Sprintf("panic while processing feed %s: %v\n%s", p.url, p.value, p.stack)
+}
+
+// containedPass is reconcilePass with a *feedPanic recovered and returned
+// rather than propagated, so Reconcile can still write the group's status
+// (the feeds processed before it, and the panicking feed as secured).
+func containedPass(ctx context.Context, feedGroup *v1alpha1.FeedGroup, fetcher FeedFetcher, sender MessageSender,
+	recorder events.EventRecorder, cad cadence, now time.Time, force bool,
+) (verdict attemptVerdict, plan feedPlan, panicked *feedPanic) {
+	defer func() {
+		if p := recover(); p != nil {
+			fp, ok := p.(*feedPanic)
+			if !ok {
+				panic(p)
+			}
+			panicked = fp
+		}
+	}()
+	verdict, plan = reconcilePass(ctx, feedGroup, fetcher, sender, recorder, cad, now, force)
+	return verdict, plan, nil
 }
 
 // webhook returns the group's Discord webhook URL, read uncached from its

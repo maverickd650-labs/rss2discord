@@ -71,6 +71,10 @@ type feedSync struct {
 	wasInitialized bool
 
 	ledger *deliveryLedger
+	// handled counts the entries markHandled recorded, and closing is set once
+	// close starts: what secureAfterPanic decides from.
+	handled int
+	closing bool
 	// scan is the plan's whole window, in order: the entries the send loop may
 	// consider start at resumeAt, and the ones before it are kept as render
 	// evidence (see renderEvidence); set by begin.
@@ -318,6 +322,30 @@ func (s *feedSync) sent(entry rss.Entry) bool {
 // and moves the watermark to it.
 func (s *feedSync) markHandled(entry rss.Entry) {
 	s.ledger.markHandled(entry, s.spec.now.Format(time.RFC3339))
+	s.handled++
+}
+
+// secureAfterPanic leaves fs safe to write after a panic interrupted apply, so
+// a reconcile that fails on the panic can still persist it (see processFeed).
+// before is fs as it was when the sync was opened.
+//
+//   - Nothing handled yet: fs is restored to before. Nothing was posted, so
+//     the next reconcile replays the same sync from where it started, and no
+//     half-applied migration, plan or condition is persisted.
+//   - Something handled: every handled entry is already recorded in LastSent
+//     and the watermark (markHandled writes both, entry by entry), so the
+//     sync is settled as pending: those entries are not posted again, and no
+//     validators are stored, so the unhandled ones are fetched and retried.
+//   - Panicked inside close: close only settles what its verdict allows, and
+//     every step of it is safe to persist on its own, so fs is left as it is.
+func (s *feedSync) secureAfterPanic(before *v1alpha1.FeedStatus) {
+	switch {
+	case s.closing:
+	case s.handled == 0:
+		*s.fs = *before
+	default:
+		s.close(syncPending)
+	}
 }
 
 // skipBacklog records the newest of entries (sorted oldest-to-newest) as the
@@ -373,6 +401,7 @@ func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
 // The legacy stateVersion is advanced last, and only when nothing in fs still
 // needs the legacy reading (see legacyState.settleOnClose).
 func (s *feedSync) close(verdict syncVerdict) {
+	s.closing = true
 	switch verdict {
 	case syncFetchFailed, syncConfigError:
 		// Nothing was accounted for.

@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -518,35 +520,104 @@ func TestSyncVerdict_String(t *testing.T) {
 	}
 }
 
-// apply closes the sync as its last act, not from a defer: a panic while
-// sending must surface unchanged and leave the FeedStatus unsettled (not
-// Initialized, validators not stored, nothing pruned), exactly as if the
-// reconcile had never reached the close.
-func TestFeedSyncApply_PanicDuringDeliveryLeavesStatusUnsettled(t *testing.T) {
+// processFeedPanic runs processFeed and returns the *feedPanic it re-raises.
+func processFeedPanic(t *testing.T, run feedRun) *feedPanic {
+	t.Helper()
+	var got any
+	func() {
+		defer func() { got = recover() }()
+		processFeed(t.Context(), run)
+	}()
+	fp, ok := got.(*feedPanic)
+	if !ok {
+		t.Fatalf("processFeed raised %#v, want a *feedPanic", got)
+	}
+	return fp
+}
+
+func TestProcessFeed_PanicBeforeAnythingIsHandledRestoresTheStatus(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("sync-panic", "fg-sync-panic", "")
 	fetch := oneEntryFetch()
 	fetch.ETag = "etag-1"
-	run := testRun(t, fg, feed, fetch, nil, panicSender{})
+	before := feedStatusFor(fg, feed.RSSUrl).DeepCopy()
+	run := testRun(t, fg, feed, fetch, nil, &panicSender{})
 
-	const original = "send exploded"
-	got := func() (recovered any) {
-		defer func() { recovered = recover() }()
-		processFeed(t.Context(), run)
-		return nil
-	}()
-	if got != original {
-		t.Fatalf("recovered %v, want the original panic %q", got, original)
+	fp := processFeedPanic(t, run)
+	if fp.value != "send exploded" || fp.url != feed.RSSUrl || len(fp.stack) == 0 {
+		t.Fatalf("feedPanic = {url: %q, value: %v, stack: %d bytes}, want the original panic for %q with a stack",
+			fp.url, fp.value, len(fp.stack), feed.RSSUrl)
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
-	if fs.Initialized || fs.ETag != "" {
-		t.Fatalf("a sync that panicked mid-delivery was settled: Initialized=%v ETag=%q", fs.Initialized, fs.ETag)
+	if !strings.Contains(fp.Error(), "send exploded") {
+		t.Fatalf("feedPanic.Error() = %q, want it to carry the panic value", fp.Error())
+	}
+	if got := feedStatusFor(fg, feed.RSSUrl); !apiequality.Semantic.DeepEqual(got, before) {
+		t.Fatalf("a sync that panicked before handling anything changed the status:\n got %+v\nwant %+v", got, before)
 	}
 }
 
-// panicSender is a MessageSender whose send panics.
-type panicSender struct{}
+func TestProcessFeed_PanicAfterASendKeepsTheSentEntryRecorded(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("sync-panic", "fg-sync-panic-later", "")
+	const sentFirst, panicsOn = "https://example.com/panic-sent", "https://example.com/panic-unsent"
+	fetch := rss.FetchResult{ETag: "etag-1", Entries: []rss.Entry{
+		{ID: sentFirst, Title: "A", Link: sentFirst, Published: testReconcileInstant.Add(-2 * time.Hour)},
+		{ID: panicsOn, Title: "B", Link: panicsOn, Published: testReconcileInstant.Add(-time.Hour)},
+	}}
+	sender := &panicSender{after: 1}
+	run := testRun(t, fg, feed, fetch, nil, sender)
 
-func (panicSender) SendMessage(context.Context, discord.Message) error { panic("send exploded") }
+	_ = processFeedPanic(t, run)
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if sender.sent != 1 {
+		t.Fatalf("sent %d messages before the panic, want 1", sender.sent)
+	}
+	if fs.LastSeenEntry != sentFirst {
+		t.Fatalf("LastSeenEntry = %q, want the entry sent before the panic", fs.LastSeenEntry)
+	}
+	if _, ok := fs.LastSent[hashIdentity(sentFirst)]; !ok || len(fs.LastSent) != 1 {
+		t.Fatalf("LastSent = %v, want only the entry sent before the panic", fs.LastSent)
+	}
+	if fs.ETag != "" {
+		t.Fatalf("ETag = %q, want it unset: the unsent entry must be fetched again", fs.ETag)
+	}
+}
+
+func TestFeedSync_SecureAfterPanicLeavesAStartedCloseAlone(t *testing.T) {
+	fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "after-close"}
+	s := openFeedSync(fs, oneEntryFetch(), feedSyncSpec{catchUpLimit: defaultCatchUpLimit, now: testReconcileInstant})
+	s.closing = true
+	s.secureAfterPanic(&v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "before"})
+	if fs.LastSeenEntry != "after-close" || fs.Initialized {
+		t.Fatalf("secureAfterPanic changed a status close had started settling: %+v", fs)
+	}
+}
+
+func TestContainedPass_OnlyRecoversFeedPanics(t *testing.T) {
+	var got any
+	func() {
+		defer func() { got = recover() }()
+		// A nil group panics in planFeeds, outside any feed's sync.
+		_, _, _ = containedPass(t.Context(), nil, &fakeFetcher{}, &fakeSender{}, nil, cadence{}, testReconcileInstant, false)
+	}()
+	if got == nil {
+		t.Fatal("a panic outside processFeed was swallowed")
+	}
+	if _, ok := got.(*feedPanic); ok {
+		t.Fatalf("a panic outside processFeed came back as a *feedPanic: %v", got)
+	}
+}
+
+// panicSender is a MessageSender that sends after messages, then panics.
+type panicSender struct {
+	after, sent int
+}
+
+func (p *panicSender) SendMessage(context.Context, discord.Message) error {
+	if p.sent >= p.after {
+		panic("send exploded")
+	}
+	p.sent++
+	return nil
+}
 
 func TestLimitCatchUp(t *testing.T) {
 	mk := func(n int) []rss.Entry {
