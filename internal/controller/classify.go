@@ -19,7 +19,6 @@ package controller
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/xml"
 	"errors"
 	"net"
 
@@ -68,6 +67,8 @@ const (
 	reasonWebhookInvalid     = "WebhookInvalid"
 	reasonBlockedAddress     = "BlockedAddress"
 	reasonTLSError           = "TLSError"
+	reasonResponseTooLarge   = "ResponseTooLarge"
+	reasonInvalidURL         = "InvalidURL"
 	reasonOther              = "Other"
 
 	// reasonConfigError and reasonRenderError are FeedConditionTypeDelivered
@@ -96,6 +97,8 @@ const (
 	metricWebhookInvalid     = "webhook_invalid"
 	metricBlockedAddress     = "blocked_address"
 	metricTLSError           = "tls_error"
+	metricResponseTooLarge   = "response_too_large"
+	metricInvalidURL         = "invalid_url"
 	metricOther              = "other"
 )
 
@@ -112,6 +115,8 @@ var (
 	classWebhookInvalid     = failureClass{metricWebhookInvalid, reasonWebhookInvalid, true}
 	classBlockedAddress     = failureClass{metricBlockedAddress, reasonBlockedAddress, true}
 	classTLSError           = failureClass{metricTLSError, reasonTLSError, true}
+	classResponseTooLarge   = failureClass{metricResponseTooLarge, reasonResponseTooLarge, true}
+	classInvalidURL         = failureClass{metricInvalidURL, reasonInvalidURL, true}
 	classOther              = failureClass{metricOther, reasonOther, false}
 )
 
@@ -139,12 +144,22 @@ func classifyFetchError(err error) failureClass {
 		return class
 	}
 
-	if _, ok := errors.AsType[*xml.SyntaxError](err); ok {
+	// Before ParseError: an unrecognized root element is reported as a
+	// *rss.ParseError wrapping the *rss.UnrecognizedFormatError.
+	if _, ok := errors.AsType[*rss.UnrecognizedFormatError](err); ok {
+		return classUnrecognizedFormat
+	}
+
+	if _, ok := errors.AsType[*rss.ParseError](err); ok {
 		return classParseError
 	}
 
-	if _, ok := errors.AsType[*rss.UnrecognizedFormatError](err); ok {
-		return classUnrecognizedFormat
+	if _, ok := errors.AsType[*rss.ResponseTooLargeError](err); ok {
+		return classResponseTooLarge
+	}
+
+	if _, ok := errors.AsType[*rss.InvalidURLError](err); ok {
+		return classInvalidURL
 	}
 
 	return classOther

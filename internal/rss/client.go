@@ -120,6 +120,52 @@ func (e *UnrecognizedFormatError) Error() string {
 	return fmt.Sprintf("unrecognized feed format: root element <%s>", e.Root)
 }
 
+// ParseError is returned by parseFeed (and so by FetchEntries) for every
+// failure to turn a 2xx response body into entries: malformed or truncated
+// XML (Err is then an *xml.SyntaxError), an empty body (io.EOF), a declared
+// charset that cannot be decoded, or a root element that is no known feed
+// format (Err is then an *UnrecognizedFormatError, which errors.As still
+// finds). The body is what the server sent, so retrying the same request
+// won't fix it. Typing the whole family here keeps callers from matching
+// encoding/xml's error types themselves.
+type ParseError struct {
+	Err error
+}
+
+func (e *ParseError) Error() string {
+	return "parse feed: " + e.Err.Error()
+}
+
+func (e *ParseError) Unwrap() error { return e.Err }
+
+// ResponseTooLargeError is returned by FetchEntries when a feed response body
+// exceeds the size cap. The cap is fixed, so the same feed keeps failing the
+// same way until it shrinks.
+type ResponseTooLargeError struct {
+	// Limit is the maximum response size in bytes that was exceeded.
+	Limit int64
+}
+
+func (e *ResponseTooLargeError) Error() string {
+	return fmt.Sprintf("feed response exceeds maximum allowed size of %d bytes", e.Limit)
+}
+
+// InvalidURLError is returned by FetchEntries, before any request is made,
+// for a feed URL that is empty, unparsable or not http(s). It is a feed
+// misconfiguration that only a change to the URL fixes.
+type InvalidURLError struct {
+	// URL is the offending value as given.
+	URL string
+	// Msg is the human-readable reason; it is what Error returns.
+	Msg string
+	// Err is the underlying parse error, if any.
+	Err error
+}
+
+func (e *InvalidURLError) Error() string { return e.Msg }
+
+func (e *InvalidURLError) Unwrap() error { return e.Err }
+
 // BlockedAddressError is returned (wrapped by net/http as a *url.Error /
 // *net.OpError) when the SSRF guard refuses to connect to a non-public
 // address. It is a typed error so callers can tell this permanent feed
@@ -305,16 +351,16 @@ func isPublicIP(ip netip.Addr) bool {
 // re-download and re-parse.
 func (c *Client) FetchEntries(ctx context.Context, feedURL string, validators CacheValidators) (FetchResult, error) {
 	if strings.TrimSpace(feedURL) == "" {
-		return FetchResult{}, fmt.Errorf("feed URL is empty")
+		return FetchResult{}, &InvalidURLError{URL: feedURL, Msg: "feed URL is empty"}
 	}
 
 	parsedURL, err := url.ParseRequestURI(feedURL)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("invalid feed URL %q: %w", feedURL, err)
+		return FetchResult{}, &InvalidURLError{URL: feedURL, Msg: fmt.Sprintf("invalid feed URL %q: %v", feedURL, err), Err: err}
 	}
 
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return FetchResult{}, fmt.Errorf("unsupported feed URL scheme %q: only http/https are allowed", parsedURL.Scheme)
+		return FetchResult{}, &InvalidURLError{URL: feedURL, Msg: fmt.Sprintf("unsupported feed URL scheme %q: only http/https are allowed", parsedURL.Scheme)}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
@@ -362,7 +408,7 @@ func (c *Client) FetchEntries(ctx context.Context, feedURL string, validators Ca
 		return FetchResult{}, err
 	}
 	if len(data) > maxFeedResponseBytes {
-		return FetchResult{}, fmt.Errorf("feed response exceeds maximum allowed size of %d bytes", maxFeedResponseBytes)
+		return FetchResult{}, &ResponseTooLargeError{Limit: maxFeedResponseBytes}
 	}
 
 	entries, feedTitle, err := parseFeed(data)
@@ -1076,8 +1122,17 @@ func atomText(cands []nsText) string {
 }
 
 // parseFeed parses an RSS 2.0, Atom or RSS 1.0 (RDF) document into its
-// entries and the feed's own title ("" if it has none).
+// entries and the feed's own title ("" if it has none). Every failure is a
+// *ParseError.
 func parseFeed(data []byte) ([]Entry, string, error) {
+	entries, title, err := parseFeedDocument(data)
+	if err != nil {
+		return nil, "", &ParseError{Err: err}
+	}
+	return entries, title, nil
+}
+
+func parseFeedDocument(data []byte) ([]Entry, string, error) {
 	root, err := rootElementName(data)
 	if err != nil {
 		return nil, "", err

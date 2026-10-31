@@ -579,7 +579,10 @@ func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
 	if unrecognized.Root != "feedwrapper" {
 		t.Fatalf("expected Root %q, got %q", "feedwrapper", unrecognized.Root)
 	}
-	if got, want := err.Error(), "unrecognized feed format: root element <feedwrapper>"; got != want {
+	if _, ok := errors.AsType[*ParseError](err); !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if got, want := unrecognized.Error(), "unrecognized feed format: root element <feedwrapper>"; got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
