@@ -1,6 +1,6 @@
 # Glossary
 
-Terms used in `internal/controller`, with the names the code gives them.
+Terms used in `internal/controller` (and `internal/msgtemplate`), with the names the code gives them.
 
 **Feed sync** (`feedSync`, `feed_sync.go`)
 : The application of one fetch of one feed to that feed's `FeedStatus`. It is opened
@@ -98,3 +98,12 @@ Terms used in `internal/controller`, with the names the code gives them.
   `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom; and
   `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
   clears it), inferred from the feed's `Reachable` condition not being False.
+
+**Message template sandbox** (`msgtemplate`, `internal/msgtemplate`)
+: The only place user-supplied message templates are parsed or run. `Compile` trims,
+  falls back when blank, parses with the helper funcs and rejects unbounded constructs
+  (`range`, `define`/`template`, `with`, variable assignment, string-building builtins);
+  it returns an opaque `Template` whose `Execute` writes through a size-capped buffer and
+  returns no partial output on error. No other production package may import
+  `text/template` (`TestOnlyTheSandboxImportsTextTemplate`). The controller maps an entry
+  to `templateData` and calls `Execute`.

@@ -42,6 +42,7 @@ rss2discord-operator watches RSS/Atom feeds described by `FeedGroup` custom reso
 Three internal packages do the real work:
 - `internal/rss` — fetches and parses feeds (conditional GET via ETag/Last-Modified, response-size cap).
 - `internal/discord` — sends webhook messages (message building, rate-limit/error handling, content sanitization).
+- `internal/msgtemplate` — the message-template sandbox (construct checks, output cap, bounded helpers); the only production package allowed to import `text/template`.
 - `internal/controller` — the `FeedGroupReconciler`: orchestrates fetch → filter → template → send → status for each `FeedGroup`, plus the Prometheus metrics in `metrics.go`.
 
 **SSRF guards — do not weaken or duplicate these.** Both outbound paths are deliberately locked down because `FeedGroup.Spec` (RSS URLs) and the webhook secret are user-supplied input that could otherwise be used to probe internal networks:

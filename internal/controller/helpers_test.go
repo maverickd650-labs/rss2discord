@@ -10,6 +10,7 @@ import (
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650/rss2discord-operator/internal/msgtemplate"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -538,12 +539,12 @@ func TestCompileMessageTemplate_Precedence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		var sb strings.Builder
-		if err := tmpl.Execute(&sb, map[string]string{"Title": "X"}); err != nil {
+		got, err := tmpl.Execute(map[string]string{"Title": "X"})
+		if err != nil {
 			t.Fatalf("execute error: %v", err)
 		}
-		if sb.String() != "feed X" {
-			t.Fatalf("expected feed format used, got %q", sb.String())
+		if got != "feed X" {
+			t.Fatalf("expected feed format used, got %q", got)
 		}
 	})
 
@@ -567,7 +568,7 @@ func TestCompileMessageTemplate_Precedence(t *testing.T) {
 }
 
 func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
-	tmpl, err := compileTemplate("test", "{{.Author}} | {{.Categories}}", "")
+	tmpl, err := msgtemplate.Compile("test", "{{.Author}} | {{.Categories}}", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -596,7 +597,7 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 // renders an empty {{.Published}} rather than "0001-01-01T00:00:00Z", while a
 // real date is still formatted as RFC 3339 UTC.
 func TestRenderTemplate_Published(t *testing.T) {
-	tmpl, err := compileTemplate("test", "[{{.Published}}]", "")
+	tmpl, err := msgtemplate.Compile("test", "[{{.Published}}]", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -628,7 +629,7 @@ func TestRenderTemplate_Published(t *testing.T) {
 func TestRenderTemplate_NewFields(t *testing.T) {
 	render := func(t *testing.T, format string, entry rss.Entry) string {
 		t.Helper()
-		tmpl, err := compileTemplate("test", format, "")
+		tmpl, err := msgtemplate.Compile("test", format, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -777,7 +778,7 @@ func TestFeedRendererBuild_EmbedImageStyle(t *testing.T) {
 }
 
 func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
-	tmpl, err := compileTemplate("test", tmplTitle, "")
+	tmpl, err := msgtemplate.Compile("test", tmplTitle, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
