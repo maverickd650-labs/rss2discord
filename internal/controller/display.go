@@ -32,7 +32,8 @@ import (
 //   - Title, Description, FeedTitle: stripHTML.
 //   - Link, Image: httpURLOrEmpty (http/https only).
 //   - Published, PublishedUnix: formatted by formatPublished/publishedUnix ("" and 0 when undated).
-//   - Author, Categories: passed through as-is.
+//   - Author, Categories: stripHTML each; a category that strips to nothing is dropped
+//     (as the parsers already drop blank ones).
 //   - Content: stripHTML, on demand (see content).
 type displayEntry struct {
 	Title         string
@@ -60,11 +61,24 @@ func displayOf(entry rss.Entry) displayEntry {
 		Image:         httpURLOrEmpty(entry.Image),
 		Published:     formatPublished(entry.Published),
 		PublishedUnix: publishedUnix(entry.Published),
-		Author:        entry.Author,
-		Categories:    entry.Categories,
+		Author:        stripHTML(entry.Author),
+		Categories:    stripCategories(entry.Categories),
 		FeedTitle:     stripHTML(entry.FeedTitle),
 		rawContent:    entry.Content,
 	}
+}
+
+// stripCategories strips HTML from each category and drops any that come out
+// empty, which keeps the parsers' guarantee that categories are never blank.
+// It returns nil when none remain.
+func stripCategories(categories []string) []string {
+	var out []string
+	for _, c := range categories {
+		if c = stripHTML(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // content is the entry's full body with HTML stripped, computed on each call.
