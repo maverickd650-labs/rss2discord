@@ -603,8 +603,13 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 							s := constant.StringVal(declared.Val())
 							if !reasons[s] {
 								continue
-								}
+							}
 							canonical := packageConsts[n] && reasonFiles[filename]
+							if !canonical && !slices.ContainsFunc(values.Values, containsNonEmptyStringLiteral) {
+								// A local alias of a named constant (const reason =
+								// reasonOops) adds no new spelling of the value.
+								continue
+							}
 							constSpellings[s] = append(constSpellings[s], spelling{
 								pos: name.Pos(), canonical: canonical,
 							})
@@ -628,7 +633,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 					return true
 				}
 				if s, ok := stringConstant(info, n); ok && reasons[s] && containsNonEmptyStringLiteral(n) {
-					problems[fmt.Sprintf("%s: constant expression spells reason %s; use its named constant", fset.Position(n.Pos()), strconv.Quote(s))] = true
+					problems[fmt.Sprintf("%s: string %s is spelled by a constant expression; use its named constant", fset.Position(n.Pos()), strconv.Quote(s))] = true
 					return false
 				}
 			}
