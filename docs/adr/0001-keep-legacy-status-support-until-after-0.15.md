@@ -15,10 +15,12 @@ them also can't tell whether the feed was empty when it was last checked ("ambig
 status", see `GLOSSARY.md`). `internal/controller/legacy.go` reads these statuses, migrates their
 identities and caps an ambiguous status's catch-up.
 
-Running a current controller does not by itself convert a status. `legacyState.settleOnClose`
-stamps `stateVersion: 1` only after a sync that migrated the stored identities (which needs a
-fetch with entries that passes the config check) and, for an ambiguous status, one that ended
-empty or accounted for. So these feeds can keep `stateVersion` 0 indefinitely:
+Running a current controller does not by itself convert every status.
+`legacyState.settleOnClose` stamps `stateVersion: 1` on any sync once nothing legacy remains to
+resolve. A status that stores legacy identities (a watermark or `LastSent` keys) needs a sync that
+migrated them first, which takes a fetch with entries that passes the config check. An ambiguous
+status also needs a sync that ended empty or accounted for. A status with neither is stamped on
+its next sync, whatever the outcome. So feeds like these can keep `stateVersion` 0 indefinitely:
 
 - a quiet feed that keeps answering 304;
 - a feed that keeps failing to fetch, or has a config error;
@@ -44,11 +46,13 @@ only through the calls CLAUDE.md lists.
   format:
 
   ```bash
+  set -o pipefail
   kubectl get feedgroups -A -o json | jq -r '
     .items[] | . as $g | .status.feeds[]? | select((.stateVersion // 0) < 1)
     | "\($g.metadata.namespace)/\($g.metadata.name)  \(.rssUrl)"'
   ```
 
-  An empty output means that cluster is safe to upgrade past the removal.
+  An empty output with exit status 0 means that cluster is safe to upgrade past the removal; with
+  `pipefail`, a failed `kubectl` call exits non-zero instead of looking like an empty result.
 - Until then, every change to identity, the delivery ledger or settlement has to keep the legacy
   path working and tested.
