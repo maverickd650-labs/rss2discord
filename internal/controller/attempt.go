@@ -302,9 +302,8 @@ func (a feedAttempt) pastRetryLimit() bool {
 	return a.fs.RetryCount > maxRetryCount(a.group.Spec.Retries)
 }
 
-// backOff sets fs.BackoffUntil using exponential backoff
-// (permanentBackoffDuration, based on fs.RetryCount, which failed has already
-// incremented for this failure), capped at maxPermanentBackoff. reason and err
+// backOff extends fs's permanent backoff (feedBackoff.extend, based on
+// fs.RetryCount, which failed has already incremented for this failure). reason and err
 // identify the Warning Event fired the first time the cap is reached -- not on
 // every capped retry after, so a feed that keeps failing at the cap doesn't
 // emit an Event every few hours. Unlike the exhaustion Event it doesn't speak
@@ -313,17 +312,10 @@ func (a feedAttempt) pastRetryLimit() bool {
 // the group's Interval is longer).
 func (a feedAttempt) backOff(reason string, err error) {
 	base, _ := parseDurationWithDefault(a.group.Spec.RetryInterval, fallbackRetryInterval)
-	backoff := permanentBackoffDuration(int(a.fs.RetryCount), base)
-	if backoff >= maxPermanentBackoff {
-		firstCapped := a.fs.RetryCount <= 1 ||
-			permanentBackoffDuration(int(a.fs.RetryCount)-1, base) < maxPermanentBackoff
-		if firstCapped {
-			a.warn(reason, "BackoffCapped", "feed %s: still failing permanently, backoff now capped at %s: %v",
-				a.url, maxPermanentBackoff, err)
-		}
-		backoff = maxPermanentBackoff
+	if backoffOf(a.fs).extend(base, time.Now().UTC()) {
+		a.warn(reason, "BackoffCapped", "feed %s: still failing permanently, backoff now capped at %s: %v",
+			a.url, maxPermanentBackoff, err)
 	}
-	a.fs.BackoffUntil = nextBackoffUntil(time.Now().UTC(), backoff)
 }
 
 // setCondition is setFeedCondition for the attempt's feed and generation. It
@@ -348,6 +340,5 @@ func (a feedAttempt) warn(reason, action, format string, args ...any) {
 // feedSync does when the fetch it applied is accounted for.
 func clearFailure(fs *v1alpha1.FeedStatus) {
 	fs.LastError = ""
-	fs.RetryCount = 0
-	fs.BackoffUntil = ""
+	backoffOf(fs).clear()
 }
