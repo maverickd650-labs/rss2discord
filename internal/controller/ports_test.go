@@ -261,14 +261,51 @@ func TestProcessFeed_FakeSenderSuccess(t *testing.T) {
 	}
 }
 
-// concurrencyFetcher is a FeedFetcher that tracks how many calls are in flight
-// at once and returns a result whose title identifies the requested URL.
+// concurrencyFetcher is a FeedFetcher that returns a result whose title
+// identifies the requested URL. Its calls block until the test closes release,
+// and the call for last also waits until every other call has returned, so
+// overlap and completion order are forced rather than left to the scheduler.
+// filled is closed once full calls are in flight together. A wait that is not
+// satisfied within barrierTimeout records a failure instead of hanging.
 type concurrencyFetcher struct {
-	mu       sync.Mutex
-	inFlight int
-	peak     int
-	calls    int
-	errFor   map[string]error
+	full int
+	last string
+	rest int // calls other than last
+
+	mu        sync.Mutex
+	inFlight  int
+	peak      int
+	calls     int
+	returned  int
+	timedOut  bool
+	wasFilled bool
+	errFor    map[string]error
+
+	filled   chan struct{}
+	release  chan struct{}
+	restDone chan struct{}
+}
+
+const barrierTimeout = 10 * time.Second
+
+func newConcurrencyFetcher(full int, last string, rest int, errFor map[string]error) *concurrencyFetcher {
+	return &concurrencyFetcher{
+		full: full, last: last, rest: rest, errFor: errFor,
+		filled: make(chan struct{}), release: make(chan struct{}), restDone: make(chan struct{}),
+	}
+}
+
+// wait blocks on ch and reports whether it was closed before barrierTimeout.
+func (f *concurrencyFetcher) wait(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	case <-time.After(barrierTimeout):
+		f.mu.Lock()
+		f.timedOut = true
+		f.mu.Unlock()
+		return false
+	}
 }
 
 func (f *concurrencyFetcher) FetchEntries(_ context.Context, url string, _ rss.CacheValidators) (rss.FetchResult, error) {
@@ -276,12 +313,24 @@ func (f *concurrencyFetcher) FetchEntries(_ context.Context, url string, _ rss.C
 	f.inFlight++
 	f.calls++
 	f.peak = max(f.peak, f.inFlight)
+	if f.inFlight == f.full && !f.wasFilled {
+		f.wasFilled = true
+		close(f.filled)
+	}
 	f.mu.Unlock()
 
-	time.Sleep(5 * time.Millisecond) // let overlapping calls pile up
+	f.wait(f.release)
+	if url == f.last {
+		f.wait(f.restDone)
+	}
 
 	f.mu.Lock()
 	f.inFlight--
+	if url != f.last {
+		if f.returned++; f.returned == f.rest {
+			close(f.restDone)
+		}
+	}
 	f.mu.Unlock()
 	return rss.FetchResult{FeedTitle: url}, f.errFor[url]
 }
@@ -290,17 +339,37 @@ func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 	const n = maxConcurrentFetches*3 + 1
 	fg := &v1alpha1.FeedGroup{}
 	feeds := make([]v1alpha1.FeedSpec, n)
-	errFor := map[string]error{}
 	for i := range feeds {
 		feeds[i].RSSUrl = fmt.Sprintf("https://example.com/feed-%d.xml", i)
 	}
 	fg.Spec.Feeds = feeds
 	ensureFeedStatuses(fg)
-	errFor[feeds[3].RSSUrl] = errors.New(testBoom)
-	f := &concurrencyFetcher{errFor: errFor}
+	errFor := map[string]error{feeds[3].RSSUrl: errors.New(testBoom)}
+	// Feed 0 completes last, so outcomes in completion order would put it at
+	// the end; fetchAll must still return it first.
+	f := newConcurrencyFetcher(maxConcurrentFetches, feeds[0].RSSUrl, n-1, errFor)
 
-	got := fetchAll(t.Context(), f, fg, feeds)
+	done := make(chan []fetchOutcome, 1)
+	go func() { done <- fetchAll(t.Context(), f, fg, feeds) }()
 
+	// With maxConcurrentFetches calls held, a bounded fan-out cannot start
+	// another; an unbounded one would within the grace period. A correct
+	// bound never fails this, so the grace only affects how reliably a
+	// regression is caught, not whether the test flakes.
+	filled := f.wait(f.filled)
+	time.Sleep(50 * time.Millisecond)
+	f.mu.Lock()
+	started := f.calls
+	f.mu.Unlock()
+	close(f.release)
+	got := <-done
+
+	if !filled || f.timedOut {
+		t.Fatalf("a barrier timed out: fewer than %d fetches ran at once (peak %d)", maxConcurrentFetches, f.peak)
+	}
+	if started != maxConcurrentFetches {
+		t.Fatalf("%d fetches started while %d were in flight, want the bound to hold at %d", started, maxConcurrentFetches, maxConcurrentFetches)
+	}
 	if len(got) != n || f.calls != n {
 		t.Fatalf("got %d outcomes from %d calls, want %d of each", len(got), f.calls, n)
 	}
@@ -312,8 +381,8 @@ func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 			t.Fatalf("outcome %d err = %v, want error only at index 3", i, o.err)
 		}
 	}
-	if f.peak < 2 || f.peak > maxConcurrentFetches {
-		t.Fatalf("peak concurrency = %d, want within [2, %d]", f.peak, maxConcurrentFetches)
+	if f.peak != maxConcurrentFetches {
+		t.Fatalf("peak concurrency = %d, want exactly %d", f.peak, maxConcurrentFetches)
 	}
 }
 
