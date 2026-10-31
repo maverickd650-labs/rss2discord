@@ -341,7 +341,11 @@ func (c *Client) exchange(ctx context.Context, p preparedRequest) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.target, bytes.NewReader(p.body))
 	if err != nil {
-		return err
+		// A target prepareRequest built always parses, so only non-URL errors
+		// (e.g. a nil Context) reach here, and they pass through unchanged.
+		// Should a *url.Error ever appear it would carry the token-bearing
+		// target, so it is redacted like Do's.
+		return redactURLError(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -368,7 +372,7 @@ func (c *Client) exchange(ctx context.Context, p preparedRequest) error {
 		}
 	}
 
-	c.notePacing(resp.Header)
+	c.notePacing(p.limiterKey, resp.Header)
 	return nil
 }
 
@@ -390,8 +394,10 @@ const maxPaceWait = 5 * time.Second
 
 // notePacing reads Discord's X-RateLimit-* headers from a successful response
 // and, if this send emptied the webhook's bucket, tells the shared limiter so
-// the next send waits for the reset instead of earning a 429.
-func (c *Client) notePacing(h http.Header) {
+// the next send waits for the reset instead of earning a 429. key is the
+// limiter bucket the send waited on and reserved, so pacing lands in the same
+// bucket.
+func (c *Client) notePacing(key string, h http.Header) {
 	if c.rateLimiter == nil || strings.TrimSpace(h.Get("X-RateLimit-Remaining")) != "0" {
 		return
 	}
@@ -400,10 +406,10 @@ func (c *Client) notePacing(h http.Header) {
 		return
 	}
 	if d > maxPaceWait {
-		c.rateLimiter.cooldown(c.webhookURL, d)
+		c.rateLimiter.cooldown(key, d)
 		return
 	}
-	c.rateLimiter.pace(c.webhookURL, d)
+	c.rateLimiter.pace(key, d)
 }
 
 // decodeErrorDetail extracts Discord's machine-readable error code/message

@@ -522,7 +522,7 @@ func TestNotePacing_IgnoresUnusableHeaders(t *testing.T) {
 			if tc.reset != "" {
 				h.Set("X-RateLimit-Reset-After", tc.reset)
 			}
-			c.notePacing(h)
+			c.notePacing(c.webhookURL, h)
 			if d := limiter.paceDelay(testWebhookURL); d > 0 {
 				t.Errorf("paceDelay = %v, want no pacing", d)
 			}
@@ -537,7 +537,7 @@ func TestNotePacing_IgnoresUnusableHeaders(t *testing.T) {
 // ignores rate-limit headers instead of dereferencing nil.
 func TestNotePacing_NilLimiterIsNoop(t *testing.T) {
 	c := NewClientWithHTTP(testWebhookURL, nil)
-	c.notePacing(http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset-After": {"1"}})
+	c.notePacing(c.webhookURL, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset-After": {"1"}})
 }
 
 // TestSendMessage_ContextCanceledWhilePaced asserts a send stuck waiting on a
@@ -610,7 +610,7 @@ func TestNotePacing_ResetAfterIsBounded(t *testing.T) {
 			h := http.Header{}
 			h.Set("X-RateLimit-Remaining", "0")
 			h.Set("X-RateLimit-Reset-After", tc.reset)
-			c.notePacing(h)
+			c.notePacing(c.webhookURL, h)
 
 			if pace := limiter.paceDelay(testWebhookURL); (pace > 0) != tc.wantPace || pace > maxPaceWait {
 				t.Errorf("paceDelay = %v, want pacing=%v and at most %v", pace, tc.wantPace, maxPaceWait)
