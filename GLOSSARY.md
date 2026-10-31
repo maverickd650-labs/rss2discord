@@ -1,6 +1,6 @@
 # Glossary
 
-Terms used in `internal/controller`, with the names the code gives them.
+Terms used in `internal/controller` (and `internal/msgtemplate`), with the names the code gives them.
 
 **Feed sync** (`feedSync`, `feed_sync.go`)
 : The application of one fetch of one feed to that feed's `FeedStatus`. It is opened
@@ -64,6 +64,16 @@ Terms used in `internal/controller`, with the names the code gives them.
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision.
 
+**Entry delivery** (`entryDelivery`, `delivery.go`)
+: The per-entry send loop of one feed's sync. `run` scans the entries the feed sync hands it,
+  skipping those already sent or filtered out, rendering and sending the rest, and recording
+  each outcome with the feed attempt. It owns when the scan ends -- the first render, send or
+  rate-limit failure stops it, so the watermark never moves past an unresolved entry -- and
+  the render-failure policy (`renderFailed`): an entry that still fails to render after its
+  retries are exhausted is skipped (marked handled, recorded as skipped) only if another entry
+  of the window renders, otherwise the scan holds. It is the only caller of
+  `groupMetrics.overflow`. Its result is an attempt verdict.
+
 **Attempt verdict** (`attemptVerdict`)
 : What recording an outcome means for the rest of the reconcile: `retry` (come back after
   `RetryInterval`), `retryAfter` (how long Discord asked the webhook to be left alone) and
@@ -88,3 +98,12 @@ Terms used in `internal/controller`, with the names the code gives them.
   `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom; and
   `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
   clears it), inferred from the feed's `Reachable` condition not being False.
+
+**Message template sandbox** (`msgtemplate`, `internal/msgtemplate`)
+: The only place user-supplied message templates are parsed or run. `Compile` trims,
+  falls back when blank, parses with the helper funcs and rejects unbounded constructs
+  (`range`, `define`/`template`, `with`, variable assignment, string-building builtins);
+  it returns an opaque `Template` whose `Execute` writes through a size-capped buffer and
+  returns no partial output on error. No other production package may import
+  `text/template` (`TestOnlyTheSandboxImportsTextTemplate`). The controller maps an entry
+  to `templateData` and calls `Execute`.

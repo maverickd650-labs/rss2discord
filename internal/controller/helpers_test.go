@@ -10,6 +10,7 @@ import (
 
 	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650/rss2discord-operator/internal/msgtemplate"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -441,7 +442,7 @@ func TestEnsureFeedStatuses(t *testing.T) {
 	}
 }
 
-func TestCompileFilterRegex(t *testing.T) {
+func TestCompileEntryFilter(t *testing.T) {
 	cases := []struct {
 		name    string
 		filter  *v1alpha1.Filter
@@ -455,48 +456,49 @@ func TestCompileFilterRegex(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			re, err := compileFilterRegex(tc.filter)
-			if (err != nil) != tc.wantErr || (re != nil) != tc.wantRe {
-				t.Fatalf("got regex %v, err %v; want regex=%v err=%v", re, err, tc.wantRe, tc.wantErr)
+			f, err := compileEntryFilter(tc.filter)
+			if (err != nil) != tc.wantErr || (f.regex != nil) != tc.wantRe {
+				t.Fatalf("got regex %v, err %v; want regex=%v err=%v", f.regex, err, tc.wantRe, tc.wantErr)
 			}
 		})
 	}
 }
 
-func TestMatchesFilter(t *testing.T) {
+func TestEntryFilterMatches(t *testing.T) {
 	entry := rss.Entry{Title: "Breaking News", Description: "something happened"}
 
 	t.Run("nil filter matches", func(t *testing.T) {
-		if !matchesFilter(nil, entry, nil) {
+		f, _ := compileEntryFilter(nil)
+		if !f.matches(entry) {
 			t.Fatal("expected nil filter to match everything")
 		}
 	})
 
 	t.Run("regex non-match rejects", func(t *testing.T) {
-		re, _ := compileFilterRegex(&v1alpha1.Filter{Regex: "nomatch"})
-		if matchesFilter(&v1alpha1.Filter{Regex: "nomatch"}, entry, re) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Regex: "nomatch"})
+		if f.matches(entry) {
 			t.Fatal("expected non-matching regex to reject entry")
 		}
 	})
 
 	t.Run("keyword case-insensitive match", func(t *testing.T) {
-		f := &v1alpha1.Filter{Keywords: []string{"BREAKING"}}
-		if !matchesFilter(f, entry, nil) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"BREAKING"}})
+		if !f.matches(entry) {
 			t.Fatal("expected case-insensitive keyword match")
 		}
 	})
 
 	t.Run("no keyword match rejects", func(t *testing.T) {
-		f := &v1alpha1.Filter{Keywords: []string{"weather"}}
-		if matchesFilter(f, entry, nil) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"weather"}})
+		if f.matches(entry) {
 			t.Fatal("expected no keyword match to reject")
 		}
 	})
 
 	t.Run("blank keywords skipped, empty keyword list matches", func(t *testing.T) {
-		f := &v1alpha1.Filter{Keywords: []string{"  "}}
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"  "}})
 		// All keywords are blank/skipped, so none match.
-		if matchesFilter(f, entry, nil) {
+		if f.matches(entry) {
 			t.Fatal("expected all-blank keywords to match nothing")
 		}
 	})
@@ -537,12 +539,12 @@ func TestCompileMessageTemplate_Precedence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		var sb strings.Builder
-		if err := tmpl.Execute(&sb, map[string]string{"Title": "X"}); err != nil {
+		got, err := tmpl.Execute(map[string]string{"Title": "X"})
+		if err != nil {
 			t.Fatalf("execute error: %v", err)
 		}
-		if sb.String() != "feed X" {
-			t.Fatalf("expected feed format used, got %q", sb.String())
+		if got != "feed X" {
+			t.Fatalf("expected feed format used, got %q", got)
 		}
 	})
 
@@ -566,7 +568,7 @@ func TestCompileMessageTemplate_Precedence(t *testing.T) {
 }
 
 func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
-	tmpl, err := compileTemplate("test", "{{.Author}} | {{.Categories}}", "")
+	tmpl, err := msgtemplate.Compile("test", "{{.Author}} | {{.Categories}}", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -595,7 +597,7 @@ func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
 // renders an empty {{.Published}} rather than "0001-01-01T00:00:00Z", while a
 // real date is still formatted as RFC 3339 UTC.
 func TestRenderTemplate_Published(t *testing.T) {
-	tmpl, err := compileTemplate("test", "[{{.Published}}]", "")
+	tmpl, err := msgtemplate.Compile("test", "[{{.Published}}]", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -627,7 +629,7 @@ func TestRenderTemplate_Published(t *testing.T) {
 func TestRenderTemplate_NewFields(t *testing.T) {
 	render := func(t *testing.T, format string, entry rss.Entry) string {
 		t.Helper()
-		tmpl, err := compileTemplate("test", format, "")
+		tmpl, err := msgtemplate.Compile("test", format, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -776,7 +778,7 @@ func TestFeedRendererBuild_EmbedImageStyle(t *testing.T) {
 }
 
 func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
-	tmpl, err := compileTemplate("test", tmplTitle, "")
+	tmpl, err := msgtemplate.Compile("test", tmplTitle, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

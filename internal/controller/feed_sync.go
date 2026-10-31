@@ -179,7 +179,7 @@ func (s *feedSync) begin() {
 
 	entries := s.fetch.Entries
 	// Stamp the feed's title on each entry so templates can use {{.FeedTitle}}
-	// without threading it through sendNewEntries/feedRenderer.build.
+	// without threading it through entryDelivery/feedRenderer.build.
 	for i := range entries {
 		entries[i].FeedTitle = s.fetch.FeedTitle
 	}

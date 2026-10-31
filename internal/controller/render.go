@@ -17,25 +17,22 @@ limitations under the License.
 package controller
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
 	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"text/template"
-	"text/template/parse"
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650/rss2discord-operator/internal/msgtemplate"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 	"golang.org/x/net/html"
 )
 
 // defaultMessageFormat, like any feed/group Format, interpolates entry
-// fields via text/template with no markdown escaping (stripHTML removes
+// fields via the msgtemplate sandbox (text/template) with no markdown escaping (stripHTML removes
 // HTML tags, not Discord markdown syntax). A malicious feed publisher --
 // not the operator who configured the feed URL -- could break out of
 // `[text](url)` or inject formatting/links into the rendered message.
@@ -45,15 +42,11 @@ import (
 // channel-wide pings.
 const defaultMessageFormat = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
 
-// maxTemplateReplaceBytes bounds each replace result before allocating it,
-// including intermediate values in pipelines, well above Discord's limits.
-const maxTemplateReplaceBytes = 1024 * 1024
-
 // compileMessageTemplate parses a feed's Discord message template once per
 // feed per reconcile, instead of reparsing it for every entry sent.
 // A blank feed format falls back to the group format, then defaultMessageFormat.
 // Template parse errors are returned to the caller.
-func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*template.Template, error) {
+func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*msgtemplate.Template, error) {
 	tmplText := strings.TrimSpace(feed.Format)
 	if tmplText == "" {
 		tmplText = strings.TrimSpace(feedGroup.Spec.Format)
@@ -62,178 +55,7 @@ func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSp
 		tmplText = defaultMessageFormat
 	}
 
-	return compileTemplate("discordMessage", tmplText, defaultMessageFormat)
-}
-
-// compileTemplate parses text as a Discord message template, falling back
-// to fallback when text is blank. Leading and trailing whitespace is removed
-// from text. Parse errors, including unknown helper names, are returned.
-func compileTemplate(name, text, fallback string) (*template.Template, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		text = fallback
-	}
-	tmpl, err := template.New(name).Funcs(templateFuncs).Parse(text)
-	if err != nil {
-		return nil, err
-	}
-	if err := rejectUnboundedConstructs(tmpl); err != nil {
-		return nil, err
-	}
-	return tmpl, nil
-}
-
-// maxTemplateOutputBytes bounds what one template execution may write, well
-// above Discord's limits (2000 message / 4096 embed runes).
-const maxTemplateOutputBytes = 1024 * 1024
-
-// growthBuiltins are text/template builtins that build a new string from
-// their arguments. Combined with repeated reuse of a value they can grow
-// memory exponentially before anything is written to the output buffer, so
-// they are not available; the helpers in templateFuncs cover real needs.
-var growthBuiltins = map[string]bool{
-	"printf": true, "print": true, "println": true,
-	"html": true, "js": true, "urlquery": true, "call": true,
-}
-
-// rejectUnboundedConstructs refuses the template features that let a
-// user-supplied template consume unbounded CPU or memory:
-//   - range (including over an integer, e.g. {{range 100000000000}}{{end}},
-//     which spins the reconcile worker forever) and define/template
-//     (recursion);
-//   - variable declarations/assignments and {{with}} (which rebinds dot), the
-//     two ways to reuse a value so that a chain of string-building calls
-//     doubles it each step (e.g. {{$x = printf "%s%s" $x $x}} repeated);
-//   - the string-building builtins in growthBuiltins.
-//
-// Templates only interpolate a handful of strings; {{if}}/{{else}}, field
-// access, pipelines and the helpers in templateFuncs remain available.
-func rejectUnboundedConstructs(tmpl *template.Template) error {
-	if len(tmpl.Templates()) > 1 {
-		return errors.New("template: {{define}} is not supported")
-	}
-	if tmpl.Tree == nil {
-		return nil
-	}
-	return checkNode(tmpl.Root)
-}
-
-func checkNode(node parse.Node) error {
-	switch n := node.(type) {
-	case *parse.ListNode:
-		if n == nil {
-			return nil
-		}
-		for _, c := range n.Nodes {
-			if err := checkNode(c); err != nil {
-				return err
-			}
-		}
-	case *parse.ActionNode:
-		return checkNode(n.Pipe)
-	case *parse.IfNode:
-		return checkBranch(&n.BranchNode)
-	case *parse.RangeNode:
-		return errors.New("template: {{range}} is not supported")
-	case *parse.WithNode:
-		return errors.New("template: {{with}} is not supported")
-	case *parse.TemplateNode:
-		return errors.New("template: {{template}} is not supported")
-	case *parse.PipeNode:
-		if n == nil {
-			return nil
-		}
-		if len(n.Decl) > 0 {
-			return errors.New("template: variable declaration and assignment are not supported")
-		}
-		for _, cmd := range n.Cmds {
-			for _, arg := range cmd.Args {
-				if err := checkNode(arg); err != nil {
-					return err
-				}
-			}
-		}
-	case *parse.ChainNode:
-		return checkNode(n.Node)
-	case *parse.IdentifierNode:
-		if growthBuiltins[n.Ident] {
-			return fmt.Errorf("template: %s is not supported", n.Ident)
-		}
-	case *parse.VariableNode:
-		// Only $ (the root value) can appear without a declaration.
-		return nil
-	}
-	return nil
-}
-
-func checkBranch(b *parse.BranchNode) error {
-	if err := checkNode(b.Pipe); err != nil {
-		return err
-	}
-	if err := checkNode(b.List); err != nil {
-		return err
-	}
-	return checkNode(b.ElseList)
-}
-
-// limitedBuffer is a bytes.Buffer that fails once it would exceed
-// maxTemplateOutputBytes, as defense in depth behind rejectUnboundedConstructs.
-type limitedBuffer struct{ bytes.Buffer }
-
-func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > maxTemplateOutputBytes {
-		return 0, fmt.Errorf("template output exceeds maximum size of %d bytes", maxTemplateOutputBytes)
-	}
-	return b.Buffer.Write(p)
-}
-
-// templateFuncs are the helpers available in message templates. Keep the set
-// small and pure: no environment, file, network or reflection access, since
-// templates are user-supplied. Arguments are ordered so they pipeline
-// ({{.Description | truncate 200}}).
-var templateFuncs = template.FuncMap{
-	// truncate clamps s to n runes, ending in an ellipsis when it cuts and n > 1.
-	// Non-positive limits return empty text.
-	"truncate": func(n int, s string) string {
-		out, _ := discord.Truncate(s, n)
-		return out
-	},
-	// default returns def when v is blank.
-	"default": func(def, v string) string {
-		if strings.TrimSpace(v) == "" {
-			return def
-		}
-		return v
-	},
-	"lower": strings.ToLower,
-	"upper": strings.ToUpper,
-	"trim":  strings.TrimSpace,
-	// replace replaces all occurrences of old in s, returning an error if the
-	// result would exceed maxTemplateReplaceBytes, even in an intermediate pipeline.
-	"replace": func(old, new, s string) (string, error) {
-		count := strings.Count(s, old)
-		remaining := len(s) - count*len(old)
-		// Compare before multiplying to avoid overflow. Count handles an
-		// empty old string as one match per UTF-8 boundary, like ReplaceAll.
-		if remaining > maxTemplateReplaceBytes || (count > 0 && len(new) > (maxTemplateReplaceBytes-remaining)/count) {
-			return "", fmt.Errorf("replace: result exceeds maximum size of %d bytes", maxTemplateReplaceBytes)
-		}
-		return strings.ReplaceAll(s, old, new), nil
-	},
-	// discordTime renders a Discord dynamic timestamp, e.g.
-	// {{.PublishedUnix | discordTime "R"}}. An undated entry
-	// (PublishedUnix 0) renders "" rather than "<t:0:R>" (1970).
-	// style must be one of t, T, d, D, f, F, or R; other values return an error,
-	// including when unix is 0.
-	"discordTime": func(style string, unix int64) (string, error) {
-		if !strings.Contains("tTdDfFR", style) || len(style) != 1 {
-			return "", fmt.Errorf("discordTime: unknown style %q (want one of t T d D f F R)", style)
-		}
-		if unix == 0 {
-			return "", nil
-		}
-		return fmt.Sprintf("<t:%d:%s>", unix, style), nil
-	},
+	return msgtemplate.Compile("discordMessage", tmplText, defaultMessageFormat)
 }
 
 // resolveEmbedSpec returns the feed's embed config if it set one, otherwise
@@ -416,10 +238,9 @@ func (d templateData) Content() string {
 
 // renderTemplate executes tmpl against entry and returns the raw output. It
 // is not clamped to Discord's limits (feedRenderer.build does that once, via
-// discord.Fit); its size is already bounded by limitedBuffer
-// (maxTemplateOutputBytes). Execution errors, including helper errors, are
+// discord.Fit); its size is already bounded by the msgtemplate sandbox. Execution errors, including helper errors, are
 // returned with empty text.
-func renderTemplate(tmpl *template.Template, entry rss.Entry) (string, error) {
+func renderTemplate(tmpl *msgtemplate.Template, entry rss.Entry) (string, error) {
 	data := templateData{
 		Title:         stripHTML(entry.Title),
 		Description:   stripHTML(entry.Description),
@@ -433,11 +254,7 @@ func renderTemplate(tmpl *template.Template, entry rss.Entry) (string, error) {
 		content:       entry.Content,
 	}
 
-	var buf limitedBuffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
+	return tmpl.Execute(data)
 }
 
 // feedRenderer turns one feed's entries into Discord messages. It owns the
@@ -449,8 +266,8 @@ type feedRenderer struct {
 	group                            *v1alpha1.FeedGroup
 	feed                             *v1alpha1.FeedSpec
 	embed                            *v1alpha1.EmbedSpec
-	content, description, threadName *template.Template
-	filter                           *regexp.Regexp
+	content, description, threadName *msgtemplate.Template
+	filter                           entryFilter
 }
 
 // newFeedRenderer prepares the renderer for feed within group: it compiles the
@@ -459,14 +276,14 @@ type feedRenderer struct {
 // plus the forum thread-name template when one is set. The first config error
 // is returned unwrapped, checked in that order.
 func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedRenderer, error) {
-	filter, err := compileFilterRegex(feed.Filter)
+	filter, err := compileEntryFilter(feed.Filter)
 	if err != nil {
 		return nil, err
 	}
 
 	fr := &feedRenderer{group: group, feed: feed, embed: resolveEmbedSpec(group, feed), filter: filter}
 	if fr.embed != nil && fr.embed.Enabled {
-		fr.description, err = compileTemplate("discordEmbedDescription", fr.embed.DescriptionFormat, defaultDescriptionFormat)
+		fr.description, err = msgtemplate.Compile("discordEmbedDescription", fr.embed.DescriptionFormat, defaultDescriptionFormat)
 	} else {
 		fr.content, err = compileMessageTemplate(group, feed)
 	}
@@ -475,7 +292,7 @@ func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedR
 	}
 
 	if strings.TrimSpace(feed.ForumThreadName) != "" {
-		fr.threadName, err = compileTemplate("discordThreadName", feed.ForumThreadName, "")
+		fr.threadName, err = msgtemplate.Compile("discordThreadName", feed.ForumThreadName, "")
 		if err != nil {
 			return nil, err
 		}
@@ -485,7 +302,7 @@ func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedR
 
 // matches reports whether entry passes the feed's filter.
 func (fr *feedRenderer) matches(entry rss.Entry) bool {
-	return matchesFilter(fr.feed.Filter, entry, fr.filter)
+	return fr.filter.matches(entry)
 }
 
 // build renders entry into the message that should actually
@@ -571,50 +388,5 @@ func (fr *feedRenderer) otherEntryRenders(entries []rss.Entry, skip rss.Entry) b
 			return true
 		}
 	}
-	return false
-}
-
-// compileFilterRegex compiles a feed's filter regex once per feed per
-// reconcile, instead of recompiling it for every entry in the feed.
-func compileFilterRegex(filter *v1alpha1.Filter) (*regexp.Regexp, error) {
-	if filter == nil || strings.TrimSpace(filter.Regex) == "" {
-		return nil, nil
-	}
-
-	re, err := regexp.Compile(filter.Regex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
-	}
-	return re, nil
-}
-
-// matchesFilter reports whether entry passes filter: its compiled regex (if
-// any) must match the title and description, and, when keywords are set, at
-// least one of them must appear (case-insensitively) in them. A nil filter
-// matches everything.
-func matchesFilter(filter *v1alpha1.Filter, entry rss.Entry, filterRegex *regexp.Regexp) bool {
-	if filter == nil {
-		return true
-	}
-
-	if filterRegex != nil && !filterRegex.MatchString(entry.Title+"\n"+entry.Description) {
-		return false
-	}
-
-	if len(filter.Keywords) == 0 {
-		return true
-	}
-
-	content := strings.ToLower(strings.TrimSpace(entry.Title + "\n" + entry.Description))
-	for _, keyword := range filter.Keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
-			continue
-		}
-		if strings.Contains(content, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-
 	return false
 }
