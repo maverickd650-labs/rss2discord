@@ -4,12 +4,14 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **Feed sync** (`feedSync`, `feed_sync.go`)
 : The application of one fetch of one feed to that feed's `FeedStatus`. It is opened
-  with `openFeedSync`, begun with `begin` once the feed's filter and templates are known to
-  compile, and closed exactly once with a `syncVerdict`. It owns the order in which a
-  fetch is applied (title stamping, sort, delivery ledger over the untrimmed fetch,
-  identity migrations, watermark lookup, delivery plan, catch-up limit, backlog skip) and is
-  the only place that settles the status. It hands the send loop the entries to consider
-  (`entries`) and two ledger operations (`sent`, `markHandled`).
+  with `openFeedSync` and run by one method, `apply`, which does the whole sequence
+  (record the fetch outcome, the config check that must precede `begin`, `begin`, the
+  send loop), derives the `syncVerdict` from how far it got and closes exactly once as its
+  last act. It owns the order in which a fetch is applied (title stamping, sort, delivery
+  ledger over the untrimmed fetch, identity migrations, watermark lookup, delivery plan,
+  catch-up limit, backlog skip) and is the only place that settles the status. It hands
+  the send loop the entries to consider (`entries`), the render-failure evidence window
+  (`renderEvidence`) and two ledger operations (`sent`, `markHandled`).
 
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the

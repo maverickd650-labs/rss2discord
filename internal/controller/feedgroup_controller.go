@@ -239,78 +239,17 @@ type feedRun struct {
 
 // processFeed handles a completed fetch for a single feed: it records the
 // fetch outcome, sends new entries that pass the filter, and updates the feed's
-// FeedStatus. Fetch, configuration,
-// rendering, and delivery errors are recorded in status by the feed's
-// feedAttempt, which also decides whether the failure is worth retrying.
-// Applying the fetch to the FeedStatus -- the order of the steps and what is
-// settled -- belongs to the feedSync opened below, which is closed with a
-// verdict on every return. The returned verdict says whether the reconcile
-// should retry sooner than the normal interval and, if Discord rate limited the
-// webhook, how long to wait before the next attempt.
+// FeedStatus. Fetch, configuration, rendering, and delivery errors are recorded
+// in status by the feed's feedAttempt, which also decides whether the failure is
+// worth retrying. The whole sequence -- its order, what is settled and the
+// syncVerdict it ends with -- belongs to the feedSync opened below and run by
+// feedSync.apply. The returned verdict says whether the reconcile should retry
+// sooner than the normal interval and, if Discord rate limited the webhook, how
+// long to wait before the next attempt.
 func processFeed(ctx context.Context, run feedRun) attemptVerdict {
-	feedGroup, feed, now := run.group, run.feed, run.now
-	fetchResult, fetchErr := run.fetched.result, run.fetched.err
-	log := logf.FromContext(ctx)
-	fs := feedStatusFor(feedGroup, feed.RSSUrl)
-	attempt := run.newAttempt(fs)
-
-	// Every return below sets settlement first; the deferred close is what
-	// settles the FeedStatus, and rejects a return that forgot to. A panic
-	// before settlement is set passes through unchanged (see closeOnReturn).
-	syncer := openFeedSync(fs, fetchResult, feedSyncSpecFor(feedGroup, now))
-	var settlement syncVerdict
-	defer syncer.closeOnReturn(&settlement)
-
-	if fetchErr != nil {
-		settlement = syncFetchFailed
-		// LastChecked deliberately doesn't advance here: it tracks the last
-		// *successful* check, so a feed stuck failing shows an aging
-		// LastChecked rather than looking freshly checked every retry.
-		log.Error(fetchErr, "failed to fetch RSS feed", "url", feed.RSSUrl)
-		return attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchErr)
-	}
-
-	// A 304 is just as much a successful check as one that found something to
-	// send -- it shouldn't read as stale just because nothing changed. This does
-	// give up the optimization of skipping the status write when nothing
-	// else changed (settleGroup diffs on the whole status), so a
-	// quiet feed now costs one status write per poll interval instead of
-	// zero.
-	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, nil)
-
-	if v, done := syncer.withoutEntries(); done {
-		settlement = v
-		return attemptVerdict{}
-	}
-
-	// Every config check happens in one step, before the sync begins, so a
-	// config error on a non-empty first fetch can't turn the next attempt into
-	// a "feed was empty" delivery of its whole backlog.
-	renderer, err := newFeedRenderer(feedGroup, &feed)
-	if err != nil {
-		settlement = syncConfigError
-		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
-		return attempt.record(attemptOutcome{kind: attemptConfigError}, err)
-	}
-
-	syncer.begin()
-	if syncer.cappedAmbiguousLegacy {
-		log.Info("Capped catch-up for a FeedStatus written before stateVersion 1",
-			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
-	}
-	if syncer.skippedBacklog > 0 {
-		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, nil)
-	}
-
-	verdict := entryDelivery{
-		renderer: renderer,
-		syncer:   syncer,
-		attempt:  attempt,
-		sender:   run.sender,
-		metrics:  metricsFor(feedGroup),
-	}.run(ctx)
-	settlement = verdict.settlement()
-	return verdict
+	fs := feedStatusFor(run.group, run.feed.RSSUrl)
+	syncer := openFeedSync(fs, run.fetched.result, feedSyncSpecFor(run.group, run.now))
+	return syncer.apply(ctx, run, run.newAttempt(fs))
 }
 
 // webhook returns the group's Discord webhook URL, read uncached from its

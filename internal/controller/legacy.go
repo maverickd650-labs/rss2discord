@@ -17,7 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -113,6 +116,17 @@ func (s *legacyState) capCatchUp(entries []rss.Entry) (scan []rss.Entry, capped 
 		return entries, false
 	}
 	return limitCatchUp(entries, defaultCatchUpLimit), true
+}
+
+// logLegacyCatchUpCap is feedSync.apply's legacy step after begin: it logs,
+// for the feed at url, that this sync's catch-up was capped at
+// defaultCatchUpLimit because fs is an ambiguous legacy status (see
+// capCatchUp). It is a no-op for any other sync.
+func (s *feedSync) logLegacyCatchUpCap(ctx context.Context, url string) {
+	if s.cappedAmbiguousLegacy {
+		logf.FromContext(ctx).Info("Capped catch-up for a FeedStatus written before stateVersion 1",
+			"url", url, "limit", defaultCatchUpLimit)
+	}
 }
 
 // settleOnClose is feedSync.close's legacy step. A sync that ends empty or

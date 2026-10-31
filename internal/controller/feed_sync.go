@@ -18,9 +18,12 @@ package controller
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
 	"time"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
@@ -34,8 +37,7 @@ import (
 const defaultCatchUpLimit = 5
 
 // A feedSync applies one fetch of one feed to that feed's FeedStatus. It is the
-// single owner of two things that used to be spread over every return path of
-// processFeed:
+// single owner of two things:
 //
 //   - the ORDER in which a fetch is applied: legacy state is read before
 //     anything changes; entries are stamped and sorted; the delivery ledger is
@@ -48,11 +50,15 @@ const defaultCatchUpLimit = 5
 //     response's validators are stored, whether a failure is cleared, and
 //     LastSent pruning (see close).
 //
-// A sync is opened with openFeedSync, optionally begun with begin (only a fetch
-// that has entries to send is), and closed exactly once with the syncVerdict
-// that says how the attempt ended. Closing twice, or closing with a verdict
-// that doesn't fit how far the sync got, panics: a settlement rule that is
-// applied inconsistently silently loses entries (see the settlement tests).
+// A sync is opened with openFeedSync and run by apply, which is the whole
+// sequence -- record the fetch, check the configuration, begin, send -- and
+// derives the syncVerdict from how far that got, then closes the sync with it as
+// its last act: exactly once, and not deferred, so a panic anywhere in the
+// sequence leaves the status unsettled (the status isn't written on a panic path,
+// so skipping settlement there loses nothing, and the real fault is what
+// controller-runtime logs). Nothing outside apply begins or closes a sync, so
+// the verdict can't be forgotten, doubled or mismatched; close's settlement
+// table is unit-tested per verdict (see the settlement tests).
 type feedSync struct {
 	fs    *v1alpha1.FeedStatus
 	fetch rss.FetchResult
@@ -64,21 +70,19 @@ type feedSync struct {
 	// wasInitialized is fs.Initialized before this sync.
 	wasInitialized bool
 
-	began  bool
-	closed bool
 	ledger *deliveryLedger
 	// scan is the plan's whole window, in order: the entries the send loop may
-	// consider start at resumeAt, and the ones before it are kept for
-	// entryDelivery.otherEntryRenders; set by begin.
+	// consider start at resumeAt, and the ones before it are kept as render
+	// evidence (see renderEvidence); set by begin.
 	scan     []rss.Entry
 	resumeAt int
 	// cappedAmbiguousLegacy says the catch-up was capped at
 	// defaultCatchUpLimit because fs is an ambiguous legacy status; set by
-	// begin.
+	// begin, and logged by logLegacyCatchUpCap (legacy.go).
 	cappedAmbiguousLegacy bool
 	// skippedBacklog is how many existing entries the begin step skipped over, for a
-	// first sync with catchUpLimit 0 (see skipBacklog); 0 otherwise. The
-	// caller records the BacklogSkipped outcome.
+	// first sync with catchUpLimit 0 (see skipBacklog); 0 otherwise. apply
+	// records the BacklogSkipped outcome.
 	skippedBacklog int
 }
 
@@ -153,6 +157,79 @@ func openFeedSync(fs *v1alpha1.FeedStatus, fetch rss.FetchResult, spec feedSyncS
 	}
 }
 
+// apply runs the whole sync of run's fetch into fs and closes it, returning the
+// verdict the reconcile folds. attempt is the feed's feedAttempt (run.newAttempt),
+// through which every outcome is recorded; the sequence and what ends it:
+//
+//   - a failed fetch is recorded and the sync closes syncFetchFailed;
+//   - a successful fetch is recorded (a 304 is as much a successful check as one
+//     that found something to send), and one with nothing to send closes with
+//     its withoutEntries verdict;
+//   - the feed's render configuration is checked before the sync begins, so a
+//     config error on a non-empty first fetch leaves fs untouched and can't turn
+//     the next attempt into a "feed was empty" delivery of its whole backlog
+//     (syncConfigError);
+//   - begin, the capped-legacy log line, the backlog-skip outcome, then the
+//     entryDelivery send loop, whose attemptVerdict decides syncPending or
+//     syncAccountedFor.
+//
+// close is the last thing apply does and is not deferred: a panic while
+// rendering, sending or recording propagates unchanged and settles nothing.
+func (s *feedSync) apply(ctx context.Context, run feedRun, attempt feedAttempt) attemptVerdict {
+	log := logf.FromContext(ctx)
+	feed := run.feed
+
+	if err := run.fetched.err; err != nil {
+		// LastChecked deliberately doesn't advance here: it tracks the last
+		// *successful* check, so a feed stuck failing shows an aging
+		// LastChecked rather than looking freshly checked every retry.
+		log.Error(err, "failed to fetch RSS feed", "url", feed.RSSUrl)
+		verdict := attempt.record(attemptOutcome{kind: attemptFetchFailed}, err)
+		s.close(syncFetchFailed)
+		return verdict
+	}
+
+	// A 304 is just as much a successful check as one that found something to
+	// send -- it shouldn't read as stale just because nothing changed. This does
+	// give up the optimization of skipping the status write when nothing
+	// else changed (settleGroup diffs on the whole status), so a
+	// quiet feed now costs one status write per poll interval instead of
+	// zero.
+	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, nil)
+
+	if v, done := s.withoutEntries(); done {
+		s.close(v)
+		return attemptVerdict{}
+	}
+
+	// Every config check happens in one step, before the sync begins, so a
+	// config error on a non-empty first fetch can't turn the next attempt into
+	// a "feed was empty" delivery of its whole backlog.
+	renderer, err := newFeedRenderer(run.group, &feed)
+	if err != nil {
+		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
+		verdict := attempt.record(attemptOutcome{kind: attemptConfigError}, err)
+		s.close(syncConfigError)
+		return verdict
+	}
+
+	s.begin()
+	s.logLegacyCatchUpCap(ctx, feed.RSSUrl)
+	if s.skippedBacklog > 0 {
+		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: s.skippedBacklog}, nil)
+	}
+
+	verdict := entryDelivery{
+		renderer: renderer,
+		syncer:   s,
+		attempt:  attempt,
+		sender:   run.sender,
+		metrics:  metricsFor(run.group),
+	}.run(ctx)
+	s.close(verdict.settlement())
+	return verdict
+}
+
 // withoutEntries reports the verdict of a fetch that has nothing to send,
 // because it was a 304 or the document is empty. It returns false for a fetch
 // with entries.
@@ -170,16 +247,11 @@ func (s *feedSync) withoutEntries() (syncVerdict, bool) {
 // stamps the feed's title on each entry, sorts them, builds the ledger over the
 // whole fetch, runs both identity migrations through it, plans the delivery
 // (catch-up limit included) and, for a first sync with catchUpLimit 0, skips the
-// backlog. It must be called at most once, and only after the feed's
-// configuration is known to be usable: a configuration error must leave fs as it
-// was (see syncConfigError), so that fixing it replays the same first sync
-// instead of delivering the whole backlog.
+// backlog. apply calls it once, and only after the feed's configuration is
+// known to be usable: a configuration error must leave fs as it was (see
+// syncConfigError), so that fixing it replays the same first sync instead of
+// delivering the whole backlog.
 func (s *feedSync) begin() {
-	if s.began {
-		panic("feedSync: begin called twice")
-	}
-	s.began = true
-
 	entries := s.fetch.Entries
 	// Stamp the feed's title on each entry so templates can use {{.FeedTitle}}
 	// without threading it through entryDelivery/feedRenderer.build.
@@ -228,6 +300,15 @@ func (s *feedSync) entries() []rss.Entry {
 	return s.scan[s.resumeAt:]
 }
 
+// renderEvidence is the entries whose rendering counts as evidence that the
+// feed's templates work, for entryDelivery.otherEntryRenders: the plan's whole
+// scan, untrimmed past-watermark entries included (before the watermark and
+// already sent ones passed the filter when they were delivered), but not the
+// ones the catch-up trim left out. It is only valid after begin.
+func (s *feedSync) renderEvidence() []rss.Entry {
+	return s.scan
+}
+
 // sent reports whether entry was already delivered; see deliveryLedger.sent.
 func (s *feedSync) sent(entry rss.Entry) bool {
 	return s.ledger.sent(entry)
@@ -266,7 +347,7 @@ func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
 }
 
 // close settles what the verdict allows and ends the sync; it is the only place
-// that decides these, and it must run exactly once.
+// that decides these, and apply runs it exactly once, last.
 //
 //   - Initialized: set once the feed's configuration is known to be usable and,
 //     for an ambiguous legacy status, only once the document is accounted for.
@@ -292,11 +373,6 @@ func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
 // The legacy stateVersion is advanced last, and only when nothing in fs still
 // needs the legacy reading (see legacyState.settleOnClose).
 func (s *feedSync) close(verdict syncVerdict) {
-	if s.closed {
-		panic("feedSync: closed twice")
-	}
-	s.closed = true
-
 	switch verdict {
 	case syncFetchFailed, syncConfigError:
 		// Nothing was accounted for.
@@ -315,13 +391,11 @@ func (s *feedSync) close(verdict syncVerdict) {
 		s.persistValidators()
 		clearFailure(s.fs)
 	case syncPending:
-		s.mustHaveBegun(verdict)
 		if !s.legacy.blocksInitialize() {
 			s.fs.Initialized = true
 		}
 		s.prune()
 	case syncAccountedFor:
-		s.mustHaveBegun(verdict)
 		s.fs.Initialized = true
 		s.persistValidators()
 		clearFailure(s.fs)
@@ -331,23 +405,6 @@ func (s *feedSync) close(verdict syncVerdict) {
 	}
 
 	s.legacy.settleOnClose(s.fs, verdict)
-}
-
-// closeOnReturn is processFeed's deferred close and must be deferred directly,
-// since recover only works in the deferred call itself. A return that set no
-// verdict still panics in close, so a forgotten verdict stays loud. A panic
-// raised before any verdict was set (while rendering, sending or recording) is
-// re-raised unchanged and close is skipped; otherwise close's own "invalid
-// verdict" panic would replace it, and controller-runtime would log a missing
-// verdict instead of the real fault. Status isn't written on a panic path, so
-// skipping settlement there loses nothing.
-func (s *feedSync) closeOnReturn(verdict *syncVerdict) {
-	if *verdict == 0 {
-		if p := recover(); p != nil {
-			panic(p)
-		}
-	}
-	s.close(*verdict)
 }
 
 // persistValidators stores the response's cache validators.
@@ -362,10 +419,4 @@ func (s *feedSync) persistValidators() {
 
 func (s *feedSync) prune() {
 	pruneLastSent(s.fs.LastSent, maxLastSentPerFeed)
-}
-
-func (s *feedSync) mustHaveBegun(verdict syncVerdict) {
-	if !s.began {
-		panic(fmt.Sprintf("feedSync: closed with verdict %v before begin", verdict))
-	}
 }

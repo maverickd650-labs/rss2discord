@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/discord"
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
@@ -481,31 +483,16 @@ func TestFeedSync_ClosePrunesLastSent(t *testing.T) {
 	}
 }
 
-// The ordering and settlement rules hold only if every sync is closed exactly
-// once with a verdict that fits how far it got.
-func TestFeedSync_MisuseIsLoud(t *testing.T) {
+// close's settlement table is keyed on the verdict, so a value that is not a
+// verdict must be loud rather than settle nothing. (apply, the only caller,
+// derives the verdict itself and closes exactly once, so there is no
+// double-close or close-before-begin to guard.)
+func TestFeedSync_CloseRejectsANonVerdict(t *testing.T) {
 	open := func() *feedSync {
 		return openFeedSync(currentStatus(), syncFetch(syncEntries(2)...), syncSpec(defaultCatchUpLimit))
 	}
-	expectPanic(t, "closing twice", func() {
-		s := open()
-		s.close(syncFetchFailed)
-		s.close(syncFetchFailed)
-	})
 	expectPanic(t, "closing without a verdict", func() { open().close(0) })
 	expectPanic(t, "closing with an unknown verdict", func() { open().close(syncAccountedFor + 1) })
-	expectPanic(t, "closing a sync that never began as pending", func() { open().close(syncPending) })
-	expectPanic(t, "closing a sync that never began as accounted for", func() { open().close(syncAccountedFor) })
-	expectPanic(t, "beginning twice", func() {
-		s := open()
-		s.begin()
-		s.begin()
-	})
-	expectPanic(t, "returning without a verdict", func() {
-		s := open()
-		var verdict syncVerdict
-		defer s.closeOnReturn(&verdict)
-	})
 }
 
 // Verdicts name themselves in close's panic messages and logs, so every verdict
@@ -531,39 +518,35 @@ func TestSyncVerdict_String(t *testing.T) {
 	}
 }
 
-// processFeed defers closeOnReturn. A panic raised before any verdict was set
-// must surface unchanged, not be replaced by close's "invalid verdict" panic,
-// so controller-runtime logs the real fault; a return with a verdict still
-// closes the sync.
-func TestFeedSync_CloseOnReturnKeepsTheOriginalPanic(t *testing.T) {
-	open := func() *feedSync {
-		return openFeedSync(currentStatus(), syncFetch(syncEntries(2)...), syncSpec(defaultCatchUpLimit))
-	}
+// apply closes the sync as its last act, not from a defer: a panic while
+// sending must surface unchanged and leave the FeedStatus unsettled (not
+// Initialized, validators not stored, nothing pruned), exactly as if the
+// reconcile had never reached the close.
+func TestFeedSyncApply_PanicDuringDeliveryLeavesStatusUnsettled(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("sync-panic", "fg-sync-panic", "")
+	fetch := oneEntryFetch()
+	fetch.ETag = "etag-1"
+	run := testRun(t, fg, feed, fetch, nil, panicSender{})
 
-	const original = "render exploded"
-	s := open()
+	const original = "send exploded"
 	got := func() (recovered any) {
 		defer func() { recovered = recover() }()
-		var verdict syncVerdict
-		defer s.closeOnReturn(&verdict)
-		panic(original)
+		processFeed(t.Context(), run)
+		return nil
 	}()
 	if got != original {
 		t.Fatalf("recovered %v, want the original panic %q", got, original)
 	}
-	if s.closed {
-		t.Fatal("a sync that panicked before a verdict was set should not be closed")
-	}
-
-	s = open()
-	func() {
-		verdict := syncFetchFailed
-		defer s.closeOnReturn(&verdict)
-	}()
-	if !s.closed {
-		t.Fatal("a return with a verdict should close the sync")
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.Initialized || fs.ETag != "" {
+		t.Fatalf("a sync that panicked mid-delivery was settled: Initialized=%v ETag=%q", fs.Initialized, fs.ETag)
 	}
 }
+
+// panicSender is a MessageSender whose send panics.
+type panicSender struct{}
+
+func (panicSender) SendMessage(context.Context, discord.Message) error { panic("send exploded") }
 
 func TestLimitCatchUp(t *testing.T) {
 	mk := func(n int) []rss.Entry {
