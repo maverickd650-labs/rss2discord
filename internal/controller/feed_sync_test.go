@@ -544,11 +544,11 @@ func TestProcessFeed_PanicBeforeAnythingIsHandledRestoresTheStatus(t *testing.T)
 	run := testRun(t, fg, feed, fetch, nil, &panicSender{})
 
 	fp := processFeedPanic(t, run)
-	if fp.value != "send exploded" || fp.url != feed.RSSUrl || len(fp.stack) == 0 {
+	if fp.value != sendExplodedPanic || fp.url != feed.RSSUrl || len(fp.stack) == 0 {
 		t.Fatalf("feedPanic = {url: %q, value: %v, stack: %d bytes}, want the original panic for %q with a stack",
 			fp.url, fp.value, len(fp.stack), feed.RSSUrl)
 	}
-	if strings.Contains(fp.Error(), "send exploded") || !strings.Contains(fp.Error(), "a string value (withheld)") {
+	if strings.Contains(fp.Error(), sendExplodedPanic) || !strings.Contains(fp.Error(), "a string value (withheld)") {
 		t.Fatalf("feedPanic.Error() = %q, want the value's type, never its content", fp.Error())
 	}
 	if got := feedStatusFor(fg, feed.RSSUrl); !apiequality.Semantic.DeepEqual(got, before) {
@@ -615,6 +615,9 @@ func TestContainedPass_OnlyRecoversFeedPanics(t *testing.T) {
 	}
 }
 
+// sendExplodedPanic is the value the test senders panic with.
+const sendExplodedPanic = "send exploded"
+
 // panicSender is a MessageSender that sends after messages, then panics.
 type panicSender struct {
 	after, sent int
@@ -622,7 +625,7 @@ type panicSender struct {
 
 func (p *panicSender) SendMessage(context.Context, discord.Message) error {
 	if p.sent >= p.after {
-		panic("send exploded")
+		panic(sendExplodedPanic)
 	}
 	p.sent++
 	return nil

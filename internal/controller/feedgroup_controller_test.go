@@ -1406,11 +1406,11 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(ready.Reason).To(Equal(reasonReconcilePanicked))
 			Expect(ready.Message).To(ContainSubstring(rssServer.URL()))
 			By("Verifying the panic value and stack are kept out of every persisted field")
-			Expect(ready.Message).NotTo(ContainSubstring("send exploded"))
+			Expect(ready.Message).NotTo(ContainSubstring(sendExplodedPanic))
 			Expect(ready.Message).NotTo(ContainSubstring("goroutine"))
-			Expect(fs.LastError).NotTo(ContainSubstring("send exploded"))
+			Expect(fs.LastError).NotTo(ContainSubstring(sendExplodedPanic))
 			for _, c := range fs.Conditions {
-				Expect(c.Message).NotTo(ContainSubstring("send exploded"))
+				Expect(c.Message).NotTo(ContainSubstring(sendExplodedPanic))
 			}
 
 			By("Reconciling again at once, with a working sender")
@@ -2531,7 +2531,7 @@ type panicAfterSender struct {
 
 func (p *panicAfterSender) SendMessage(ctx context.Context, msg discord.Message) error {
 	if p.sent >= p.after {
-		panic("send exploded")
+		panic(sendExplodedPanic)
 	}
 	p.sent++
 	return p.inner.SendMessage(ctx, msg)
