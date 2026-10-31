@@ -14,7 +14,7 @@ Terms used in `internal/controller`, with the names the code gives them.
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
   legacy `StateVersion`, the stored ETag/Last-Modified validators, a cleared failure
-  (`LastError`, `RetryCount`, `BackoffUntil`) and `LastSent` pruning. A fetch is
+  (`LastError`, `RetryCount`, the feed backoff) and `LastSent` pruning. A fetch is
   *accounted for* when every entry from it was sent, filtered out, already sent or
   skipped; only then are validators stored, because a conditional GET that comes back 304
   would otherwise strand an unsent entry.
@@ -30,14 +30,25 @@ Terms used in `internal/controller`, with the names the code gives them.
   non-positive limit. An explicit limit of 0 on a true first sync skips the backlog
   instead (`BacklogSkipped`): the newest entry becomes the watermark and nothing is sent.
 
-**Delivery ledger** (`deliveryLedger`, `identity.go`)
+**Delivery ledger** (`deliveryLedger`, `ledger.go`)
 : A feed's delivery bookkeeping over one fetch: the `LastSeenEntry` watermark and the
   `LastSent` dedup keys, plus the stripped-identity counts they depend on. The counts are
   taken once, over the whole untrimmed fetch, so an entry's stripped identity is only
-  unique if it is across the feed, however the entries are later trimmed.
+  unique if it is across the feed, however the entries are later trimmed. It alone owns
+  the `LastSent` key scheme -- an entry's own key (`computeEntryKey`) plus, when its
+  stripped link identity is unique in the fetch, the stripped key (`strippedKey`) -- and
+  the identity migrations (`identity_migration.go`) re-key through its helpers
+  (`rekeySent`, `setSent`, `forgetSent`) rather than building keys themselves.
 
 **Watermark** (`FeedStatus.LastSeenEntry`)
 : The identity of the last entry handled; a later scan resumes just past it.
+
+**Watermark lookup** (`watermarkLookup`, `deliveryLedger.resume`, `ledger.go`)
+: Where a feed's watermark stands against one fetch, as one value: `watermarkNone` (no
+  watermark stored), `watermarkFound` (it stands for the entry at `index`, matched by
+  identity or by unique stripped identity) or `watermarkLost` (stored, but no entry of the
+  fetch it stands for). `planDelivery` decides from it: found resumes past the entry; lost
+  falls through to the catch-up cap, unlike none, which may skip the backlog.
 
 **Ambiguous legacy status** (`legacyState.ambiguous`)
 : A `FeedStatus` written before `stateVersion` 1, checked but with no watermark, that can't
@@ -67,3 +78,13 @@ Terms used in `internal/controller`, with the names the code gives them.
   faster retry; one Event announces the first time the backoff reaches the cap. A
   transient failure instead retries until `RetryCount` reaches the retry limit, and one
   Event announces that.
+
+**Feed backoff** (`feedBackoff`, `backoff.go`)
+: A feed's permanent-failure backoff, as a view over its `FeedStatus` (`backoffOf(fs)`) and the
+  only code that touches `BackoffUntil`. `extend(base, now)` sets it to `base * 2^RetryCount`
+  capped at `maxPermanentBackoff` (6h) and reports `firstCapped`, true only for the failure
+  whose backoff first reaches the cap (the caller fires the `BackoffCapped` Event once);
+  `active(now)` is what `planFeeds` skips on (a malformed value is not a backoff);
+  `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom; and
+  `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
+  clears it), inferred from the feed's `Reachable` condition not being False.

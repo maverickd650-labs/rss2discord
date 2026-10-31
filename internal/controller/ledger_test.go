@@ -28,8 +28,7 @@ import (
 // for any of entries.
 func ledgerResumes(entries []rss.Entry, watermark string) bool {
 	fs := &v1alpha1.FeedStatus{LastSeenEntry: watermark}
-	_, found := newDeliveryLedger(fs, entries).resume(entries)
-	return found
+	return newDeliveryLedger(fs, entries).resume(entries).state == watermarkFound
 }
 
 func TestDeliveryLedger_Resume(t *testing.T) {
@@ -42,21 +41,21 @@ func TestDeliveryLedger_Resume(t *testing.T) {
 		name      string
 		entries   []rss.Entry
 		watermark string
+		wantState watermarkState
 		wantIndex int
-		wantFound bool
 	}{
-		{name: "match in the middle", entries: []rss.Entry{a, b, c}, watermark: "guid-b", wantIndex: 1, wantFound: true},
-		{name: "match first", entries: []rss.Entry{a, b}, watermark: idA, wantIndex: 0, wantFound: true},
-		{name: "scrolled out", entries: []rss.Entry{a, b}, watermark: "guid-z", wantIndex: -1},
-		{name: "empty watermark", entries: []rss.Entry{a, b}, wantIndex: -1},
-		{name: "no entries", watermark: idA, wantIndex: -1},
-		{name: "clamped long identity", entries: []rss.Entry{a, {ID: longID}}, watermark: clampWatermark(longID), wantIndex: 1, wantFound: true},
+		{name: "match in the middle", entries: []rss.Entry{a, b, c}, watermark: "guid-b", wantState: watermarkFound, wantIndex: 1},
+		{name: "match first", entries: []rss.Entry{a, b}, watermark: idA, wantState: watermarkFound, wantIndex: 0},
+		{name: "scrolled out", entries: []rss.Entry{a, b}, watermark: "guid-z", wantState: watermarkLost, wantIndex: -1},
+		{name: "empty watermark", entries: []rss.Entry{a, b}, wantState: watermarkNone, wantIndex: -1},
+		{name: "no entries", watermark: idA, wantState: watermarkLost, wantIndex: -1},
+		{name: "clamped long identity", entries: []rss.Entry{a, {ID: longID}}, watermark: clampWatermark(longID), wantState: watermarkFound, wantIndex: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark}
-			index, found := newDeliveryLedger(fs, tc.entries).resume(tc.entries)
-			if index != tc.wantIndex || found != tc.wantFound {
-				t.Fatalf("resume = (%d, %v), want (%d, %v)", index, found, tc.wantIndex, tc.wantFound)
+			got := newDeliveryLedger(fs, tc.entries).resume(tc.entries)
+			if got != (watermarkLookup{tc.wantState, tc.wantIndex}) {
+				t.Fatalf("resume = %+v, want {state %d, index %d}", got, tc.wantState, tc.wantIndex)
 			}
 		})
 	}
@@ -113,7 +112,7 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 			if want := clampWatermark(entryIdentity(tc.handled)); fs.LastSeenEntry != want {
 				t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, want)
 			}
-			if _, found := ledger.resume(tc.fetch); found != tc.wantResume {
+			if found := ledger.resume(tc.fetch).state == watermarkFound; found != tc.wantResume {
 				t.Fatalf("resume found = %v after markHandled, want %v", found, tc.wantResume)
 			}
 		})

@@ -1,7 +1,9 @@
 package rss
 
 import (
+	"encoding/xml"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -40,6 +42,11 @@ func TestFetchEntries_RejectsInvalidURLs(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("unexpected error: %v", err)
 			}
+			if invalid, ok := errors.AsType[*InvalidURLError](err); !ok {
+				t.Fatalf("expected *InvalidURLError, got %T: %v", err, err)
+			} else if invalid.URL != tc.url {
+				t.Fatalf("URL = %q, want %q", invalid.URL, tc.url)
+			}
 		})
 	}
 }
@@ -60,6 +67,59 @@ func TestFetchEntries_EnforcesSizeCap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds maximum allowed size") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	tooLarge, ok := errors.AsType[*ResponseTooLargeError](err)
+	if !ok {
+		t.Fatalf("expected *ResponseTooLargeError, got %T: %v", err, err)
+	}
+	if tooLarge.Limit != maxFeedResponseBytes {
+		t.Fatalf("Limit = %d, want %d", tooLarge.Limit, maxFeedResponseBytes)
+	}
+	if _, isParse := errors.AsType[*ParseError](err); isParse {
+		t.Fatal("an oversized body must not be reported as a ParseError")
+	}
+}
+
+func TestFetchEntries_ParseFailuresAreParseErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty body", ""},
+		{"garbage", "this is not xml at all"},
+		{"truncated", `<rss><channel><item><title>cut off`},
+		{"unsupported charset", `<?xml version="1.0" encoding="x-no-such-charset"?><rss><channel></channel></rss>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			_, err := NewClient(srv.Client()).FetchEntries(t.Context(), srv.URL, CacheValidators{})
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if _, ok := errors.AsType[*ParseError](err); !ok {
+				t.Fatalf("expected *ParseError, got %T: %v", err, err)
+			}
+			if _, ok := errors.AsType[*ResponseTooLargeError](err); ok {
+				t.Fatal("a parse failure must not be a ResponseTooLargeError")
+			}
+		})
+	}
+}
+
+func TestParseFeed_WrapsEveryFailureAndKeepsCause(t *testing.T) {
+	_, _, err := parseFeed([]byte(`<rss><channel><item>`))
+	if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
+		t.Fatalf("truncated body should keep *xml.SyntaxError reachable, got %T: %v", err, err)
+	}
+	_, _, err = parseFeed(nil)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("empty body should keep io.EOF reachable, got %T: %v", err, err)
+	}
+	if _, ok := errors.AsType[*ParseError](err); !ok {
+		t.Fatalf("expected *ParseError, got %T", err)
 	}
 }
 

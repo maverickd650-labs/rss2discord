@@ -23,12 +23,9 @@ import "github.com/maverickd650/rss2discord-operator/internal/rss"
 type deliveryInputs struct {
 	// entries is the whole fetch, sorted oldest-to-newest.
 	entries []rss.Entry
-	// hadWatermark is whether fs.LastSeenEntry was non-empty.
-	hadWatermark bool
-	// watermarkIndex is the index in entries of the watermark's entry, and
-	// found whether there is one (see deliveryLedger.resume).
-	watermarkIndex int
-	found          bool
+	// watermark is where the feed's watermark stands in entries (see
+	// deliveryLedger.resume).
+	watermark watermarkLookup
 	// catchUpLimit is the effective spec limit (the default when unset).
 	catchUpLimit int
 	// legacyAmbiguous is legacyState.ambiguous.
@@ -61,10 +58,10 @@ type deliveryPlan struct {
 // everything, since all of it was published after that first sync; an ambiguous
 // legacy status is capped at defaultCatchUpLimit (see legacyState).
 func planDelivery(in deliveryInputs) deliveryPlan {
-	if in.hadWatermark && in.found {
-		return deliveryPlan{scan: in.entries, resumeAt: in.watermarkIndex + 1}
+	if in.watermark.state == watermarkFound {
+		return deliveryPlan{scan: in.entries, resumeAt: in.watermark.index + 1}
 	}
-	if in.catchUpLimit == 0 && !in.hadWatermark {
+	if in.catchUpLimit == 0 && in.watermark.state == watermarkNone {
 		switch {
 		case in.legacyAmbiguous:
 			return deliveryPlan{
