@@ -602,7 +602,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 							}
 							s := constant.StringVal(declared.Val())
 							if !reasons[s] {
-									continue
+								continue
 								}
 							canonical := packageConsts[n] && reasonFiles[filename]
 							constSpellings[s] = append(constSpellings[s], spelling{
