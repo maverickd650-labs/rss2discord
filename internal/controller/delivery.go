@@ -91,12 +91,11 @@ func (d entryDelivery) run(ctx context.Context) attemptVerdict {
 			// scan stops, the unsent entries stay pending (validators aren't
 			// persisted) and are retried after the requeue backs off for the
 			// verdict's retryAfter.
-			outcome, class := sendFailureOutcome(err)
-			return d.attempt.record(outcome, class, err)
+			return d.attempt.record(attemptOutcome{kind: attemptSendFailed}, err)
 		}
 
 		d.syncer.markHandled(entry)
-		d.attempt.record(attemptOutcome{kind: attemptSent}, noClass, nil)
+		d.attempt.record(attemptOutcome{kind: attemptSent}, nil)
 	}
 
 	return attemptVerdict{}
@@ -116,7 +115,7 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 	// at RetryInterval without ever making progress. The attempt
 	// surfaces an Event instead of looping indefinitely, the
 	// reconcile RetryCount first reaches maxRetries.
-	verdict = d.attempt.record(attemptOutcome{kind: attemptRenderFailed}, noClass, err)
+	verdict = d.attempt.record(attemptOutcome{kind: attemptRenderFailed}, err)
 	if d.attempt.pastRetryLimit() && d.renderer.otherEntryRenders(d.syncer.window(), entry) {
 		// Retries were exhausted a full reconcile ago and the entry
 		// still can't render, yet a sibling entry renders fine with
@@ -127,7 +126,7 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 		// and skipping would just drain the feed, so keep holding.
 		log.Error(err, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", entryIdentity(entry))
 		d.syncer.markHandled(entry)
-		d.attempt.record(attemptOutcome{kind: attemptEntrySkipped, entry: entry.Title}, noClass, err)
+		d.attempt.record(attemptOutcome{kind: attemptEntrySkipped, entry: entry.Title}, err)
 		return attemptVerdict{}, true
 	}
 	return verdict, false

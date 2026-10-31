@@ -17,8 +17,12 @@ limitations under the License.
 package controller
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +35,7 @@ import (
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
 // attemptInstant is the time every attempt in these tests runs at.
@@ -62,12 +67,66 @@ func eventNamed(reason string, fragments []string) []string {
 	return append([]string{reason}, fragments...)
 }
 
+// causedError is an error whose text is fixed and whose cause is a real error
+// of the kind the production code reports, so a row's text stays readable while
+// record still classifies it from the typed cause.
+type causedError struct {
+	msg   string
+	cause error
+}
+
+func (e causedError) Error() string { return e.msg }
+func (e causedError) Unwrap() error { return e.cause }
+
+// fetchFailure is the fetch error classifyFetchError maps to class.
+func fetchFailure(class failureClass) error {
+	var cause error
+	switch class {
+	case classServerError:
+		cause = &rss.HTTPStatusError{StatusCode: 503}
+	case classNotFound:
+		cause = &rss.HTTPStatusError{StatusCode: 404}
+	case classGone:
+		cause = &rss.HTTPStatusError{StatusCode: 410}
+	case classTimeout:
+		cause = timeoutError{}
+	case classDNSFailure:
+		cause = &net.DNSError{Err: "no such host", Name: "example.invalid"}
+	case classParseError:
+		cause = &rss.ParseError{Err: io.EOF}
+	case classTLSError:
+		cause = doError(x509.UnknownAuthorityError{}, false)
+	case classBlockedAddress:
+		cause = doError(&rss.BlockedAddressError{Addr: netip.MustParseAddr("10.0.0.1")}, true)
+	default:
+		panic(fmt.Sprintf("no fetch error for class %+v", class))
+	}
+	return causedError{testBoom, cause}
+}
+
+// sendFailure is the send error classifySendError maps to class.
+func sendFailure(class failureClass) error {
+	var cause error
+	switch class {
+	case classServerError:
+		cause = &discord.HTTPStatusError{StatusCode: 503}
+	case classWebhookInvalid:
+		cause = &discord.HTTPStatusError{StatusCode: 404}
+	case classClientError:
+		cause = &discord.HTTPStatusError{StatusCode: 400}
+	case classTimeout:
+		cause = timeoutError{}
+	default:
+		panic(fmt.Sprintf("no send error for class %+v", class))
+	}
+	return causedError{testBoom, cause}
+}
+
 // attemptCase is one row of the outcome matrix: the status and spec an outcome
 // is recorded against, and everything record must do about it.
 type attemptCase struct {
 	name    string
 	outcome attemptOutcome
-	class   failureClass
 	err     error
 
 	// Before: the spec's retry limit and RetryInterval, and the failure state
@@ -129,21 +188,21 @@ func attemptCases() []attemptCase {
 		// A transient fetch failure retries until RetryCount reaches the limit,
 		// announces it once at the limit, and stays quiet past it.
 		{
-			name: "transient fetch failure retries", outcome: fetchFailed, class: classServerError, err: boom, retries: 3,
+			name: "transient fetch failure retries", outcome: fetchFailed, err: fetchFailure(classServerError), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: labelFetchErrorServerError, verdict: retry,
 				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
-			name: "transient fetch failure below the limit is quiet", outcome: fetchFailed, class: classTimeout, err: boom, retries: 3, retryCount: 1,
+			name: "transient fetch failure below the limit is quiet", outcome: fetchFailed, err: fetchFailure(classTimeout), retries: 3, retryCount: 1,
 			want: attemptWant{
 				retryCount: 2, lastError: testBoom, label: "fetch_error_timeout", verdict: retry,
 				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
-			name: "transient fetch failure announces exhaustion once, at the limit", outcome: fetchFailed, class: classServerError, err: boom,
+			name: "transient fetch failure announces exhaustion once, at the limit", outcome: fetchFailed, err: fetchFailure(classServerError),
 			retries: 3, retryCount: 2,
 			want: attemptWant{
 				retryCount: 3, lastError: testBoom, label: labelFetchErrorServerError, warnings: eventNamed(eventFetchFailed, exhausted),
@@ -151,7 +210,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "transient fetch failure past the limit is quiet again", outcome: fetchFailed, class: classServerError, err: boom,
+			name: "transient fetch failure past the limit is quiet again", outcome: fetchFailed, err: fetchFailure(classServerError),
 			retries: 3, retryCount: 3,
 			want: attemptWant{
 				retryCount: 4, lastError: testBoom, label: labelFetchErrorServerError,
@@ -159,7 +218,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "a retry limit below one counts as one", outcome: fetchFailed, class: classDNSFailure, err: boom, retries: 0,
+			name: "a retry limit below one counts as one", outcome: fetchFailed, err: fetchFailure(classDNSFailure), retries: 0,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: "fetch_error_dns_failure", warnings: eventNamed(eventFetchFailed, exhausted),
 				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonDNSFailure, message: testBoom,
@@ -169,7 +228,7 @@ func attemptCases() []attemptCase {
 		// A permanent failure backs off immediately, never asks for a retry, and
 		// announces the backoff only the first time it reaches its cap.
 		{
-			name: "permanent fetch failure backs off at once", outcome: fetchFailed, class: classNotFound, err: boom,
+			name: "permanent fetch failure backs off at once", outcome: fetchFailed, err: fetchFailure(classNotFound),
 			retries: 3, retryInterval: interval,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: labelFetchErrorNotFound,
@@ -177,7 +236,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent fetch failure ignores the retry limit", outcome: fetchFailed, class: classGone, err: boom,
+			name: "permanent fetch failure ignores the retry limit", outcome: fetchFailed, err: fetchFailure(classGone),
 			retries: 1, retryInterval: interval, retryCount: 1,
 			want: attemptWant{
 				retryCount: 2, lastError: testBoom, backoff: 20 * time.Minute, label: "fetch_error_gone",
@@ -185,7 +244,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent fetch failure just below the cap is quiet", outcome: fetchFailed, class: classParseError, err: boom,
+			name: "permanent fetch failure just below the cap is quiet", outcome: fetchFailed, err: fetchFailure(classParseError),
 			retries: 3, retryInterval: interval, retryCount: 5,
 			want: attemptWant{
 				retryCount: 6, lastError: testBoom, backoff: 320 * time.Minute, label: "fetch_error_parse_error",
@@ -193,7 +252,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent fetch failure announces the cap the first time it is reached", outcome: fetchFailed, class: classNotFound, err: boom,
+			name: "permanent fetch failure announces the cap the first time it is reached", outcome: fetchFailed, err: fetchFailure(classNotFound),
 			retries: 3, retryInterval: interval, retryCount: 6,
 			want: attemptWant{
 				retryCount: 7, lastError: testBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
@@ -202,7 +261,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent fetch failure at the cap stays quiet", outcome: fetchFailed, class: classNotFound, err: boom,
+			name: "permanent fetch failure at the cap stays quiet", outcome: fetchFailed, err: fetchFailure(classNotFound),
 			retries: 3, retryInterval: interval, retryCount: 7,
 			want: attemptWant{
 				retryCount: 8, lastError: testBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
@@ -210,7 +269,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent failure with an enormous RetryCount is capped, not wrapped", outcome: fetchFailed, class: classTLSError, err: boom,
+			name: "permanent failure with an enormous RetryCount is capped, not wrapped", outcome: fetchFailed, err: fetchFailure(classTLSError),
 			retries: 3, retryInterval: interval, retryCount: 100,
 			want: attemptWant{
 				retryCount: 101, lastError: testBoom, backoff: maxPermanentBackoff, label: "fetch_error_tls_error",
@@ -218,7 +277,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "an unset RetryInterval backs off from the 5m fallback", outcome: fetchFailed, class: classBlockedAddress, err: boom, retries: 3,
+			name: "an unset RetryInterval backs off from the 5m fallback", outcome: fetchFailed, err: fetchFailure(classBlockedAddress), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: "fetch_error_blocked_address",
 				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonBlockedAddress, message: testBoom,
@@ -228,14 +287,14 @@ func attemptCases() []attemptCase {
 		// A send failure follows the same policy on the Delivered condition, and
 		// leaves the entry pending whatever the policy decides.
 		{
-			name: "transient send failure retries and stays pending", outcome: sendFailed, class: classServerError, err: boom, retries: 3,
+			name: "transient send failure retries and stays pending", outcome: sendFailed, err: sendFailure(classServerError), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: "send_error_server_error", verdict: retryPending,
 				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
-			name: "transient send failure announces exhaustion once, at the limit", outcome: sendFailed, class: classTimeout, err: boom,
+			name: "transient send failure announces exhaustion once, at the limit", outcome: sendFailed, err: sendFailure(classTimeout),
 			retries: 3, retryCount: 2,
 			want: attemptWant{
 				retryCount: 3, lastError: testBoom, label: labelSendErrorTimeout, verdict: pending, warnings: eventNamed(eventSendFailed, exhausted),
@@ -243,7 +302,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "transient send failure past the limit is quiet and still pending", outcome: sendFailed, class: classTimeout, err: boom,
+			name: "transient send failure past the limit is quiet and still pending", outcome: sendFailed, err: sendFailure(classTimeout),
 			retries: 3, retryCount: 3,
 			want: attemptWant{
 				retryCount: 4, lastError: testBoom, label: labelSendErrorTimeout, verdict: pending,
@@ -251,7 +310,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent send failure backs off at once without asking for a retry", outcome: sendFailed, class: classWebhookInvalid, err: boom,
+			name: "permanent send failure backs off at once without asking for a retry", outcome: sendFailed, err: sendFailure(classWebhookInvalid),
 			retries: 3, retryInterval: interval,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: "send_error_webhook_invalid", verdict: pending,
@@ -259,7 +318,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "permanent send failure announces the cap the first time it is reached", outcome: sendFailed, class: classClientError, err: boom,
+			name: "permanent send failure announces the cap the first time it is reached", outcome: sendFailed, err: sendFailure(classClientError),
 			retries: 3, retryInterval: interval, retryCount: 6,
 			want: attemptWant{
 				retryCount: 7, lastError: testBoom, backoff: maxPermanentBackoff, label: "send_error_client_error", verdict: pending,
@@ -278,7 +337,7 @@ func attemptCases() []attemptCase {
 			},
 		},
 		{
-			name: "render failure never backs off, whatever class it is handed", outcome: renderFailed, class: classNotFound, err: boom, retries: 3,
+			name: "render failure never backs off, whatever error it carries", outcome: renderFailed, err: fetchFailure(classNotFound), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: labelRenderError, verdict: retryPending,
 				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
@@ -302,7 +361,7 @@ func attemptCases() []attemptCase {
 		// A rate limit spends no retry, waits as long as Discord said, and leaves
 		// the entry pending.
 		{
-			name: "rate limit waits and spends no retry", outcome: attemptOutcome{kind: attemptRateLimited}, class: classRateLimited, err: rateLimited,
+			name: "rate limit waits and spends no retry", outcome: sendFailed, err: rateLimited,
 			retries: 3, retryCount: 1,
 			want: attemptWant{
 				retryCount: 1, lastError: rateLimited.Error(), label: "rate_limited",
@@ -384,7 +443,7 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	recorder := events.NewFakeRecorder(10)
 	attempt := testAttempt(t, fg, fs, attemptURL, attemptInstant).withRecorder(recorder)
 
-	verdict := attempt.record(tc.outcome, tc.class, tc.err)
+	verdict := attempt.record(tc.outcome, tc.err)
 
 	if verdict != tc.want.verdict {
 		t.Errorf("verdict = %+v, want %+v", verdict, tc.want.verdict)
@@ -496,7 +555,7 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 			fg.Namespace, fg.Name = attemptNS, name
 			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
 			fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
-			testAttempt(t, fg, fs, attemptURL, attemptInstant).record(tc.outcome, tc.class, tc.err)
+			testAttempt(t, fg, fs, attemptURL, attemptInstant).record(tc.outcome, tc.err)
 		})
 	}
 }
@@ -520,7 +579,7 @@ func TestFeedAttempt_ConfigErrorWarnsOncePerDistinctError(t *testing.T) {
 	}{
 		{"bad regex", 1}, {"bad regex", 0}, {"a different typo", 1}, {"a different typo", 0},
 	} {
-		attempt.record(configError, noClass, errors.New(step.err))
+		attempt.record(configError, errors.New(step.err))
 		if got := drainEvents(recorder); len(got) != step.wantEvents {
 			t.Fatalf("config error %q: got Events %q, want %d", step.err, got, step.wantEvents)
 		}
@@ -602,10 +661,10 @@ func TestAttemptOutcome_MetricLabels(t *testing.T) {
 	}()
 	fg := &v1alpha1.FeedGroup{}
 	testAttempt(t, fg, &v1alpha1.FeedStatus{}, attemptURL, attemptInstant).
-		record(attemptOutcome{kind: attemptKindEnd}, noClass, nil)
+		record(attemptOutcome{kind: attemptKindEnd}, nil)
 }
 
-func TestSendFailureOutcome(t *testing.T) {
+func TestAttemptOutcomeResolve(t *testing.T) {
 	rateLimited := &discord.RateLimitError{RetryAfter: time.Second}
 	for _, tc := range []struct {
 		name      string
@@ -621,9 +680,9 @@ func TestSendFailureOutcome(t *testing.T) {
 		{name: "anything else", err: errors.New(testBoom), wantKind: attemptSendFailed, wantClass: classOther},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			outcome, class := sendFailureOutcome(tc.err)
+			outcome, class := attemptOutcome{kind: attemptSendFailed}.resolve(tc.err)
 			if outcome.kind != tc.wantKind || class != tc.wantClass {
-				t.Fatalf("sendFailureOutcome = (%d, %+v), want (%d, %+v)", outcome.kind, class, tc.wantKind, tc.wantClass)
+				t.Fatalf("resolve = (%d, %+v), want (%d, %+v)", outcome.kind, class, tc.wantKind, tc.wantClass)
 			}
 		})
 	}

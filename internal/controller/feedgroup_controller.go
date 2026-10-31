@@ -258,7 +258,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 		// *successful* check, so a feed stuck failing shows an aging
 		// LastChecked rather than looking freshly checked every retry.
 		log.Error(fetchErr, "failed to fetch RSS feed", "url", feed.RSSUrl)
-		return attempt.record(attemptOutcome{kind: attemptFetchFailed}, classifyFetchError(fetchErr), fetchErr)
+		return attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchErr)
 	}
 
 	// A 304 is just as much a successful check as one that found something to
@@ -267,7 +267,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	// else changed (settleGroup diffs on the whole status), so a
 	// quiet feed now costs one status write per poll interval instead of
 	// zero.
-	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, noClass, nil)
+	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, nil)
 
 	if v, done := syncer.withoutEntries(); done {
 		settlement = v
@@ -281,7 +281,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	if err != nil {
 		settlement = syncConfigError
 		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
-		return attempt.record(attemptOutcome{kind: attemptConfigError}, noClass, err)
+		return attempt.record(attemptOutcome{kind: attemptConfigError}, err)
 	}
 
 	syncer.begin()
@@ -290,7 +290,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 			"url", feed.RSSUrl, "limit", defaultCatchUpLimit)
 	}
 	if syncer.skippedBacklog > 0 {
-		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, noClass, nil)
+		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: syncer.skippedBacklog}, nil)
 	}
 
 	verdict := entryDelivery{

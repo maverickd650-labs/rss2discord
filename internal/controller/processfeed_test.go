@@ -502,7 +502,7 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileInstant).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
 
-	attempt.record(configError, noClass, errors.New("bad regex"))
+	attempt.record(configError, errors.New("bad regex"))
 	select {
 	case ev := <-recorder.Events:
 		if !strings.Contains(ev, reasonConfigError) || !strings.Contains(ev, "bad regex") {
@@ -512,14 +512,14 @@ func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 		t.Fatal("expected an Event the first time the config error appears")
 	}
 
-	attempt.record(configError, noClass, errors.New("bad regex"))
+	attempt.record(configError, errors.New("bad regex"))
 	select {
 	case ev := <-recorder.Events:
 		t.Fatalf("unexpected repeat Event for an unchanged error: %s", ev)
 	default:
 	}
 
-	attempt.record(configError, noClass, errors.New("a different typo"))
+	attempt.record(configError, errors.New("a different typo"))
 	select {
 	case <-recorder.Events:
 	default:

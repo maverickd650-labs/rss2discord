@@ -93,7 +93,9 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
   an entry failing to render, failing to send, being rate limited, sent or skipped, a
   skipped backlog, a config error -- each applied through the single entry point
-  `record(outcome, failureClass, err)`. It owns the outcome metric label, the `Reachable` /
+  `record(outcome, err)`, which classifies the error itself (a fetch failure by
+  `classifyFetchError`, a send failure by `classifySendError`, a `*discord.RateLimitError`
+  becoming the rate-limited outcome), so callers only report what went wrong. It owns the outcome metric label, the `Reachable` /
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision.
 
