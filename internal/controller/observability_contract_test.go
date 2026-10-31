@@ -43,6 +43,8 @@ var allFailureClasses = []failureClass{
 	classWebhookInvalid,
 	classBlockedAddress,
 	classTLSError,
+	classResponseTooLarge,
+	classInvalidURL,
 	classOther,
 }
 
