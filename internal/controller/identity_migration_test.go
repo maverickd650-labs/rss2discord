@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -33,8 +35,14 @@ func ownershipLink(id string) rss.Entry {
 	return rss.Entry{ID: id, IDSource: rss.IDFromLink, Title: id}
 }
 
+// indexOfEntry is where entry sits in entries, which must hold it.
+func indexOfEntry(entries []rss.Entry, entry rss.Entry) int {
+	return slices.IndexFunc(entries, func(e rss.Entry) bool { return refOf(e) == refOf(entry) })
+}
+
 // TestStrippedOwnership_OwnStripped covers the question the legacy migration
-// asks: may this stripped identity be recorded for this entry?
+// asks through recordSentAt: may this stripped identity be recorded for this
+// entry? The entry key is always written; the stripped key only when want is set.
 func TestStrippedOwnership_OwnStripped(t *testing.T) {
 	alone := ownershipLink(ownLinkBase + "#frag")
 	twinA, twinB := ownershipLink(sharedLinkBase+"#a"), ownershipLink(sharedLinkBase+"#b")
@@ -56,8 +64,16 @@ func TestStrippedOwnership_OwnStripped(t *testing.T) {
 		{name: "an entry without a link identity", entries: []rss.Entry{guidIsLink}, entry: guidIsLink, stripped: guidIsLink.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownStripped(tc.entry, tc.stripped); got != tc.want {
-				t.Errorf("ownStripped = %q, want %q", got, tc.want)
+			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+			ledger := newDeliveryLedger(fs, tc.entries)
+			i := indexOfEntry(tc.entries, tc.entry)
+			ledger.recordSentAt(i, "t", tc.stripped)
+			want := map[string]string{ledger.record(i).key: "t"}
+			if tc.want != "" {
+				want[strippedKey(tc.want)] = "t"
+			}
+			if !maps.Equal(fs.LastSent, want) {
+				t.Errorf("recordSentAt wrote %v, want %v", fs.LastSent, want)
 			}
 		})
 	}
@@ -86,8 +102,7 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 		{name: "a previous ID without a stripped form", entries: []rss.Entry{guidMover}, mover: guidMover},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			previous, _ := previouslyIdentified(tc.mover)
-			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(previous); got != tc.want {
+			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(indexOfEntry(tc.entries, tc.mover)); got != tc.want {
 				t.Errorf("ownsPrevious = %v, want %v", got, tc.want)
 			}
 		})

@@ -57,6 +57,11 @@ func (c feedCheck) lastChecked() (time.Time, bool) {
 	return last, err == nil
 }
 
+// checked reports whether the feed has a LastChecked at all, parseable or not.
+func (c feedCheck) checked() bool {
+	return c.fs.LastChecked != ""
+}
+
 // untilDue is how long until a full interval has elapsed since the last
 // successful check, as of now; zero or negative when it already has. ok is false
 // when there is no usable last check.
