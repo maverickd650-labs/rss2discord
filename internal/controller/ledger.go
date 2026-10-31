@@ -196,13 +196,17 @@ func moveSentKey(lastSent map[string]string, from, to string) {
 // releases identified it, onto current, the same entry as now identified,
 // keeping their send times; see moveSentKey. The entry key moves to the new
 // identity's. The stripped key, which only a link-derived previous identity
-// has, moves to the new stripped identity's when current is link-derived too,
-// and is otherwise dropped: the entry no longer has one to be found under.
-func rekeySent(lastSent map[string]string, previous, current rss.Entry) {
+// has, moves to the new stripped identity's when current is link-derived too
+// and that stripped identity is unique in counts (the current fetch's), and is
+// otherwise dropped: the entry no longer has one to be found under, and a key
+// under a shared stripped identity would later mark a sibling that is alone
+// in the feed as already sent, the same reason markHandled only writes it for
+// a unique entry.
+func rekeySent(lastSent map[string]string, previous, current rss.Entry, counts strippedCounts) {
 	moveSentKey(lastSent, computeEntryKey(previous), computeEntryKey(current))
 	if oldStripped := strippedLinkIdentity(previous); oldStripped != "" {
 		target := ""
-		if newStripped := strippedLinkIdentity(current); newStripped != "" {
+		if newStripped := counts.unique(current); newStripped != "" {
 			target = strippedKey(newStripped)
 		}
 		moveSentKey(lastSent, strippedKey(oldStripped), target)

@@ -75,6 +75,7 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 		}
 	}
 
+	counts := countStripped(entries)
 	for _, m := range moves {
 		old, now := entryIdentity(m.previous), entryIdentity(m.current)
 		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
@@ -83,7 +84,7 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 		if fs.LastSeenEntry == clampWatermark(old) {
 			fs.LastSeenEntry = clampWatermark(now)
 		}
-		rekeySent(fs.LastSent, m.previous, m.current)
+		rekeySent(fs.LastSent, m.previous, m.current, counts)
 	}
 }
 
@@ -176,6 +177,7 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
+	counts := countStripped(entries)
 	for i, entry := range entries {
 		current[i], legacy[i] = entryIdentity(entry), legacyEntryIdentity(entry)
 		sharing[legacy[i]]++
@@ -210,9 +212,12 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			continue
 		}
 		if sharing[legacy[i]] == 1 {
-			// A link's legacy identity is its stripped form; see deliveryLedger.markHandled.
+			// A link's legacy identity is its stripped form; like
+			// deliveryLedger.markHandled, record it only when it is this
+			// entry's own and unique in the fetch, or a sibling sharing it
+			// would later be taken as sent.
 			stripped := ""
-			if entries[i].IDSource == rss.IDFromLink {
+			if entries[i].IDSource == rss.IDFromLink && counts.unique(entries[i]) == legacy[i] {
 				stripped = legacy[i]
 			}
 			setSent(fs.LastSent, current[i], stripped, sentAt)
