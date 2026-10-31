@@ -38,6 +38,7 @@ func testRun(t testing.TB, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, resul
 		sender:  sender,
 		cadence: cadenceOf(&fg.Spec),
 		now:     testReconcileInstant,
+		clock:   func() time.Time { return testReconcileInstant },
 	}
 }
 
@@ -46,8 +47,17 @@ func (run feedRun) withRecorder(recorder events.EventRecorder) feedRun {
 	return run
 }
 
+// withNow pins both the run's time and its clock to now.
 func (run feedRun) withNow(now time.Time) feedRun {
 	run.now = now
+	run.clock = func() time.Time { return now }
+	return run
+}
+
+// withClock sets the run's clock alone, for a test in which the outcome is
+// recorded later than the reconcile started.
+func (run feedRun) withClock(clock func() time.Time) feedRun {
+	run.clock = clock
 	return run
 }
 

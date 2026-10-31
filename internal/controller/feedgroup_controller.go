@@ -226,6 +226,12 @@ type feedRun struct {
 	// now is the reconcile's clock reading; status timestamps are formatted
 	// from it where they are written.
 	now time.Time
+	// clock reads the time a failure or success is recorded at, for the
+	// permanent-failure backoff deadline and the success gauge: those must
+	// count from when the attempt happened, not from the reconcile's start, or
+	// a slow fetch or a rate-limit wait would eat into the backoff. nil is
+	// time.Now; tests pin it (withNow) so their assertions are exact.
+	clock func() time.Time
 }
 
 // processFeed handles a completed fetch for a single feed: it records the

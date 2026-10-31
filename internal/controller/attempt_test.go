@@ -687,3 +687,22 @@ func TestAttemptOutcomeResolve(t *testing.T) {
 		})
 	}
 }
+
+// TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded: the backoff
+// deadline counts from when the failure is recorded (the run's clock), not from
+// when the reconcile started (LastChecked's time), so a slow fetch or a long
+// rate-limit wait before the failure cannot eat into the backoff.
+func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
+	fg := &v1alpha1.FeedGroup{}
+	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-fg-late-clock", attemptGeneration
+	fg.Spec.Retries, fg.Spec.RetryInterval = 3, "5m"
+	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL}
+	// Recorded two hours after the reconcile started: longer than the backoff.
+	recorded := attemptInstant.Add(2 * time.Hour)
+	attempt := testRun(t, fg, v1alpha1.FeedSpec{RSSUrl: attemptURL}, rss.FetchResult{}, nil, nil).
+		withNow(attemptInstant).withClock(func() time.Time { return recorded }).newAttempt(fs)
+
+	attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(classNotFound))
+
+	assertBackoffUntil(t, fs.BackoffUntil, recorded, 10*time.Minute)
+}
