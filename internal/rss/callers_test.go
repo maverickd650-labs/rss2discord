@@ -71,6 +71,11 @@ func checkHTTPClientUse(fset *token.FileSet, file *ast.File, rel string) []strin
 		if spec.Name != nil {
 			name = spec.Name.Name
 		}
+		// A dot import makes the guarded identifiers unqualified, where
+		// qualified cannot see them.
+		if name == "." && (path == httpImportPath || path == rssImportPath) {
+			c.report(spec, "dot import of %s hides its clients from the SSRF guard check", path)
+		}
 		c.imports[name] = path
 	}
 	ast.Inspect(file, c.visit)
@@ -233,12 +238,14 @@ func TestCheckHTTPClientUse(t *testing.T) {
 import (
 	stdhttp "net/http"
 	feeds "` + rssImportPath + `"
+	// extra imports
 )
 
 `
 	const caller = "internal/controller/x.go"
 	for _, tc := range []struct {
 		name, rel, pkg, body string
+		extraImport          string // spliced into the import block
 		wantProblems         int
 	}{
 		{name: "nil client", rel: caller, body: `var _ = feeds.NewClient(nil)`},
@@ -260,11 +267,14 @@ import (
 		{name: "package-local custom client", rel: "internal/rss/client.go", pkg: rssPackage, body: `func NewClient(*stdhttp.Client) int { return 0 }; var _ = NewClient(new(stdhttp.Client))`, wantProblems: 2},
 		{name: "package-local nil client", rel: "internal/rss/client.go", pkg: rssPackage, body: `func NewClient(*stdhttp.Client) int { return 0 }; var _ = NewClient(nil)`},
 		{name: "package-local wrap", rel: "internal/rss/parse.go", pkg: rssPackage, body: `func NewClientWithTransportWrap(any) int { return 0 }; var _ = NewClientWithTransportWrap(nil)`, wantProblems: 1},
+		{name: "dot import of net/http", rel: caller, extraImport: `. "net/http"`, body: `var _ = Client{}`, wantProblems: 1},
+		{name: "dot import of rss", rel: caller, extraImport: `. "` + rssImportPath + `"`, body: `var _ = NewClient(nil)`, wantProblems: 1},
+		{name: "dot import of another package", rel: caller, extraImport: `. "strings"`, body: `var _ = ToUpper("x")`},
 		{name: "same name in another package", rel: caller, body: `func NewClient(*stdhttp.Client) int { return 0 }; var _ = NewClient(nil)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fset := token.NewFileSet()
-			src := header + tc.body + "\n"
+			src := strings.Replace(header, "// extra imports", tc.extraImport, 1) + tc.body + "\n"
 			if tc.pkg != "" {
 				src = strings.Replace(src, "package p", "package "+tc.pkg, 1)
 			}
