@@ -78,7 +78,7 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "ports-timed-sender-"+tc.name, "fg-timed-sender-"+tc.name
-			defer deleteFeedGroupMetrics(ns, name)
+			defer groupMetrics{namespace: ns, name: name}.forget()
 
 			inner := &fakeSender{results: []error{tc.err}}
 			sender := newTimedSender(inner, ns, name)
@@ -119,7 +119,7 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "ports-timed-fetcher-"+tc.name, "fg-timed-fetcher-"+tc.name
-			defer deleteFeedGroupMetrics(ns, name)
+			defer groupMetrics{namespace: ns, name: name}.forget()
 
 			inner := &fakeFetcher{result: tc.result, err: tc.err}
 			fetcher := newTimedFetcher(inner, ns, name)
@@ -149,7 +149,7 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 // verdict carrying the Retry-After and leaves the entry unsent.
 func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 	ns, name := "ports-fake-429", "fg-fake-429"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	sender := &fakeSender{results: []error{&discord.RateLimitError{RetryAfter: 7 * time.Second}}}
@@ -175,7 +175,7 @@ func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 // one, and records the classified send_error outcome.
 func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	ns, name := "ports-fake-5xx", "fg-fake-5xx"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.Retries = 3
@@ -206,7 +206,7 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 // the feed off at once and does not ask for a prompt retry.
 func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	ns, name := "ports-fake-4xx", "fg-fake-4xx"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.RetryInterval = "5m"
@@ -239,7 +239,7 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 // TestProcessFeed_FakeSenderSuccess asserts a nil send marks the entry sent.
 func TestProcessFeed_FakeSenderSuccess(t *testing.T) {
 	ns, name := "ports-fake-ok", "fg-fake-ok"
-	defer deleteFeedGroupMetrics(ns, name)
+	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	sender := &fakeSender{}

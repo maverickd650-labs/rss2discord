@@ -48,39 +48,35 @@ var (
 // timedFetcher observes feedRequestDuration for every fetch made for one
 // FeedGroup, whether the fetch succeeds or fails.
 type timedFetcher struct {
-	inner     FeedFetcher
-	namespace string
-	name      string
+	inner   FeedFetcher
+	metrics groupMetrics
 }
 
 func newTimedFetcher(inner FeedFetcher, namespace, name string) *timedFetcher {
-	return &timedFetcher{inner: inner, namespace: namespace, name: name}
+	return &timedFetcher{inner: inner, metrics: groupMetrics{namespace: namespace, name: name}}
 }
 
 func (f *timedFetcher) FetchEntries(ctx context.Context, url string, validators rss.CacheValidators) (rss.FetchResult, error) {
 	start := time.Now()
 	result, err := f.inner.FetchEntries(ctx, url, validators)
-	feedRequestDuration.WithLabelValues(f.namespace, f.name, operationFetch).
-		Observe(time.Since(start).Seconds())
+	f.metrics.requestDuration(operationFetch, time.Since(start))
 	return result, err
 }
 
 // timedSender observes feedRequestDuration for every send made for one
 // FeedGroup, whether the send succeeds or fails.
 type timedSender struct {
-	inner     MessageSender
-	namespace string
-	name      string
+	inner   MessageSender
+	metrics groupMetrics
 }
 
 func newTimedSender(inner MessageSender, namespace, name string) *timedSender {
-	return &timedSender{inner: inner, namespace: namespace, name: name}
+	return &timedSender{inner: inner, metrics: groupMetrics{namespace: namespace, name: name}}
 }
 
 func (s *timedSender) SendMessage(ctx context.Context, msg discord.Message) error {
 	start := time.Now()
 	err := s.inner.SendMessage(ctx, msg)
-	feedRequestDuration.WithLabelValues(s.namespace, s.name, operationSend).
-		Observe(time.Since(start).Seconds())
+	s.metrics.requestDuration(operationSend, time.Since(start))
 	return err
 }

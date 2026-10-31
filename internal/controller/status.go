@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 	"unicode/utf8"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -67,16 +66,6 @@ func errText(err error) string {
 	return clampText(err.Error(), maxStatusTextBytes)
 }
 
-// markFeedCheckSuccess records that a feed was successfully checked this
-// reconcile, whether or not it had anything new to send. It's the single
-// place that advances feedLastSuccessTimestamp, so a quiet-but-healthy feed
-// (304, or zero new entries) reads as fresh rather than as if the operator
-// had stopped checking it.
-func markFeedCheckSuccess(feedGroup *v1alpha1.FeedGroup) {
-	feedLastSuccessTimestamp.WithLabelValues(feedGroup.Namespace, feedGroup.Name).
-		Set(float64(time.Now().Unix()))
-}
-
 // ensureFeedStatuses rebuilds feedGroup.Status.Feeds to have exactly one
 // entry per feed in feedGroup.Spec.Feeds, in spec order: existing entries are
 // matched up by RSSUrl, new feeds get an entry with their RSSUrl, and
@@ -92,11 +81,11 @@ func markFeedCheckSuccess(feedGroup *v1alpha1.FeedGroup) {
 // across reconciles whenever the spec doesn't change, which
 // apiequality.Semantic.DeepEqual (used by requeueWithStatus to skip no-op
 // writes) needs to avoid seeing a reordered-but-otherwise-identical slice as
-// a change. It also drops the rss_url-labeled metric series of any feed it
-// prunes (see deleteFeedMetrics).
+// a change. It returns the RSSUrls it pruned so the caller can drop their
+// metric series; it does not touch Prometheus.
 // Retained entries have nil LastSent maps initialized, LastError bounded, and
 // oversized LastSeenEntry values replaced by clampWatermark digests.
-func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) {
+func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) (pruned []string) {
 	existing := make(map[string]v1alpha1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
 		existing[fs.RSSUrl] = fs
@@ -120,12 +109,12 @@ func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) {
 	}
 	feedGroup.Status.Feeds = rebuilt
 
-	// Whatever is left in existing was dropped from the spec. Drop its
-	// rss_url-labeled series too, so editing a group's feed list doesn't
-	// leave stale series behind until the whole FeedGroup is deleted.
+	// Whatever is left in existing was dropped from the spec.
 	for url := range existing {
-		deleteFeedMetrics(feedGroup.Namespace, feedGroup.Name, url)
+		pruned = append(pruned, url)
 	}
+	slices.Sort(pruned)
+	return pruned
 }
 
 // feedStatusFor returns a pointer to the FeedStatus for url, or nil if absent
@@ -189,27 +178,13 @@ func (r *FeedGroupReconciler) requeueWithStatus(ctx context.Context, feedGroup *
 	duration := decision.wait()
 
 	feedGroup.Status.ObservedGeneration = feedGroup.Generation
-	prevReady := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
-	prevReason, prevMessage := "", ""
-	if prevReady != nil {
-		prevReason, prevMessage = prevReady.Reason, prevReady.Message
-	}
-	setReadyCondition(feedGroup, webhookErr, invalidIntervalError(&feedGroup.Spec))
-	setFeedReachableCondition(feedGroup)
-
-	// Gate the Event on the condition's reason/message actually changing (as
-	// feedAttempt.record does for a feed's config error), not on every reconcile that still
-	// sees the bad value. ObservedGeneration is deliberately not compared, so
-	// an unrelated spec edit doesn't repeat the Event.
-	if ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); r.Recorder != nil &&
-		ready != nil && ready.Reason == reasonInvalidInterval &&
-		(ready.Reason != prevReason || ready.Message != prevMessage) {
-		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", ready.Message)
+	if warning, emit := summarizeGroup(feedGroup, webhookErr); emit && r.Recorder != nil {
+		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, "InvalidConfig", "%s", warning)
 	}
 
 	// Before the no-op short-circuit below so the per-feed gauges are refreshed
 	// on every reconcile, not just ones that changed status.
-	recordFeedStateMetrics(feedGroup)
+	metricsFor(feedGroup).syncFeedState(feedGroup)
 
 	if apiequality.Semantic.DeepEqual(original, &feedGroup.Status) {
 		return ctrl.Result{RequeueAfter: duration}, nil
@@ -278,6 +253,36 @@ func statusApplyConfiguration(status *v1alpha1.FeedGroupStatus) (*acv1alpha1.Fee
 		return nil, fmt.Errorf("converting FeedGroup status to an apply configuration: %w", err)
 	}
 	return ac, nil
+}
+
+// summarizeGroup sets the group-level Ready and FeedReachable conditions from
+// the group's spec and per-feed status, and decides whether the change warrants
+// a Warning Event. It does no I/O, so requeueWithStatus only has to emit the
+// Event it reports.
+//
+// The Event is gated on Ready's reason/message actually changing (as
+// feedAttempt.record does for a feed's config error), not on every reconcile
+// that still sees the bad value; ObservedGeneration is deliberately not
+// compared, so an unrelated spec edit doesn't repeat it. Only the
+// InvalidInterval reason produces one: warning is that condition's message and
+// emit is true exactly on the transition into it (or a change of its message).
+// webhookErr outranks the interval problem on Ready, so while it is set no
+// Event is emitted here.
+func summarizeGroup(feedGroup *v1alpha1.FeedGroup, webhookErr error) (warning string, emit bool) {
+	prevReason, prevMessage := "", ""
+	if prev := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); prev != nil {
+		prevReason, prevMessage = prev.Reason, prev.Message
+	}
+
+	setReadyCondition(feedGroup, webhookErr, invalidIntervalError(&feedGroup.Spec))
+	setFeedReachableCondition(feedGroup)
+
+	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
+	if ready != nil && ready.Reason == reasonInvalidInterval &&
+		(ready.Reason != prevReason || ready.Message != prevMessage) {
+		return ready.Message, true
+	}
+	return "", false
 }
 
 // setReadyCondition summarizes the outcome of a reconciliation into a single

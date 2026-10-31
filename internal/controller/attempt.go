@@ -186,13 +186,13 @@ func (r *FeedGroupReconciler) newFeedAttempt(group *v1alpha1.FeedGroup, fs *v1al
 // ongoing failure doesn't re-fire) one Warning Event announces the exhaustion.
 func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) attemptVerdict {
 	if label := o.metricLabel(class); label != "" {
-		feedOperationsTotal.WithLabelValues(a.group.Namespace, a.group.Name, a.url, label).Inc()
+		metricsFor(a.group).operation(a.url, label)
 	}
 
 	switch o.kind {
 	case attemptFetchSucceeded:
 		a.fs.LastChecked = a.now
-		markFeedCheckSuccess(a.group)
+		metricsFor(a.group).checkSucceeded(time.Now())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
 			"FetchSucceeded", "Feed fetched successfully")
 		return attemptVerdict{}
