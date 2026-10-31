@@ -14,7 +14,7 @@ Terms used in `internal/controller`, with the names the code gives them.
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
   legacy `StateVersion`, the stored ETag/Last-Modified validators, a cleared failure
-  (`LastError`, `RetryCount`, `BackoffUntil`) and `LastSent` pruning. A fetch is
+  (`LastError`, `RetryCount`, the feed backoff) and `LastSent` pruning. A fetch is
   *accounted for* when every entry from it was sent, filtered out, already sent or
   skipped; only then are validators stored, because a conditional GET that comes back 304
   would otherwise strand an unsent entry.
@@ -78,3 +78,13 @@ Terms used in `internal/controller`, with the names the code gives them.
   faster retry; one Event announces the first time the backoff reaches the cap. A
   transient failure instead retries until `RetryCount` reaches the retry limit, and one
   Event announces that.
+
+**Feed backoff** (`feedBackoff`, `backoff.go`)
+: A feed's permanent-failure backoff, as a view over its `FeedStatus` (`backoffOf(fs)`) and the
+  only code that touches `BackoffUntil`. `extend(base, now)` sets it to `base * 2^RetryCount`
+  capped at `maxPermanentBackoff` (6h) and reports `firstCapped`, true only for the failure
+  whose backoff first reaches the cap (the caller fires the `BackoffCapped` Event once);
+  `active(now)` is what `planFeeds` skips on (a malformed value is not a backoff);
+  `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom; and
+  `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
+  clears it), inferred from the feed's `Reachable` condition not being False.

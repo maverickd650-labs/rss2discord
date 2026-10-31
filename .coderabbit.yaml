@@ -44,18 +44,20 @@ reviews:
         (CRDs, role.yaml, zz_generated.*, applyconfiguration, PROJECT) must not
         be hand-edited; changes come from `mise run manifests generate`. Dev
         tasks run via `mise run <task>`, not raw go test/golangci-lint.
-    - path: "internal/rss/client.go"
+    - path: "internal/rss/*.go"
       instructions: >-
-        SSRF guard, do not weaken or duplicate: newDefaultHTTPClient uses a
+        SSRF guard (transport.go), do not weaken or duplicate: newDefaultHTTPClient uses a
         custom DialContext that resolves the host and rejects any non-public IP
         via isPublicIP (loopback, link-local, private, unspecified, multicast,
         CGNAT). Redirects and DNS re-resolution must still dial through it; flag
-        any new http.Client, transport or dialer that bypasses it. Keep the
-        response-size cap. Parser memory must stay bounded per element and per
+        any new http.Client, transport or dialer that bypasses it, including a
+        production caller passing its own *http.Client to NewClient (client.go).
+        Keep the http/https scheme check and the response-size cap in
+        FetchEntries (client.go). Parser memory must stay bounded per element and per
         entry against a hostile 10 MiB feed: keep the bounded UnmarshalXML slice
         types and the maxFeedEntries/maxCategories/maxNSCandidates caps; flag
-        any unbounded []T or string accumulation. Preserve namespace precedence
-        in nsTexts/pickText.
+        any unbounded []T or string accumulation (parse.go, rss.go, atom.go).
+        Preserve namespace precedence in nsTexts/pickText (text.go).
     - path: "internal/discord/client.go"
       instructions: >-
         Only send to HTTPS hosts in AllowedWebhookHosts (Discord domains); never
@@ -76,6 +78,16 @@ reviews:
         RetryCount == the retry limit (not >=). Changing entry identity,
         LastSent keys or watermark semantics needs a lossless migration of
         existing status. User-supplied templates must have bounded output.
+        The RSS client is built with rss.NewClient(nil) so it falls back to the
+        SSRF-guarded transport (internal/rss/transport.go); flag any production
+        code that passes its own *http.Client or transport instead.
+    - path: "cmd/**/*.go"
+      instructions: >-
+        The manager builds the production RSS client with
+        rss.NewClientWithTransportWrap, which must wrap the SSRF-guarded
+        transport from internal/rss/transport.go; flag any change that passes a
+        raw *http.Client to rss.NewClient or builds an unguarded transport for
+        feed fetching.
     - path: "**/*_test.go"
       instructions: >-
         Tests reach local httptest servers through the unguarded helpers

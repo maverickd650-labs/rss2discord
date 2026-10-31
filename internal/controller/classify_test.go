@@ -22,6 +22,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"net/url"
@@ -70,8 +71,11 @@ func TestClassifyFetchError(t *testing.T) {
 		{"OtherStatusCode", &rss.HTTPStatusError{StatusCode: 100, Status: "100 Continue"}, classOther},
 		{reasonTimeout, fmt.Errorf("fetch: %w", timeoutError{}), classTimeout},
 		{reasonDNSFailure, fmt.Errorf("fetch: %w", &net.DNSError{Err: "no such host", Name: "example.invalid"}), classDNSFailure},
-		{reasonParseError, fmt.Errorf("parse: %w", &xml.SyntaxError{Msg: "unexpected EOF"}), classParseError},
-		{reasonUnrecognizedFormat, fmt.Errorf("parse: %w", &rss.UnrecognizedFormatError{Root: "rdf"}), classUnrecognizedFormat},
+		{reasonParseError, fmt.Errorf("fetch: %w", &rss.ParseError{Err: io.EOF}), classParseError},
+		{reasonUnrecognizedFormat, fmt.Errorf("fetch: %w", &rss.ParseError{Err: &rss.UnrecognizedFormatError{Root: "rdf"}}), classUnrecognizedFormat},
+		{reasonResponseTooLarge, fmt.Errorf("fetch: %w", &rss.ResponseTooLargeError{Limit: 10}), classResponseTooLarge},
+		{reasonInvalidURL, fmt.Errorf("fetch: %w", &rss.InvalidURLError{URL: "ftp://x", Msg: "unsupported feed URL scheme"}), classInvalidURL},
+		{"BareXMLSyntaxErrorIsNotParseError", &xml.SyntaxError{Msg: "x"}, classOther},
 		{reasonBlockedAddress, doError(&rss.BlockedAddressError{Addr: netip.MustParseAddr("10.0.0.1")}, true), classBlockedAddress},
 		{"TLSCertificateVerification", doError(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, false), classTLSError},
 		{"TLSUnknownAuthority", doError(x509.UnknownAuthorityError{}, false), classTLSError},

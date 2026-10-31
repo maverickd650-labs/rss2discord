@@ -20,7 +20,8 @@ As noted in the [README](README.md), this project is built with heavy AI assista
 had a third-party security review — read the code before trusting it with anything sensitive.
 Areas of particular interest for reports:
 
-- SSRF guards in [`internal/rss/client.go`](internal/rss/client.go) (feed fetching) and
+- SSRF guards in [`internal/rss/transport.go`](internal/rss/transport.go) and
+  [`internal/rss/client.go`](internal/rss/client.go) (feed fetching) and
   [`internal/discord/client.go`](internal/discord/client.go) (webhook delivery) — these resolve
   and validate destination IPs/hosts before making requests.
 - Webhook secret handling and log/error redaction.

@@ -20,7 +20,6 @@ import (
 	"context"
 	"strings"
 
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -68,18 +67,15 @@ func noteWebhookSecretVersion(feedGroup *v1alpha1.FeedGroup, resourceVersion str
 	clearSendBackoffs(feedGroup)
 }
 
-// clearSendBackoffs resets BackoffUntil and RetryCount (see
-// clearPermanentBackoffs) on feeds whose backoff came from a send failure. A
-// feed whose Reachable condition is False is backed off because its own URL
-// fails to fetch, which a new webhook can't fix, so it keeps its backoff.
+// clearSendBackoffs clears the backoff (see feedBackoff.clear) of feeds whose
+// backoff came from a send failure (feedBackoff.sendCaused). A feed backed off
+// because its own URL fails to fetch keeps its backoff: a new webhook can't
+// fix that.
 func clearSendBackoffs(feedGroup *v1alpha1.FeedGroup) {
 	for i := range feedGroup.Status.Feeds {
-		fs := &feedGroup.Status.Feeds[i]
-		if fs.BackoffUntil == "" || apimeta.IsStatusConditionFalse(fs.Conditions, v1alpha1.FeedConditionTypeReachable) {
-			continue
+		if b := backoffOf(&feedGroup.Status.Feeds[i]); b.sendCaused() {
+			b.clear()
 		}
-		fs.BackoffUntil = ""
-		fs.RetryCount = 0
 	}
 }
 

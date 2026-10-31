@@ -19,6 +19,7 @@ package rss
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -66,4 +67,18 @@ func withContentID(entry Entry) Entry {
 		entry.ID, entry.IDSource = ContentID(entry), IDFromContent
 	}
 	return entry
+}
+
+// pickIdentity chooses an entry's ID by precedence: its GUID (RSS <guid>, Atom
+// <id>), else its link, else its title (which may be empty; see withContentID).
+// The GUID and link are trimmed here; the title is returned as given, so
+// callers pass the title in the form they want it kept.
+func pickIdentity(guid, link, title string) (string, IDSource) {
+	if id := strings.TrimSpace(guid); id != "" {
+		return id, IDFromGUID
+	}
+	if id := strings.TrimSpace(link); id != "" {
+		return id, IDFromLink
+	}
+	return title, IDFromTitle
 }
