@@ -40,6 +40,18 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   the identity migrations (`identity_migration.go`) re-key through its helpers
   (`rekeySent`, `setSent`, `forgetSent`) rather than building keys themselves.
 
+**Identity migration** (`migrateIdentities`, `identity_migration.go`)
+: Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
+  entries are identified now, on every fetch, from `feedSync.begin`. It is the one entry point
+  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, only for a
+  status written before `stateVersion` 1) and the previous-identity pass
+  (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
+  Both write through the ledger's helpers and ask one `strippedOwnership` (`ledger.go`, built
+  once per fetch) before writing a stripped key: `ownStripped` (is this stripped identity the
+  entry's own and unique in the fetch?) and `ownsPrevious` (can an old stripped key only have
+  been this one moved entry's?). A stripped key a sibling shares is never recorded, or the
+  sibling, alone under it later, would be taken as sent.
+
 **Watermark** (`FeedStatus.LastSeenEntry`)
 : The identity of the last entry handled; a later scan resumes just past it.
 
@@ -55,6 +67,27 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   say whether the feed was empty when last checked. Under `catchUpLimit: 0` it is capped
   at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for
   the fetch.
+
+**Reconcile pass** (`reconcilePass`, `feedgroup_controller.go`)
+: The pure middle of a reconcile, once the webhook is resolved: plan the due feeds, fetch them
+  concurrently and fold each through `processFeed`, stopping after a Discord rate limit. It does
+  no Kubernetes I/O and returns the folded `attemptVerdict` and the `feedPlan`. `prepareStatus`
+  is its counterpart before it (normalize status, reset backoffs on a spec change, snapshot);
+  `settleGroup` is the write after it.
+
+**Group cadence** (`cadence`, `cadence.go`)
+: A FeedGroup's timing resolved once from its spec by `cadenceOf`: `poll` (`Spec.Interval`),
+  `retry` (`Spec.RetryInterval`, also the permanent-failure backoff base) and `maxRetries`
+  (`Spec.Retries`, at least 1). Parsed durations are floored at `minParsedInterval`; blank
+  or unparsable ones take `fallbackInterval`/`fallbackRetryInterval`. `err` carries the
+  first unparsable field (interval before retryInterval) for the Ready condition's
+  `InvalidInterval`. `planFeeds`, `requeueDecision`, `feedAttempt` and `summarizeGroup` all
+  read it; none parses those spec fields itself.
+
+**Feed run** (`feedRun`, `feedgroup_controller.go`)
+: Everything one feed's handling in one reconcile needs, as one value: the group, the feed's
+  spec, its `fetchOutcome`, the `MessageSender`, the group's `cadence`, the Event recorder (nil
+  drops Events) and the reconcile's timestamp. `newAttempt` opens the `feedAttempt` from it.
 
 **Feed attempt** (`feedAttempt`, `attempt.go`)
 : The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
@@ -98,6 +131,14 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom; and
   `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
   clears it), inferred from the feed's `Reachable` condition not being False.
+
+**Display entry** (`displayEntry`, `displayOf`, `display.go`)
+: An `rss.Entry` as Discord shows it: title, description, feed title, link, image,
+  published (RFC 3339 and Unix), author and categories, built once per entry by `displayOf`.
+  Both the embed (`feedRenderer.build`) and the message templates (`templateData`) read from
+  it and never sanitize raw entry fields themselves, so the per-field rules (`stripHTML`,
+  `httpURLOrEmpty`, in `sanitize.go`) are readable in one place. The body is kept raw and
+  stripped by `content()` only when a template references `{{.Content}}`.
 
 **Message template sandbox** (`msgtemplate`, `internal/msgtemplate`)
 : The only place user-supplied message templates are parsed or run. `Compile` trims,

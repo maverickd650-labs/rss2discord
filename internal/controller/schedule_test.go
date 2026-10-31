@@ -149,7 +149,8 @@ func TestPlanFeeds(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := planFeeds(tc.fg(), scheduleNow, tc.force)
+			fg := tc.fg()
+			got := planFeeds(fg, cadenceOf(&fg.Spec), scheduleNow, tc.force)
 			if urls := activeURLs(got); !sameURLs(urls, tc.wantActive) {
 				t.Errorf("active = %v, want %v", urls, tc.wantActive)
 			}
@@ -164,18 +165,18 @@ func TestPlanFeeds_PausedAndEmptyURLNeverContributeWakeTime(t *testing.T) {
 	fg := scheduleGroup(defaultInterval, v1alpha1.FeedStatus{RSSUrl: "paused", LastChecked: stamp(-time.Minute)})
 	fg.Spec.Feeds[0].Paused = true
 	fg.Spec.Feeds = append(fg.Spec.Feeds, v1alpha1.FeedSpec{})
-	if got := planFeeds(fg, scheduleNow, false); len(got.active) != 0 || got.nextDue != 0 {
+	if got := planFeeds(fg, cadenceOf(&fg.Spec), scheduleNow, false); len(got.active) != 0 || got.nextDue != 0 {
 		t.Fatalf("plan = %+v, want nothing active and no wake time", got)
 	}
 }
 
 func TestRequeueDecision(t *testing.T) {
-	spec := &v1alpha1.FeedGroupSpec{Interval: "1h", RetryInterval: "2m"}
+	cad := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: "1h", RetryInterval: "2m"})
 	plan := feedPlan{nextDue: 20 * time.Minute}
 
 	t.Run("rate limit wins: exact, unjittered, ignores nextDue", func(t *testing.T) {
-		d := plan.requeue(spec, true, 90*time.Minute)
-		if d.jitter || d.interval != "" || d.fallback != 90*time.Minute || d.nextDue != 0 {
+		d := plan.requeue(cad, true, 90*time.Minute)
+		if d.jitter || d.delay != 90*time.Minute || d.nextDue != 0 {
 			t.Fatalf("decision = %+v", d)
 		}
 		if got := d.bound(90 * time.Minute); got != 90*time.Minute {
@@ -183,19 +184,19 @@ func TestRequeueDecision(t *testing.T) {
 		}
 	})
 	t.Run("retry uses RetryInterval with jitter", func(t *testing.T) {
-		d := plan.requeue(spec, true, 0)
-		if !d.jitter || d.interval != "2m" || d.fallback != fallbackRetryInterval {
+		d := plan.requeue(cad, true, 0)
+		if !d.jitter || d.delay != 2*time.Minute {
 			t.Fatalf("decision = %+v", d)
 		}
 	})
 	t.Run("no retry uses Interval with jitter", func(t *testing.T) {
-		d := plan.requeue(spec, false, 0)
-		if !d.jitter || d.interval != "1h" || d.fallback != fallbackInterval {
+		d := plan.requeue(cad, false, 0)
+		if !d.jitter || d.delay != time.Hour {
 			t.Fatalf("decision = %+v", d)
 		}
 	})
 	t.Run("webhook failure waits RetryInterval", func(t *testing.T) {
-		if d := retryRequeue(spec); !d.jitter || d.interval != "2m" || d.fallback != fallbackRetryInterval || d.nextDue != 0 {
+		if d := retryRequeue(cad); !d.jitter || d.delay != 2*time.Minute || d.nextDue != 0 {
 			t.Fatalf("decision = %+v", d)
 		}
 	})
@@ -231,34 +232,30 @@ func TestBackoffAddsNoWakeTime(t *testing.T) {
 		RSSUrl: "backed", LastChecked: stamp(-time.Hour), LastError: "404", RetryCount: 1,
 		BackoffUntil: stamp(10 * time.Minute),
 	}
-	plan := planFeeds(scheduleGroup(defaultInterval, backed), scheduleNow, false)
-	d := plan.requeue(&v1alpha1.FeedGroupSpec{Interval: defaultInterval, RetryInterval: "5m"}, false, 0)
+	fg := scheduleGroup(defaultInterval, backed)
+	cad := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: defaultInterval, RetryInterval: "5m"})
+	plan := planFeeds(fg, cad, scheduleNow, false)
+	d := plan.requeue(cad, false, 0)
 	if len(plan.active) != 0 || d.bound(30*time.Minute) != 30*time.Minute {
 		t.Fatalf("active=%v wait=%v, want no fetch and the full 30m Interval", activeURLs(plan), d.bound(30*time.Minute))
 	}
 }
 
-// wait parses the interval (falling back when it is empty or unparsable),
-// jitters it only when asked, and then applies the nextDue bound.
+// wait jitters the delay only when asked, and then applies the nextDue bound.
 func TestRequeueDecisionWait(t *testing.T) {
 	const (
-		waitInterval    = "20m"
-		waitIntervalDur = 20 * time.Minute
-		waitFallback    = 7 * time.Minute
-		waitShort       = time.Minute
+		waitDelay = 20 * time.Minute
+		waitShort = time.Minute
 	)
 	for _, tc := range []struct {
 		name     string
 		decision requeueDecision
 		want     time.Duration
 	}{
-		{name: "parsed interval", decision: requeueDecision{interval: waitInterval, fallback: waitShort}, want: waitIntervalDur},
-		{name: "empty interval uses fallback", decision: requeueDecision{fallback: waitFallback}, want: waitFallback},
-		{name: "unparsable interval uses fallback", decision: requeueDecision{interval: "bogus", fallback: waitFallback}, want: waitFallback},
-		{name: "sub-floor interval is floored", decision: requeueDecision{interval: "2s", fallback: time.Hour}, want: minParsedInterval},
-		{name: "bounded by nextDue", decision: requeueDecision{interval: waitInterval, fallback: waitShort, nextDue: 3 * time.Minute}, want: 3 * time.Minute},
-		{name: "nextDue never below the floor", decision: requeueDecision{interval: waitInterval, fallback: waitShort, nextDue: time.Second}, want: minParsedInterval},
-		{name: "nextDue longer than the wait is ignored", decision: requeueDecision{fallback: waitShort, nextDue: time.Hour}, want: waitShort},
+		{name: "delay is used as is", decision: requeueDecision{delay: waitDelay}, want: waitDelay},
+		{name: "bounded by nextDue", decision: requeueDecision{delay: waitDelay, nextDue: 3 * time.Minute}, want: 3 * time.Minute},
+		{name: "nextDue never below the floor", decision: requeueDecision{delay: waitDelay, nextDue: time.Second}, want: minParsedInterval},
+		{name: "nextDue longer than the wait is ignored", decision: requeueDecision{delay: waitShort, nextDue: time.Hour}, want: waitShort},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.decision.wait(); got != tc.want {
@@ -268,12 +265,63 @@ func TestRequeueDecisionWait(t *testing.T) {
 	}
 
 	t.Run("jitter only lengthens", func(t *testing.T) {
-		base := waitIntervalDur
+		base := waitDelay
 		for range 50 {
-			got := (requeueDecision{interval: waitInterval, jitter: true}).wait()
+			got := (requeueDecision{delay: waitDelay, jitter: true}).wait()
 			if got < base || got > base+time.Duration(float64(base)*requeueJitterMaxFactor) {
 				t.Fatalf("wait = %v, want within [%v, +%.0f%%]", got, base, requeueJitterMaxFactor*100)
 			}
 		}
 	})
+}
+
+// TestFeedDue covers the per-feed poll-interval gate.
+func TestFeedDue(t *testing.T) {
+	const recentCheck = "2026-01-01T11:59:00Z"
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	interval := 30 * time.Minute
+	cases := []struct {
+		name  string
+		fs    v1alpha1.FeedStatus
+		force bool
+		want  bool
+	}{
+		{name: "never checked", want: true},
+		{name: "checked recently", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:45:00Z"}, want: false},
+		{name: "interval elapsed", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:30:00Z"}, want: true},
+		{name: "malformed LastChecked", fs: v1alpha1.FeedStatus{LastChecked: "garbage"}, want: true},
+		{name: "recent but failing", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, LastError: testBoom}, want: true},
+		{name: "recent but retrying", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, RetryCount: 1}, want: true},
+		{name: "recent but spec changed", fs: v1alpha1.FeedStatus{LastChecked: recentCheck}, force: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := feedDue(&tc.fs, interval, now, tc.force); got != tc.want {
+				t.Errorf("feedDue() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestJitterDuration asserts enabled=true adds up to requeueJitterMaxFactor
+// extra to the duration (so FeedGroups created together with the same
+// interval don't requeue in lockstep forever), while enabled=false -- used
+// for Discord's rate-limit Retry-After, an externally-dictated minimum wait
+// -- leaves it exact.
+func TestJitterDuration(t *testing.T) {
+	const base = 10 * time.Minute
+
+	if got := jitterDuration(base, false); got != base {
+		t.Fatalf("expected exact %v with jitter disabled, got %v", base, got)
+	}
+
+	for range 20 {
+		got := jitterDuration(base, true)
+		if got < base {
+			t.Fatalf("jittered duration %v must never be shorter than base %v", got, base)
+		}
+		if max := time.Duration(1.1 * float64(base)); got > max {
+			t.Fatalf("jittered duration %v exceeds %v (base + %.0f%%)", got, max, requeueJitterMaxFactor*100)
+		}
+	}
 }

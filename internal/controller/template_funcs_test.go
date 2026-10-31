@@ -39,7 +39,7 @@ func TestTemplateFuncs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
-			got, err := renderTemplate(tmpl, tc.entry)
+			got, err := renderTemplate(tmpl, displayOf(tc.entry))
 			if err != nil {
 				t.Fatalf("render: %v", err)
 			}
@@ -95,7 +95,7 @@ func TestRenderTemplate_LinkSchemeFiltered(t *testing.T) {
 		"":                              "[]",
 	} {
 		t.Run(link, func(t *testing.T) {
-			got, err := renderTemplate(tmpl, rss.Entry{Link: link})
+			got, err := renderTemplate(tmpl, displayOf(rss.Entry{Link: link}))
 			if err != nil || got != want {
 				t.Fatalf("link %q rendered %q, err=%v; want %q", link, got, err, want)
 			}
@@ -110,7 +110,7 @@ func TestRenderTemplate_FilteredLinkIsEmptyInConditionalsAndHelpers(t *testing.T
 	}
 	for _, link := range []string{"javascript:alert(1)", "data:text/html,x", "//example.com/a"} {
 		t.Run(link, func(t *testing.T) {
-			got, err := renderTemplate(tmpl, rss.Entry{Link: link})
+			got, err := renderTemplate(tmpl, displayOf(rss.Entry{Link: link}))
 			if err != nil || got != "unlinked/none" {
 				t.Fatalf("filtered link rendered %q, err=%v; want unlinked/none", got, err)
 			}

@@ -122,7 +122,6 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "metrics-"+tc.name, "fg-"+tc.name
-			defer groupMetrics{namespace: ns, name: name}.forget()
 
 			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
@@ -137,7 +136,7 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 			if tc.withFeed {
 				fetchResult = oneEntryFetch()
 			}
-			(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, fetchResult, tc.fetchErr, client, "2026-01-01T00:00:00Z")
+			processFeed(ctx, testRun(t, fg, feed, fetchResult, tc.fetchErr, client))
 
 			if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, tc.outcome)); got != 1 {
 				t.Fatalf("feedOperationsTotal{outcome=%q} = %v, want 1", tc.outcome, got)
@@ -152,7 +151,6 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-sent-extra", "fg-sent-extra"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -162,7 +160,7 @@ func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	// the client in, so processFeed is handed the same wrapping.
 	client := newTimedSender(discordServer.DiscordClientBuilder()(discordServer.URL()), ns, name)
 
-	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
+	processFeed(ctx, testRun(t, fg, feed, oneEntryFetch(), nil, client))
 
 	if got := testutil.ToFloat64(feedLastSuccessTimestamp.WithLabelValues(ns, name)); got <= 0 {
 		t.Fatalf("feedLastSuccessTimestamp = %v, want > 0", got)
@@ -191,10 +189,9 @@ func TestProcessFeed_QuietFetchAdvancesFreshness(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "metrics-quiet-"+tc.name, "fg-quiet-"+tc.name
-			defer groupMetrics{namespace: ns, name: name}.forget()
 
 			fg, feed := newMetricsFeedGroup(ns, name, "")
-			(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, tc.fetchResult, nil, nil, "2026-01-01T00:00:00Z")
+			processFeed(ctx, testRun(t, fg, feed, tc.fetchResult, nil, nil))
 
 			if got := testutil.ToFloat64(feedLastSuccessTimestamp.WithLabelValues(ns, name)); got <= 0 {
 				t.Fatalf("feedLastSuccessTimestamp = %v, want > 0", got)
@@ -240,7 +237,6 @@ func messageOverflowSampleSum(t *testing.T, namespace, name string) float64 {
 func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-overflow", "fg-overflow"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -256,7 +252,7 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 		Link:        articleURL,
 	}}}
 
-	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, fetchResult, nil, client, "2026-01-01T00:00:00Z")
+	processFeed(ctx, testRun(t, fg, feed, fetchResult, nil, client))
 
 	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 1", got)
@@ -269,7 +265,6 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-no-overflow", "fg-no-overflow"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -277,7 +272,7 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, oneEntryFetch(), nil, client, "2026-01-01T00:00:00Z")
+	processFeed(ctx, testRun(t, fg, feed, oneEntryFetch(), nil, client))
 
 	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
@@ -293,7 +288,6 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "metrics-embed-total-overflow", "fg-embed-total-overflow"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
@@ -308,7 +302,7 @@ func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.
 	fetch.Entries[0].Description = strings.Repeat("d", discord.MaxEmbedDescriptionLength)
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
-	(&FeedGroupReconciler{}).processFeed(ctx, fg, feed, fetch, nil, client, "2026-01-01T00:00:00Z")
+	processFeed(ctx, testRun(t, fg, feed, fetch, nil, client))
 
 	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 1", got)
@@ -356,7 +350,7 @@ func assertSeriesNativeOnly(t *testing.T, vec *prometheus.HistogramVec, labelVal
 // native histogram schema is populated.
 func TestFeedRequestDuration_NativeOnlyHistogram(t *testing.T) {
 	ns, name := "metrics-native-only", "fg-native-only"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	feedRequestDuration.WithLabelValues(ns, name, operationFetch).Observe(0.2)
 
@@ -367,7 +361,7 @@ func TestFeedRequestDuration_NativeOnlyHistogram(t *testing.T) {
 // TestFeedRequestDuration_NativeOnlyHistogram for feedGroupReconcileDuration.
 func TestFeedGroupReconcileDuration_NativeOnlyHistogram(t *testing.T) {
 	ns, name := "metrics-reconcile-native-only", "fg-reconcile-native-only"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	feedGroupReconcileDuration.WithLabelValues(ns, name).Observe(0.2)
 
@@ -378,7 +372,7 @@ func TestFeedGroupReconcileDuration_NativeOnlyHistogram(t *testing.T) {
 // TestFeedRequestDuration_NativeOnlyHistogram for messageOverflowChars.
 func TestMessageOverflowChars_NativeOnlyHistogram(t *testing.T) {
 	ns, name := "metrics-overflow-native-only", "fg-overflow-native-only"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	messageOverflowChars.WithLabelValues(ns, name).Observe(42)
 
@@ -467,7 +461,7 @@ func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
 
 	t.Run("forget", func(t *testing.T) {
 		ns, name := "metrics-forget", "fg-forget"
-		defer groupMetrics{namespace: ns, name: name}.forget()
+		forgetMetricsAfter(t, ns, name)
 		populate(t, ns, name)
 		for i, e := range allMetrics {
 			if countSeries(e.vec, group(ns, name)) == 0 {
@@ -486,7 +480,7 @@ func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
 
 	t.Run("forgetFeed", func(t *testing.T) {
 		ns, name := "metrics-forget-feed", "fg-forget-feed"
-		defer groupMetrics{namespace: ns, name: name}.forget()
+		forgetMetricsAfter(t, ns, name)
 		populate(t, ns, name)
 
 		groupMetrics{namespace: ns, name: name}.forgetFeed(exampleFeedURL)
@@ -609,7 +603,7 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 		checkedStamp = "2026-03-04T05:06:07Z"
 	)
 	ns, name := "metrics-feedstate", "fg-feedstate"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	fg := &v1alpha1.FeedGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
@@ -671,17 +665,17 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 }
 
 // TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile asserts the per-feed
-// gauges are refreshed even when requeueWithStatus short-circuits because
+// gauges are refreshed even when settleGroup short-circuits because
 // status is unchanged -- the common case for a feed idling in backoff -- so
 // they're populated after an operator restart without waiting for a change.
 func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	ns, name := "metrics-noop", "fg-noop"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	fg, _ := newMetricsFeedGroup(ns, name, "")
 	fg.Status.Feeds[0].LastError = "http 410"
 	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:08Z"
-	// Apply the idempotent condition/generation updates requeueWithStatus makes
+	// Apply the idempotent condition/generation updates settleGroup makes
 	// up front so the snapshot below equals the final status and no API write
 	// (and therefore no client) is needed.
 	fg.Status.ObservedGeneration = fg.Generation
@@ -689,8 +683,8 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	setFeedReachableCondition(fg)
 	original := fg.Status.DeepCopy()
 
-	if _, err := (&FeedGroupReconciler{}).requeueWithStatus(t.Context(), fg, original, requeueDecision{interval: defaultInterval, fallback: 30 * time.Minute}, nil); err != nil {
-		t.Fatalf("requeueWithStatus: %v", err)
+	if _, err := (&FeedGroupReconciler{}).settleGroup(t.Context(), fg, original, cadenceOf(&fg.Spec), requeueDecision{delay: 30 * time.Minute}, nil); err != nil {
+		t.Fatalf("settleGroup: %v", err)
 	}
 
 	if got, ok := feedGaugeValue(feedHealthy, ns, name, exampleFeedURL); !ok || got != 0 {

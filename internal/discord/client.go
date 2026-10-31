@@ -247,48 +247,64 @@ func parseRetryAfter(value string) time.Duration {
 	return time.Second
 }
 
-// SendMessage delivers msg to the webhook. Either Content or Embed (or both)
-// must be set. SendMessageText is a convenience wrapper for the common
-// plain-content-only case.
-func (c *Client) SendMessage(ctx context.Context, msg Message) error {
-	if strings.TrimSpace(c.webhookURL) == "" {
-		return fmt.Errorf("discord webhook URL is empty")
+// preparedRequest is a message that has passed every check SendMessage makes
+// before touching the network: it is valid, fitted to Discord's limits, bound
+// for an allowed host over HTTPS, and already marshalled.
+type preparedRequest struct {
+	// limiterKey is the webhook URL as configured (not the thread-qualified
+	// target), which keys the shared rate limiter so every message to one
+	// webhook shares a bucket whatever its thread.
+	limiterKey string
+	// target is the URL the request is POSTed to: the webhook plus any
+	// thread_id query. It carries the webhook token and so must never be put
+	// in an error.
+	target string
+	body   []byte
+}
+
+// redactURLError strips the request URL from err. Both *url.Error producers
+// we call (url.ParseRequestURI and http.Client.Do) embed the full URL --
+// including the webhook token -- in Error(), and that text ends up in
+// FeedGroup.Status, Conditions, and Kubernetes Events, all readable with much
+// weaker RBAC than the Secret itself. It is the single place the rule "no
+// error from prepareRequest or exchange contains the webhook URL" is enforced
+// for wrapped errors; every other error here is built from constant text.
+func redactURLError(err error) error {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
+		return urlErr.Err
+	}
+	return err
+}
+
+// prepareRequest does all of SendMessage's pure work: validation, Fit, URL
+// parsing, the HTTPS and AllowedWebhookHosts check, the thread query and
+// payload marshalling. It touches neither the network nor a rate limiter, so
+// a request it rejects (notably one for a disallowed host) can never reach
+// either. Errors never contain the webhook URL (see redactURLError).
+func prepareRequest(webhookURL string, msg Message) (preparedRequest, error) {
+	if strings.TrimSpace(webhookURL) == "" {
+		return preparedRequest{}, fmt.Errorf("discord webhook URL is empty")
 	}
 	// Apply every Discord length limit here so SendMessage is safe for any
 	// caller; callers that already fitted the message pay almost nothing
 	// because Fit is idempotent.
 	msg, _ = Fit(msg)
 	if strings.TrimSpace(msg.Content) == "" && msg.Embed == nil {
-		return fmt.Errorf("discord message content is empty")
+		return preparedRequest{}, fmt.Errorf("discord message content is empty")
 	}
 
-	parsedURL, err := url.ParseRequestURI(c.webhookURL)
+	parsedURL, err := url.ParseRequestURI(webhookURL)
 	if err != nil {
-		// *url.Error's Error() embeds the raw URL -- including the webhook
-		// token -- so surface only the underlying reason, as on the
-		// transport-error path below.
-		if urlErr, ok := errors.AsType[*url.Error](err); ok {
-			err = urlErr.Err
-		}
-		return fmt.Errorf("invalid discord webhook URL: %w", err)
+		return preparedRequest{}, fmt.Errorf("invalid discord webhook URL: %w", redactURLError(err))
 	}
 	if parsedURL.Scheme != "https" || !AllowedWebhookHosts[strings.ToLower(parsedURL.Hostname())] {
-		return fmt.Errorf("discord webhook URL must be an https://discord.com or https://discordapp.com URL")
+		return preparedRequest{}, fmt.Errorf("discord webhook URL must be an https://discord.com or https://discordapp.com URL")
 	}
 
 	if strings.TrimSpace(msg.ThreadID) != "" {
 		query := parsedURL.Query()
 		query.Set("thread_id", msg.ThreadID)
 		parsedURL.RawQuery = query.Encode()
-	}
-
-	if c.rateLimiter != nil {
-		if err := c.rateLimiter.wait(ctx, c.webhookURL); err != nil {
-			return err
-		}
-		if remaining, cooling := c.rateLimiter.reserve(c.webhookURL); cooling {
-			return &RateLimitError{RetryAfter: remaining}
-		}
 	}
 
 	payload := discordPayload{
@@ -301,38 +317,49 @@ func (c *Client) SendMessage(ctx context.Context, msg Message) error {
 	if msg.Embed != nil {
 		payload.Embeds = []discordEmbed{embedToPayload(*msg.Embed)}
 	}
-
+	// The payload is strings, an int and string slices, so encoding it has no
+	// failing input; the error is still returned rather than dropped, without
+	// a branch no input can reach. Callers check it before using the request.
 	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
+	return preparedRequest{limiterKey: webhookURL, target: parsedURL.String(), body: body}, err
+}
+
+// exchange sends an already-prepared request: it waits on and reserves the
+// shared rate limiter, makes the HTTP call, maps the response status and
+// records Discord's pacing headers. It performs no validation -- everything
+// that decides whether the target is acceptable happened in prepareRequest.
+// Errors never contain the webhook URL (see redactURLError).
+func (c *Client) exchange(ctx context.Context, p preparedRequest) error {
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.wait(ctx, p.limiterKey); err != nil {
+			return err
+		}
+		if remaining, cooling := c.rateLimiter.reserve(p.limiterKey); cooling {
+			return &RateLimitError{RetryAfter: remaining}
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsedURL.String(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.target, bytes.NewReader(p.body))
 	if err != nil {
-		return err
+		// A target prepareRequest built always parses, so only non-URL errors
+		// (e.g. a nil Context) reach here, and they pass through unchanged.
+		// Should a *url.Error ever appear it would carry the token-bearing
+		// target, so it is redacted like Do's.
+		return redactURLError(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// http.Client.Do wraps transport failures in a *url.Error whose
-		// Error() includes the full request URL -- which contains the
-		// webhook token. That string ends up in FeedGroup.Status,
-		// Conditions, and Kubernetes Events, all readable with much
-		// weaker RBAC than the Secret itself, so strip the URL before
-		// it leaves this function.
-		if urlErr, ok := errors.AsType[*url.Error](err); ok {
-			return fmt.Errorf("discord webhook request failed: %w", urlErr.Err)
-		}
-		return fmt.Errorf("discord webhook request failed: %w", err)
+		return fmt.Errorf("discord webhook request failed: %w", redactURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 		if c.rateLimiter != nil {
-			c.rateLimiter.cooldown(c.webhookURL, retryAfter)
+			c.rateLimiter.cooldown(p.limiterKey, retryAfter)
 		}
 		return &RateLimitError{RetryAfter: retryAfter}
 	}
@@ -345,8 +372,19 @@ func (c *Client) SendMessage(ctx context.Context, msg Message) error {
 		}
 	}
 
-	c.notePacing(resp.Header)
+	c.notePacing(p.limiterKey, resp.Header)
 	return nil
+}
+
+// SendMessage delivers msg to the webhook. Either Content or Embed (or both)
+// must be set. SendMessageText is a convenience wrapper for the common
+// plain-content-only case.
+func (c *Client) SendMessage(ctx context.Context, msg Message) error {
+	p, err := prepareRequest(c.webhookURL, msg)
+	if err != nil {
+		return err
+	}
+	return c.exchange(ctx, p)
 }
 
 // maxPaceWait is the longest a send will sleep for a webhook's bucket to
@@ -356,8 +394,10 @@ const maxPaceWait = 5 * time.Second
 
 // notePacing reads Discord's X-RateLimit-* headers from a successful response
 // and, if this send emptied the webhook's bucket, tells the shared limiter so
-// the next send waits for the reset instead of earning a 429.
-func (c *Client) notePacing(h http.Header) {
+// the next send waits for the reset instead of earning a 429. key is the
+// limiter bucket the send waited on and reserved, so pacing lands in the same
+// bucket.
+func (c *Client) notePacing(key string, h http.Header) {
 	if c.rateLimiter == nil || strings.TrimSpace(h.Get("X-RateLimit-Remaining")) != "0" {
 		return
 	}
@@ -366,10 +406,10 @@ func (c *Client) notePacing(h http.Header) {
 		return
 	}
 	if d > maxPaceWait {
-		c.rateLimiter.cooldown(c.webhookURL, d)
+		c.rateLimiter.cooldown(key, d)
 		return
 	}
-	c.rateLimiter.pace(c.webhookURL, d)
+	c.rateLimiter.pace(key, d)
 }
 
 // decodeErrorDetail extracts Discord's machine-readable error code/message

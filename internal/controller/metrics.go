@@ -300,7 +300,7 @@ func (m groupMetrics) forgetFeed(rssURL string) {
 
 // syncFeedState sets feedHealthy and feedLastCheckedTimestamp for
 // every feed from the FeedGroup's persisted Status.Feeds. It runs on every
-// reconcile (from requeueWithStatus), including ones that skip a feed as
+// reconcile (from settleGroup), including ones that skip a feed as
 // not-due or in backoff, which is the point: the values describe what status
 // says now rather than what this reconcile happened to do.
 //

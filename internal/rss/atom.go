@@ -94,16 +94,6 @@ type looseAtomEntry struct {
 	Published string    `xml:"published"`
 }
 
-// priorAtomEntry reads only what an earlier release chose an entry's
-// identity from, by local name alone as it did. parseAtom compares it with
-// the current choice to fill Entry.PreviousID.
-type priorAtomEntry struct {
-	ID        string    `xml:"id"`
-	Updated   string    `xml:"updated"`
-	Published string    `xml:"published"`
-	Links     atomLinks `xml:"link"`
-}
-
 type atomAuthor struct {
 	Name string `xml:"name"`
 }
@@ -220,13 +210,6 @@ type looseAtomFeed struct {
 	Base    string                    `xml:"base,attr"`
 }
 
-// priorAtomFeed selects the same entries as atomFeed -- Atom-namespace ones, up
-// to the same cap, so the two lists line up one to one -- but reads each as
-// earlier releases did; see priorAtomEntry.
-type priorAtomFeed struct {
-	Entries entryList[priorAtomEntry] `xml:"http://www.w3.org/2005/Atom entry"`
-}
-
 // resolveAtomURL resolves ref against base per RFC 3986. Atom commonly
 // supplies relative link hrefs (a bare path/slug) alongside an xml:base
 // rather than a full URL; without resolving against it, the relative
@@ -256,25 +239,23 @@ func atomText(cands []nsText) string {
 	return pickTextPrefer(cands, atomNamespace, "")
 }
 
-// atomItem is an entry of either Atom vocabulary, with what an earlier release
-// would have read its identity from (nil when that can't differ).
+// atomItem is an entry of either Atom vocabulary: the identity, link and date
+// elements as one reading of the document found them, plus everything else.
 type atomItem struct {
 	atomEntryCore
 	ID, Updated, Published string
 	Links                  atomLinks
-	prior                  *priorAtomEntry
 }
 
-// priorAtomEntries reads data the way earlier releases picked identities -- by
-// local name alone -- and returns the entries in the order atomFeed parses them.
-// priorAtomFeed selects exactly the entries atomFeed does, so the two lists pair
-// up by index. data already decoded cleanly into atomFeed, so a decode error
-// can't happen; were it to, the entries decoded before it still pair up, and
-// the rest simply report no PreviousID.
-func priorAtomEntries(data []byte) []priorAtomEntry {
-	var feed priorAtomFeed
-	_ = unmarshalXML(data, &feed)
-	return feed.Entries
+// effectiveBase is the xml:base this entry's relative hrefs resolve against.
+// An entry's xml:base is itself resolved against the feed's (RFC 3986 section
+// 5.1.2), so a relative entry base such as "posts/" extends the feed base
+// instead of replacing it and leaving relative links relative.
+func (item atomItem) effectiveBase(feedBase string) string {
+	if entryBase := strings.TrimSpace(item.Base); entryBase != "" {
+		return resolveAtomURL(feedBase, entryBase)
+	}
+	return feedBase
 }
 
 // atomIdentityFields is what an Atom entry's identity is hashed and compared
@@ -335,13 +316,9 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		if err := unmarshalXML(data, &feed); err != nil {
 			return nil, "", err
 		}
-		prior := priorAtomEntries(data)
 		items = make([]atomItem, len(feed.Entries))
 		for i, e := range feed.Entries {
 			items[i] = atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
-			if i < len(prior) {
-				items[i].prior = &prior[i]
-			}
 		}
 		title, feedBaseAttr = feed.Title, feed.Base
 	} else {
@@ -360,13 +337,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 
 	entries := make([]Entry, 0, len(items))
 	for i, item := range items {
-		// An entry's xml:base is itself resolved against the feed's (RFC 3986
-		// section 5.1.2), so a relative entry base such as "posts/" extends the
-		// feed base instead of replacing it and leaving relative links relative.
-		base := feedBase
-		if entryBase := strings.TrimSpace(item.Base); entryBase != "" {
-			base = resolveAtomURL(feedBase, entryBase)
-		}
+		base := item.effectiveBase(feedBase)
 
 		current := item.identityFields(base, item.ID, item.Updated, item.Published, item.Links)
 
@@ -400,23 +371,13 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			Published:   current.published,
 			Seq:         i,
 		}
-		if item.prior != nil {
-			prior := item.identityFields(base, item.prior.ID, item.prior.Updated, item.prior.Published, item.prior.Links)
-			previous := entry
-			previous.ID, previous.IDSource = prior.id, prior.idSource
-			// A ContentID is also hashed from the date and the image, which
-			// earlier releases read by local name too. (A blank alternate link
-			// wins primaryLink, so an entry can reach a ContentID with an image
-			// enclosure.)
-			previous.Published, previous.Image = prior.published, prior.image
-			// Both identities get the ContentID fallback before comparing, so
-			// an entry with no id, link or title migrates from or to it too.
-			previous, entry = withContentID(previous), withContentID(entry)
-			if previous.ID != entry.ID || previous.IDSource != entry.IDSource {
-				entry.PreviousID, entry.PreviousIDSource = previous.ID, previous.IDSource
-			}
-		}
 		entries = append(entries, withContentID(entry))
+	}
+
+	// Only an Atom 1.0 document is read by namespace, so only there can an
+	// earlier release's local-name reading have picked another identity.
+	if root.Space == atomNamespace {
+		entries = withPreviousIDs(entries, items, feedBase, data)
 	}
 
 	return entries, atomText(title), nil

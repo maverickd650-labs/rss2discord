@@ -56,7 +56,7 @@ func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender 
 	}
 	syncer := openFeedSync(fs, rss.FetchResult{Entries: entries}, feedSyncSpecFor(fg, testReconcileTime))
 	syncer.begin()
-	attempt := (&FeedGroupReconciler{}).newFeedAttempt(fg, fs, feed.RSSUrl, testReconcileTime)
+	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileTime)
 	return entryDelivery{
 		renderer: renderer,
 		syncer:   syncer,
@@ -72,7 +72,7 @@ func outcomeCount(ns, name, outcome string) float64 {
 
 func TestEntryDelivery_SendsAndMarksEveryEntryHandled(t *testing.T) {
 	ns, name := "delivery-all", "fg-delivery-all"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	entries := []rss.Entry{deliveryEntry(1, "one"), deliveryEntry(2, "two"), deliveryEntry(3, "three")}
 	sender := &fakeSender{}
@@ -101,7 +101,7 @@ func TestEntryDelivery_SendsAndMarksEveryEntryHandled(t *testing.T) {
 
 func TestEntryDelivery_SendFailureStopsTheScan(t *testing.T) {
 	ns, name := "delivery-5xx", "fg-delivery-5xx"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	entries := []rss.Entry{deliveryEntry(1, "one"), deliveryEntry(2, "two"), deliveryEntry(3, "three")}
 	boom := &discord.HTTPStatusError{StatusCode: 500, Status: "500 Internal Server Error"}
@@ -126,7 +126,7 @@ func TestEntryDelivery_SendFailureStopsTheScan(t *testing.T) {
 
 func TestEntryDelivery_RateLimitStopsTheScanAndReturnsRetryAfter(t *testing.T) {
 	ns, name := "delivery-429", "fg-delivery-429"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	entries := []rss.Entry{deliveryEntry(1, "one"), deliveryEntry(2, "two")}
 	sender := &fakeSender{results: []error{&discord.RateLimitError{RetryAfter: 9 * time.Second}}}
@@ -150,7 +150,7 @@ func TestEntryDelivery_RateLimitStopsTheScanAndReturnsRetryAfter(t *testing.T) {
 
 func TestEntryDelivery_RenderFailureBeforeRetryLimitStopsTheScan(t *testing.T) {
 	ns, name := "delivery-render-early", "fg-delivery-render-early"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	// The poison entry has a blank title, so the format renders empty content.
 	entries := []rss.Entry{deliveryEntry(1, "one"), deliveryEntry(2, ""), deliveryEntry(3, "three")}
@@ -178,7 +178,7 @@ func TestEntryDelivery_RenderFailureBeforeRetryLimitStopsTheScan(t *testing.T) {
 
 func TestEntryDelivery_RenderFailurePastRetryLimitSkipsWhenASiblingRenders(t *testing.T) {
 	ns, name := "delivery-render-skip", "fg-delivery-render-skip"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	// The poison entry comes first: a successful send clears RetryCount, so
 	// it must be the failure that is recorded against the exhausted retries.
@@ -210,7 +210,7 @@ func TestEntryDelivery_RenderFailurePastRetryLimitSkipsWhenASiblingRenders(t *te
 
 func TestEntryDelivery_RenderFailurePastRetryLimitHoldsWhenNothingRenders(t *testing.T) {
 	ns, name := "delivery-render-hold", "fg-delivery-render-hold"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	// Every entry fails to render: the template is the problem, not the entry.
 	entries := []rss.Entry{deliveryEntry(1, ""), deliveryEntry(2, "")}

@@ -80,10 +80,10 @@ type FeedGroupReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state. For one
-// FeedGroup it resolves the webhook (webhook), builds the timed clients
-// (clientsFor), plans which feeds are due (planFeeds), fetches them
-// concurrently (fetchAll), folds each feed's outcome through processFeed, and
-// writes status and the next requeue (requeueWithStatus).
+// FeedGroup it normalizes status (prepareStatus), resolves the webhook
+// (webhook), builds the timed clients (clientsFor), runs the pure middle
+// (reconcilePass: planFeeds, fetchAll, the processFeed fold), and writes status
+// and the next requeue (settleGroup). The Kubernetes I/O stays here.
 func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("feedgroup", req.NamespacedName)
 	ctx = logf.IntoContext(ctx, log)
@@ -112,61 +112,124 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Prune the metric series of feeds dropped from the spec, so editing a
 	// group's feed list doesn't leave stale series behind until the whole
 	// FeedGroup is deleted.
-	for _, url := range ensureFeedStatuses(&feedGroup) {
+	prep := prepareStatus(&feedGroup)
+	for _, url := range prep.pruned {
 		metricsFor(&feedGroup).forgetFeed(url)
 	}
+	statusSnapshot := prep.snapshot
 
-	// A spec change (generation bump) lets a feed in permanent backoff retry
-	// right away instead of waiting out its BackoffUntil. Clear BackoffUntil
-	// and RetryCount for every feed so the new generation gets a fresh retry
-	// cycle; without resetting RetryCount the first retry after clearing
-	// BackoffUntil would compute a backoff of base*2^oldRetryCount, which
-	// would immediately jump back to maxPermanentBackoff.
-	specChanged := feedGroup.Generation > feedGroup.Status.ObservedGeneration
-	if specChanged {
-		clearPermanentBackoffs(&feedGroup)
-	}
-
-	// Snapshot status after ensureFeedStatuses above (which only normalizes
-	// existing state) but before anything that reflects this reconcile's
-	// outcome, so requeueWithStatus can skip the API write entirely when
-	// nothing actually changed.
-	statusSnapshot := feedGroup.Status.DeepCopy()
+	cad := cadenceOf(&feedGroup.Spec)
 
 	webhookURL, err := r.webhook(ctx, &feedGroup)
 	if err != nil {
-		return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, retryRequeue(&feedGroup.Spec), err)
+		return r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
 	rssClient, discordClient := r.clientsFor(&feedGroup, webhookURL)
 
-	// An unparsable Interval is reported by requeueWithStatus below; the plan
-	// only uses it for the due check.
-	plan := planFeeds(&feedGroup, time.Now().UTC(), specChanged)
+	// An unparsable Interval is reported by settleGroup below; the pass only
+	// uses the cadence's default for the due check.
+	verdict, plan := reconcilePass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, cad, time.Now().UTC(), prep.specChanged)
+
+	decision := plan.requeue(cad, verdict.retry, verdict.retryAfter)
+	return r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, decision, nil)
+}
+
+// statusPrep is the group's status as the reconcile starts from it.
+type statusPrep struct {
+	// snapshot is the status after normalization but before anything that
+	// reflects this reconcile's outcome, so settleGroup can skip the API write
+	// entirely when nothing actually changed.
+	snapshot *v1alpha1.FeedGroupStatus
+	// specChanged is whether the spec changed since the last reconcile
+	// (generation bump), which forces every feed due.
+	specChanged bool
+	// pruned are the RSSUrls of feeds dropped from the spec, whose metric
+	// series the caller should drop.
+	pruned []string
+}
+
+// prepareStatus normalizes feedGroup.Status to its spec (ensureFeedStatuses),
+// and on a spec change lets a feed in permanent backoff retry right away
+// instead of waiting out its BackoffUntil: it clears BackoffUntil and
+// RetryCount for every feed so the new generation gets a fresh retry cycle;
+// without resetting RetryCount the first retry after clearing BackoffUntil
+// would compute a backoff of base*2^oldRetryCount, which would immediately jump
+// back to maxPermanentBackoff. The snapshot is taken after both (they only
+// normalize existing state) and before the webhook lookup or any feed work.
+func prepareStatus(feedGroup *v1alpha1.FeedGroup) statusPrep {
+	prep := statusPrep{pruned: ensureFeedStatuses(feedGroup)}
+	prep.specChanged = feedGroup.Generation > feedGroup.Status.ObservedGeneration
+	if prep.specChanged {
+		clearPermanentBackoffs(feedGroup)
+	}
+	prep.snapshot = feedGroup.Status.DeepCopy()
+	return prep
+}
+
+// reconcilePass is the pure middle of a reconcile, once the webhook is
+// resolved: plan which feeds are due (planFeeds), fetch them concurrently
+// (fetchAll), and fold each through processFeed. It does no Kubernetes I/O, so
+// tests drive it with fakes of the ports. force (a spec change) makes every
+// non-backed-off feed due. The returned plan carries the wake time of feeds
+// skipped as not yet due, and the verdict is the fold of the feeds' verdicts.
+func reconcilePass(
+	ctx context.Context,
+	feedGroup *v1alpha1.FeedGroup,
+	fetcher FeedFetcher,
+	sender MessageSender,
+	recorder events.EventRecorder,
+	cad cadence,
+	now time.Time,
+	force bool,
+) (attemptVerdict, feedPlan) {
+	plan := planFeeds(feedGroup, cad, now, force)
 	activeFeeds := plan.active
 
-	fetched := fetchAll(ctx, rssClient, &feedGroup, activeFeeds)
+	fetched := fetchAll(ctx, fetcher, feedGroup, activeFeeds)
 
+	run := feedRun{
+		group: feedGroup, sender: sender, cadence: cad, recorder: recorder,
+		now: now.Format(time.RFC3339),
+	}
 	var verdict attemptVerdict
 	for i, feed := range activeFeeds {
 		// All feeds in a group share one webhook, so once any feed hits
 		// Discord's per-webhook rate limit, processing the rest would only
 		// fire more sends that 429 too. Stop here and let the requeue (which
-		// backs off for verdict.retryAfter below) retry the remaining feeds.
+		// backs off for verdict.retryAfter) retry the remaining feeds.
 		if verdict.retryAfter > 0 {
 			break
 		}
-		verdict = verdict.fold(r.processFeed(ctx, &feedGroup, feed, fetched[i].result, fetched[i].err, discordClient, now))
+		run.feed, run.fetched = feed, fetched[i]
+		verdict = verdict.fold(processFeed(ctx, run))
 	}
+	return verdict, plan
+}
 
-	decision := plan.requeue(&feedGroup.Spec, verdict.retry, verdict.retryAfter)
-	return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, decision, nil)
+// feedRun is everything processFeed needs to handle one feed's completed fetch
+// in one reconcile, so a caller (Reconcile, or a test) builds one value instead
+// of passing a reconciler and a string of positional arguments.
+type feedRun struct {
+	group *v1alpha1.FeedGroup
+	feed  v1alpha1.FeedSpec
+	// fetched is the feed's fetch: the result and the error FetchEntries
+	// returned for it.
+	fetched fetchOutcome
+	// sender delivers the feed's messages to the group's webhook.
+	sender MessageSender
+	// cadence is the group's resolved timing (cadenceOf), computed once per
+	// reconcile.
+	cadence cadence
+	// recorder receives the Warning Events; nil drops them.
+	recorder events.EventRecorder
+	// now is the RFC3339 status timestamp of the reconcile.
+	now string
 }
 
 // processFeed handles a completed fetch for a single feed: it records the
 // fetch outcome, sends new entries that pass the filter, and updates the feed's
-// FeedStatus. now is an RFC3339 status timestamp. Fetch, configuration,
+// FeedStatus. Fetch, configuration,
 // rendering, and delivery errors are recorded in status by the feed's
 // feedAttempt, which also decides whether the failure is worth retrying.
 // Applying the fetch to the FeedStatus -- the order of the steps and what is
@@ -174,18 +237,12 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // verdict on every return. The returned verdict says whether the reconcile
 // should retry sooner than the normal interval and, if Discord rate limited the
 // webhook, how long to wait before the next attempt.
-func (r *FeedGroupReconciler) processFeed(
-	ctx context.Context,
-	feedGroup *v1alpha1.FeedGroup,
-	feed v1alpha1.FeedSpec,
-	fetchResult rss.FetchResult,
-	fetchErr error,
-	discordClient MessageSender,
-	now string,
-) attemptVerdict {
+func processFeed(ctx context.Context, run feedRun) attemptVerdict {
+	feedGroup, feed, now := run.group, run.feed, run.now
+	fetchResult, fetchErr := run.fetched.result, run.fetched.err
 	log := logf.FromContext(ctx)
 	fs := feedStatusFor(feedGroup, feed.RSSUrl)
-	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl, now)
+	attempt := run.newAttempt(fs)
 
 	// Every return below sets settlement first; the deferred close is what
 	// settles the FeedStatus, and rejects a return that forgot to. A panic
@@ -206,7 +263,7 @@ func (r *FeedGroupReconciler) processFeed(
 	// A 304 is just as much a successful check as one that found something to
 	// send -- it shouldn't read as stale just because nothing changed. This does
 	// give up the optimization of skipping the status write when nothing
-	// else changed (requeueWithStatus diffs on the whole status), so a
+	// else changed (settleGroup diffs on the whole status), so a
 	// quiet feed now costs one status write per poll interval instead of
 	// zero.
 	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, noClass, nil)
@@ -239,7 +296,7 @@ func (r *FeedGroupReconciler) processFeed(
 		renderer: renderer,
 		syncer:   syncer,
 		attempt:  attempt,
-		sender:   discordClient,
+		sender:   run.sender,
 		metrics:  metricsFor(feedGroup),
 	}.run(ctx)
 	settlement = verdict.settlement()
@@ -251,7 +308,7 @@ func (r *FeedGroupReconciler) processFeed(
 // is an error; the Secret's resourceVersion is then recorded with
 // noteWebhookSecretVersion (so a replaced Secret is noticed even when its new
 // value is unusable); and a blank value is an error. Errors are logged here and
-// returned for Reconcile to surface through requeueWithStatus.
+// returned for Reconcile to surface through settleGroup.
 func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
 	log := logf.FromContext(ctx)
 	secret := &corev1.Secret{}

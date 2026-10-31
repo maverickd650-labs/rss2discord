@@ -17,8 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -35,47 +33,14 @@ const requeueJitterMaxFactor = 0.1
 
 // jitterDuration adds up to requeueJitterMaxFactor extra to duration when
 // enabled is true, and returns duration unchanged otherwise. Split out from
-// requeueWithStatus so it can be unit-tested without a real client.Client
-// (requeueWithStatus's applyStatus call needs one).
+// settleGroup so it can be unit-tested without a real client.Client
+// (settleGroup's applyStatus call needs one).
 func jitterDuration(duration time.Duration, enabled bool) time.Duration {
 	if !enabled {
 		return duration
 	}
 	return wait.Jitter(duration, requeueJitterMaxFactor)
 }
-
-// minParsedInterval floors any interval/retryInterval this parses, whether
-// from FeedGroup spec or already-persisted status. The CRD's Pattern rejects
-// a negative literal, but a tiny positive one ("1ns") still validates and,
-// fed straight into ctrl.Result{RequeueAfter: ...}, would requeue in a tight
-// loop that hammers every feed host on each pass; this floor is the backstop
-// for that, and also for objects admitted under an older, less strict schema.
-const minParsedInterval = 10 * time.Second
-
-// parseDurationWithDefault parses value as a Go duration and floors parsed
-// values at minParsedInterval. Whitespace-only input returns fallback without
-// error; invalid input returns fallback and a wrapped parse error. The fallback
-// is returned unchanged, without applying the floor.
-func parseDurationWithDefault(value string, fallback time.Duration) (time.Duration, error) {
-	if strings.TrimSpace(value) == "" {
-		return fallback, nil
-	}
-
-	duration, err := time.ParseDuration(value)
-	if err != nil {
-		return fallback, fmt.Errorf("invalid duration %q: %w", value, err)
-	}
-
-	return max(duration, minParsedInterval), nil
-}
-
-// fallbackInterval and fallbackRetryInterval are the waits used when the spec's
-// Interval/RetryInterval is empty or unparsable. They are the single source of
-// these fallbacks for polling, requeueing and permanent-failure backoff.
-const (
-	fallbackInterval      = 30 * time.Minute
-	fallbackRetryInterval = 5 * time.Minute
-)
 
 // feedPlan is the outcome of deciding which feeds a reconcile fetches.
 type feedPlan struct {
@@ -92,11 +57,11 @@ type feedPlan struct {
 // feeds are always due" rule, and a backed-off feed contributes no wake time.
 // A feed that is not yet due is skipped and bounds nextDue, so the requeue
 // cannot sleep past the moment it becomes due (e.g. after a restart
-// mid-interval). force (a spec change) makes every non-backed-off feed due. An
-// unparsable Interval falls back to fallbackInterval here; requeueWithStatus
-// reports it.
-func planFeeds(feedGroup *v1alpha1.FeedGroup, now time.Time, force bool) feedPlan {
-	pollInterval, _ := parseDurationWithDefault(feedGroup.Spec.Interval, fallbackInterval)
+// mid-interval). force (a spec change) makes every non-backed-off feed due. The
+// poll interval is cad.poll; an unparsable Interval is reported by
+// settleGroup (cad.err).
+func planFeeds(feedGroup *v1alpha1.FeedGroup, cad cadence, now time.Time, force bool) feedPlan {
+	pollInterval := cad.poll
 	plan := feedPlan{active: make([]v1alpha1.FeedSpec, 0, len(feedGroup.Spec.Feeds))}
 	for _, feed := range feedGroup.Spec.Feeds {
 		if feed.RSSUrl == "" || feed.Paused {
@@ -120,12 +85,11 @@ func planFeeds(feedGroup *v1alpha1.FeedGroup, now time.Time, force bool) feedPla
 }
 
 // requeueDecision is how long to wait before the next reconcile, as the inputs
-// wait turns into a duration: an interval (with the fallback for one that is
-// empty or unparsable), whether to jitter it, and the bound a not-yet-due feed
-// puts on it.
+// wait turns into a duration: the base delay (already resolved by the cadence,
+// or an externally dictated Retry-After), whether to jitter it, and the bound a
+// not-yet-due feed puts on it.
 type requeueDecision struct {
-	interval string
-	fallback time.Duration
+	delay time.Duration
 	// jitter is false only for an externally dictated wait (Discord's
 	// Retry-After), which is already the exact minimum Discord demands.
 	jitter  bool
@@ -133,34 +97,33 @@ type requeueDecision struct {
 }
 
 // retryRequeue is the decision after a reconcile that could not attempt any
-// feed (e.g. the webhook secret is unusable): wait RetryInterval.
-func retryRequeue(spec *v1alpha1.FeedGroupSpec) requeueDecision {
-	return requeueDecision{interval: spec.RetryInterval, fallback: fallbackRetryInterval, jitter: true}
+// feed (e.g. the webhook secret is unusable): wait the cadence's retry
+// interval.
+func retryRequeue(cad cadence) requeueDecision {
+	return requeueDecision{delay: cad.retry, jitter: true}
 }
 
 // requeue decides the wait after feeds were processed. A Discord rate limit
 // overrides everything: the exact Retry-After, unjittered, regardless of
-// sibling feeds. Otherwise the wait is RetryInterval if any feed wants a retry
-// and Interval if not, jittered, and shortened to the plan's nextDue by bound.
-func (p feedPlan) requeue(spec *v1alpha1.FeedGroupSpec, wantRetry bool, rateLimitRetryAfter time.Duration) requeueDecision {
+// sibling feeds. Otherwise the wait is the retry interval if any feed wants a
+// retry and the poll interval if not, jittered, and shortened to the plan's
+// nextDue by bound.
+func (p feedPlan) requeue(cad cadence, wantRetry bool, rateLimitRetryAfter time.Duration) requeueDecision {
 	if rateLimitRetryAfter > 0 {
-		return requeueDecision{fallback: rateLimitRetryAfter}
+		return requeueDecision{delay: rateLimitRetryAfter}
 	}
 	if wantRetry {
-		d := retryRequeue(spec)
+		d := retryRequeue(cad)
 		d.nextDue = p.nextDue
 		return d
 	}
-	return requeueDecision{interval: spec.Interval, fallback: fallbackInterval, jitter: true, nextDue: p.nextDue}
+	return requeueDecision{delay: cad.poll, jitter: true, nextDue: p.nextDue}
 }
 
-// wait is the final wait before the next reconcile: interval parsed (falling
-// back to fallback when it is empty or unparsable; the parse error itself is
-// reported on the Ready condition, see invalidIntervalError), jittered when
+// wait is the final wait before the next reconcile: delay jittered when
 // d.jitter is set, then bounded by d.nextDue.
 func (d requeueDecision) wait() time.Duration {
-	delay, _ := parseDurationWithDefault(d.interval, d.fallback)
-	return d.bound(jitterDuration(delay, d.jitter))
+	return d.bound(jitterDuration(d.delay, d.jitter))
 }
 
 // bound shortens delay to the soonest not-yet-due feed, never below
@@ -170,14 +133,6 @@ func (d requeueDecision) bound(delay time.Duration) time.Duration {
 		return max(d.nextDue, minParsedInterval)
 	}
 	return delay
-}
-
-// maxRetryCount returns the configured retry limit, with a minimum of one.
-func maxRetryCount(specRetries int32) int32 {
-	if specRetries < 1 {
-		return 1
-	}
-	return specRetries
 }
 
 // feedDue reports whether fs should be fetched this reconcile. A feed is due

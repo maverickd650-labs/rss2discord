@@ -125,7 +125,7 @@ func TestSummarizeGroup(t *testing.T) {
 		{
 			name:     "no Event when InvalidInterval is already recorded with the same message",
 			interval: badInterval,
-			// Message filled in by the test from invalidIntervalError.
+			// Message filled in by the test from cadenceOf.
 			priorReady:    &metav1.Condition{Type: v1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: reasonInvalidInterval},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  reasonInvalidInterval,
@@ -168,7 +168,7 @@ func TestSummarizeGroup(t *testing.T) {
 				Status:     v1alpha1.FeedGroupStatus{Feeds: tc.feeds},
 			}
 			wantMessage := ""
-			if err := invalidIntervalError(&fg.Spec); err != nil {
+			if err := cadenceOf(&fg.Spec).err; err != nil {
 				wantMessage = err.Error()
 			}
 			if tc.priorReady != nil {
@@ -179,7 +179,7 @@ func TestSummarizeGroup(t *testing.T) {
 				fg.Status.Conditions = []metav1.Condition{prior}
 			}
 
-			warning, emit := summarizeGroup(fg, tc.webhookErr)
+			warning, emit := summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
 
 			if emit != tc.wantEmit {
 				t.Errorf("emit = %v, want %v", emit, tc.wantEmit)
@@ -206,7 +206,7 @@ func TestSummarizeGroup(t *testing.T) {
 			// Summarizing an unchanged status again is a no-op: same
 			// conditions, and never a repeat Event.
 			before := fg.Status.DeepCopy()
-			warning, emit = summarizeGroup(fg, tc.webhookErr)
+			warning, emit = summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
 			if emit || warning != "" {
 				t.Errorf("second summarize emitted %q (emit=%v), want none", warning, emit)
 			}
@@ -228,4 +228,39 @@ func conditionsEqual(a, b []metav1.Condition) bool {
 		}
 	}
 	return true
+}
+
+// TestSetReadyCondition_InvalidIntervalPrecedence asserts InvalidInterval
+// outranks the per-feed summary (the spec is wrong however the feeds fared)
+// but yields to WebhookUnresolved (no feed was processed, so the webhook
+// failure is the more fundamental problem).
+func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
+	intervalErr := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: overflowingInterval}).err
+	webhookErr := errors.New("secret missing")
+
+	readyReason := func(fg *v1alpha1.FeedGroup) string {
+		c := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeReady)
+		if c == nil {
+			t.Fatal("Ready condition not set")
+		}
+		return c.Reason
+	}
+
+	failing := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u", LastError: testBoom}}}}
+	setReadyCondition(failing, nil, intervalErr)
+	if got := readyReason(failing); got != reasonInvalidInterval {
+		t.Fatalf("with a failing feed and a bad interval: reason = %q, want %q", got, reasonInvalidInterval)
+	}
+
+	both := &v1alpha1.FeedGroup{}
+	setReadyCondition(both, webhookErr, intervalErr)
+	if got := readyReason(both); got != "WebhookUnresolved" {
+		t.Fatalf("with a webhook failure and a bad interval: reason = %q, want WebhookUnresolved", got)
+	}
+
+	// Correcting the interval clears the condition on the next reconcile.
+	setReadyCondition(failing, nil, nil)
+	if got := readyReason(failing); got != "FeedErrors" {
+		t.Fatalf("after the interval is fixed: reason = %q, want FeedErrors", got)
+	}
 }

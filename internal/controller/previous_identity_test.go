@@ -143,7 +143,7 @@ func TestMigratePreviousIdentities(t *testing.T) {
 			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: tc.sent}
 			// Idempotent: a second pass over the migrated status changes nothing.
 			for range 2 {
-				migratePreviousIdentities(fs, slices.Clone(tc.entries))
+				migratePreviousIdentities(fs, slices.Clone(tc.entries), newStrippedOwnership(tc.entries))
 			}
 			if fs.LastSeenEntry != tc.wantMark {
 				t.Errorf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, tc.wantMark)
@@ -167,7 +167,7 @@ func TestMigratePreviousIdentities_LongWatermark(t *testing.T) {
 	entry := changedID(prevIDNew, rss.IDFromGUID, oldID, rss.IDFromGUID)
 	fs := &v1alpha1.FeedStatus{LastSeenEntry: clampWatermark(normalizeIdentity(oldID))}
 
-	migratePreviousIdentities(fs, []rss.Entry{entry})
+	migratePreviousIdentities(fs, []rss.Entry{entry}, newStrippedOwnership([]rss.Entry{entry}))
 
 	if want := clampWatermark(prevIDNew); fs.LastSeenEntry != want {
 		t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, want)
@@ -188,7 +188,7 @@ func TestLegacyEntryIdentity_UsesThePreviousID(t *testing.T) {
 // picks differently, and carries on from there.
 func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "previous-identity", "{{.Title}}")
-	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
+	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	fs := feedStatusFor(fg, feed.RSSUrl)
 	fs.LastChecked, fs.Initialized, fs.StateVersion = "2025-12-29T00:00:00Z", true, currentStateVersion
 	fs.LastSeenEntry = prevIDOld
@@ -216,7 +216,7 @@ func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T)
 	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
 		hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt,
 	}}
-	migratePreviousIdentities(fs, []rss.Entry{moved, sibling})
+	migratePreviousIdentities(fs, []rss.Entry{moved, sibling}, newStrippedOwnership([]rss.Entry{moved, sibling}))
 
 	// The moved entry leaves the feed; the sibling is now alone under the
 	// stripped identity.
@@ -241,7 +241,7 @@ func TestMigrateLegacyIdentities_StrippedKeyOnlyForOwnUniqueIdentity(t *testing.
 		t.Fatalf("legacy identity = %q, test assumption broken", legacy)
 	}
 	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{hashIdentity(legacy): prevSentAt}}
-	migrateLegacyIdentities(fs, slices.Clone(entries), false, defaultCatchUpLimit)
+	migrateLegacyIdentities(fs, slices.Clone(entries), false, defaultCatchUpLimit, newStrippedOwnership(entries))
 
 	if _, ok := fs.LastSent[computeEntryKey(moved)]; !ok {
 		t.Errorf("moved entry's key not carried over; LastSent = %v", fs.LastSent)
@@ -281,7 +281,7 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			// The full key was pruned; only the stripped key is left.
 			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
-			migratePreviousIdentities(fs, slices.Clone(tc.entries))
+			migratePreviousIdentities(fs, slices.Clone(tc.entries), newStrippedOwnership(tc.entries))
 
 			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
 				t.Errorf("old stripped key kept; LastSent = %v", fs.LastSent)
