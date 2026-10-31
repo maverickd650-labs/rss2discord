@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
 	"testing"
 )
@@ -112,5 +113,11 @@ func TestFetchEntries_RejectsNilContext(t *testing.T) {
 	}
 	if _, ok := errors.AsType[*InvalidURLError](err); ok {
 		t.Fatalf("a request-construction failure is not an InvalidURLError: %v", err)
+	}
+	// Pin the error to the one http.NewRequestWithContext produces, so a
+	// different failure or an added wrapper fails the test.
+	_, want := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com/feed.xml", nil)
+	if want == nil || err.Error() != want.Error() || errors.Unwrap(err) != nil {
+		t.Fatalf("err = %q (unwraps to %v), want the unwrapped request-construction error %q", err, errors.Unwrap(err), want)
 	}
 }
