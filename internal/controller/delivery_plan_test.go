@@ -53,7 +53,7 @@ func TestPlanDelivery(t *testing.T) {
 		{
 			name: "watermark found ignores catchUpLimit 0, ambiguity and initialization",
 			in: deliveryInputs{entries: few, watermark: watermarkLookup{watermarkFound, 0},
-				catchUpLimit: 0, legacyAmbiguous: true},
+				catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
 			want: deliveryPlan{scan: few, resumeAt: 1},
 		},
 		{
@@ -83,7 +83,7 @@ func TestPlanDelivery(t *testing.T) {
 		},
 		{
 			name: "watermark not found, limit 0, ambiguous legacy is not capped as legacy",
-			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 0, legacyAmbiguous: true},
+			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit)},
 		},
 		{
@@ -93,7 +93,7 @@ func TestPlanDelivery(t *testing.T) {
 		},
 		{
 			name: "no watermark, limit above zero ignores ambiguity and initialization",
-			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3, legacyAmbiguous: true, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3, legacy: legacyState{ambiguous: true}, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, 3)},
 		},
 		{
@@ -108,17 +108,17 @@ func TestPlanDelivery(t *testing.T) {
 		},
 		{
 			name: "no watermark, limit 0, ambiguous legacy is capped at the default",
-			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacyAmbiguous: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit), cappedAmbiguousLegacy: true},
 		},
 		{
 			name: "no watermark, limit 0, ambiguous legacy wins over initialized",
-			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacyAmbiguous: true, wasInitialized: true},
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit), cappedAmbiguousLegacy: true},
 		},
 		{
 			name: "no watermark, limit 0, ambiguous legacy, small feed keeps all but still signals",
-			in:   deliveryInputs{entries: few, watermark: noWatermark, catchUpLimit: 0, legacyAmbiguous: true},
+			in:   deliveryInputs{entries: few, watermark: noWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
 			want: deliveryPlan{scan: few, cappedAmbiguousLegacy: true},
 		},
 		{

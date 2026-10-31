@@ -46,7 +46,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 **Identity migration** (`migrateIdentities`, `identity_migration.go`)
 : Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
   entries are identified now, on every fetch, from `feedSync.begin`. It is the one entry point
-  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, only for a
+  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, in `legacy.go`, only for a
   status written before `stateVersion` 1) and the previous-identity pass
   (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
   Both take the fetch's delivery ledger, read its entries, and write only through it. Before
@@ -65,7 +65,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   fetch it stands for). `planDelivery` decides from it: found resumes past the entry; lost
   falls through to the catch-up cap, unlike none, which may skip the backlog.
 
-**Ambiguous legacy status** (`legacyState.ambiguous`)
+**Ambiguous legacy status** (`legacyState.ambiguous`, `legacy.go`)
 : A `FeedStatus` written before `stateVersion` 1, checked but with no watermark, that can't
   say whether the feed was empty when last checked. Under `catchUpLimit: 0` it is capped
   at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for

@@ -208,11 +208,11 @@ func (s *feedSync) begin() {
 	s.ledger = newDeliveryLedger(s.fs, entries)
 	migrateIdentities(s.ledger, &s.legacy, s.spec.catchUpLimit)
 	plan := planDelivery(deliveryInputs{
-		entries:         entries,
-		watermark:       s.ledger.resume(),
-		catchUpLimit:    s.spec.catchUpLimit,
-		legacyAmbiguous: s.legacy.ambiguous,
-		wasInitialized:  s.wasInitialized,
+		entries:        entries,
+		watermark:      s.ledger.resume(),
+		catchUpLimit:   s.spec.catchUpLimit,
+		legacy:         s.legacy,
+		wasInitialized: s.wasInitialized,
 	})
 	s.cappedAmbiguousLegacy = plan.cappedAmbiguousLegacy
 	if plan.skipBacklog {
@@ -295,7 +295,7 @@ func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
 //   - LastSent: pruned after a sync that sent or looked at entries.
 //
 // The legacy stateVersion is advanced last, and only when nothing in fs still
-// needs the legacy reading (see legacyState.finish).
+// needs the legacy reading (see legacyState.settleOnClose).
 func (s *feedSync) close(verdict syncVerdict) {
 	if s.closed {
 		panic("feedSync: closed twice")
@@ -308,7 +308,7 @@ func (s *feedSync) close(verdict syncVerdict) {
 	case syncNotModified:
 		// A 304 confirms the feed has no new entries, just as much a
 		// successful check as one that found something to send.
-		if !s.legacy.ambiguous {
+		if !s.legacy.blocksInitialize() {
 			s.fs.Initialized = true
 		}
 		s.persistValidators()
@@ -316,18 +316,18 @@ func (s *feedSync) close(verdict syncVerdict) {
 	case syncEmpty:
 		// Nothing to send, so it's always safe to persist. An empty feed
 		// also settles an ambiguous legacy status: anything after it is new.
-		s.settle()
+		s.fs.Initialized = true
 		s.persistValidators()
 		clearFailure(s.fs)
 	case syncPending:
 		s.mustHaveBegun(verdict)
-		if !s.legacy.ambiguous {
-			s.settle()
+		if !s.legacy.blocksInitialize() {
+			s.fs.Initialized = true
 		}
 		s.prune()
 	case syncAccountedFor:
 		s.mustHaveBegun(verdict)
-		s.settle()
+		s.fs.Initialized = true
 		s.persistValidators()
 		clearFailure(s.fs)
 		s.prune()
@@ -335,7 +335,7 @@ func (s *feedSync) close(verdict syncVerdict) {
 		panic(fmt.Sprintf("feedSync: closed with invalid verdict %v", verdict))
 	}
 
-	s.legacy.finish(s.fs)
+	s.legacy.settleOnClose(s.fs, verdict)
 }
 
 // closeOnReturn is processFeed's deferred close and must be deferred directly,
@@ -353,12 +353,6 @@ func (s *feedSync) closeOnReturn(verdict *syncVerdict) {
 		}
 	}
 	s.close(*verdict)
-}
-
-// settle marks fs initialized and its ambiguous legacy reading resolved.
-func (s *feedSync) settle() {
-	s.fs.Initialized = true
-	s.legacy.settled = true
 }
 
 // persistValidators stores the response's cache validators.

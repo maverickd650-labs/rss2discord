@@ -28,8 +28,9 @@ type deliveryInputs struct {
 	watermark watermarkLookup
 	// catchUpLimit is the effective spec limit (the default when unset).
 	catchUpLimit int
-	// legacyAmbiguous is legacyState.ambiguous.
-	legacyAmbiguous bool
+	// legacy is the feed's legacy state; its catch-up cap applies to an
+	// ambiguous status (see legacyState.capCatchUp).
+	legacy legacyState
 	// wasInitialized is fs.Initialized before this reconcile.
 	wasInitialized bool
 }
@@ -62,13 +63,10 @@ func planDelivery(in deliveryInputs) deliveryPlan {
 		return deliveryPlan{scan: in.entries, resumeAt: in.watermark.index + 1}
 	}
 	if in.catchUpLimit == 0 && in.watermark.state == watermarkNone {
-		switch {
-		case in.legacyAmbiguous:
-			return deliveryPlan{
-				scan:                  limitCatchUp(in.entries, defaultCatchUpLimit),
-				cappedAmbiguousLegacy: true,
-			}
-		case !in.wasInitialized:
+		if scan, capped := in.legacy.capCatchUp(in.entries); capped {
+			return deliveryPlan{scan: scan, cappedAmbiguousLegacy: true}
+		}
+		if !in.wasInitialized {
 			return deliveryPlan{skipBacklog: true}
 		}
 		return deliveryPlan{scan: in.entries}
