@@ -258,6 +258,14 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 		t.Fatalf("with a webhook failure and a bad interval: reason = %q, want WebhookUnresolved", got)
 	}
 
+	// A feed that panicked before handling anything was restored without a
+	// failure, so the feeds alone would read healthy: the panic decides Ready.
+	panicked := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u"}}}}
+	setReadyCondition(panicked, &feedPanic{url: "u", value: testBoom, stack: []byte("goroutine 1")}, intervalErr)
+	if got := readyReason(panicked); got != reasonReconcilePanicked {
+		t.Fatalf("after a feed panicked: reason = %q, want %q", got, reasonReconcilePanicked)
+	}
+
 	// Correcting the interval clears the condition on the next reconcile.
 	setReadyCondition(failing, nil, nil)
 	if got := readyReason(failing); got != "FeedErrors" {

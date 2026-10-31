@@ -1399,6 +1399,13 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(fs.LastError).To(ContainSubstring(errDeliveryPanicked.Error()))
 			By("Verifying the incomplete pass did not advance ObservedGeneration")
 			Expect(updated.Status.ObservedGeneration).To(BeZero())
+			By("Verifying the group is not reported Ready while a feed panics")
+			ready := apimeta.FindStatusCondition(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal(reasonReconcilePanicked))
+			Expect(ready.Message).To(ContainSubstring("send exploded"))
+			Expect(ready.Message).NotTo(ContainSubstring("goroutine"))
 
 			By("Reconciling again at once, with a working sender")
 			reconciler.DiscordClientBuilder = realBuilder
@@ -1410,6 +1417,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
 			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
 			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(BeEmpty())
+			Expect(apimeta.IsStatusConditionTrue(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)).To(BeTrue())
 		})
 
 		It("should persist status and send once when the interval cannot be parsed", func() {

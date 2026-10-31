@@ -141,7 +141,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// The pass stopped at the panicking feed, so the feeds after it are
 		// not observed at this generation: ObservedGeneration stays put, and
 		// a spec change still forces them due on the retry.
-		if _, err := r.settle(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), nil, false); err != nil {
+		if _, err := r.settle(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), panicked, false); err != nil {
 			return ctrl.Result{}, errors.Join(panicked, err)
 		}
 		return ctrl.Result{}, panicked
@@ -299,7 +299,12 @@ type feedPanic struct {
 }
 
 func (p *feedPanic) Error() string {
-	return fmt.Sprintf("panic while processing feed %s: %v\n%s", p.url, p.value, p.stack)
+	return p.summary() + "\n" + string(p.stack)
+}
+
+// summary is the panic without its stack, for the Ready condition.
+func (p *feedPanic) summary() string {
+	return fmt.Sprintf("panic while processing feed %s: %v", p.url, p.value)
 }
 
 // containedPass is reconcilePass with a *feedPanic recovered and returned
