@@ -40,9 +40,12 @@ var reasonArgs = map[string]int{
 var reasonFields = []string{"Reason", "conditionReason"}
 
 // checkReasonLiterals reports every place in file where a string literal
-// reaches a condition or Event reason: a reasonFields field (keyed, or the
-// second element of an unkeyed failureClass literal), a reasonArgs argument, or
-// a variable whose name says it holds a reason. Named constants -- and
+// reaches a condition or Event reason: a reasonFields field (keyed, assigned
+// after construction, or the second element of an unkeyed failureClass
+// literal), a reasonArgs argument, a variable whose name says it holds a
+// reason, or a result of a function whose name does. It is syntactic, not a
+// data-flow analysis: a literal laundered through a variable or helper not
+// named for a reason gets past it, which naming review is left to catch. Named constants -- and
 // variables, parameters and fields that only ever carry them -- pass, so a
 // reason's value is always one of the declarations in conditions.go and
 // classify.go, which are user-visible API.
@@ -71,11 +74,9 @@ func checkReasonLiterals(fset *token.FileSet, file *ast.File) []string {
 				flag(n.Args[i], "the reason argument of "+name)
 			}
 		case *ast.AssignStmt:
-			for i, lhs := range n.Lhs {
-				if id, ok := lhs.(*ast.Ident); ok && namesAReason(id.Name) && i < len(n.Rhs) {
-					flag(n.Rhs[i], id.Name)
-				}
-			}
+			checkReasonAssignment(n, flag)
+		case *ast.FuncDecl:
+			checkReasonResults(n, flag)
 		case *ast.GenDecl:
 			if n.Tok != token.VAR {
 				return true // consts are where reasons are declared
@@ -92,6 +93,47 @@ func checkReasonLiterals(fset *token.FileSet, file *ast.File) []string {
 		return true
 	})
 	return problems
+}
+
+// checkReasonAssignment flags, through flag, a literal assigned to a
+// reason-named variable or to a reasonFields field after construction
+// (cond.Reason = ...).
+func checkReasonAssignment(n *ast.AssignStmt, flag func(ast.Expr, string)) {
+	for i, lhs := range n.Lhs {
+		if i >= len(n.Rhs) {
+			return
+		}
+		switch dst := lhs.(type) {
+		case *ast.Ident:
+			if namesAReason(dst.Name) {
+				flag(n.Rhs[i], dst.Name)
+			}
+		case *ast.SelectorExpr:
+			if slices.Contains(reasonFields, dst.Sel.Name) {
+				flag(n.Rhs[i], dst.Sel.Name)
+			}
+		}
+	}
+}
+
+// checkReasonResults flags, through flag, a literal returned by a function
+// whose name says it computes a reason (dominantErrorReason): it must return
+// one of the constants too.
+func checkReasonResults(fn *ast.FuncDecl, flag func(ast.Expr, string)) {
+	if !namesAReason(fn.Name.Name) || fn.Body == nil {
+		return
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		if ret, ok := n.(*ast.ReturnStmt); ok {
+			for _, result := range ret.Results {
+				flag(result, "a result of "+fn.Name.Name)
+			}
+		}
+		return true
+	})
 }
 
 // calleeName is the function or method name a call expression calls.
@@ -181,6 +223,11 @@ func TestCheckReasonLiterals_CatchesEverySink(t *testing.T) {
 		{name: "reason variable", body: `reason := "Oops"; _ = reason`, flagged: true},
 		{name: "concatenated literal", body: `_ = metav1.Condition{Reason: reasonOther + "2"}`, flagged: true},
 		{name: "reason var declaration", body: "var eventReason = \"Oops\"\n_ = eventReason", flagged: true},
+		{name: "Reason field assigned", body: `cond.Reason = "Oops"`, flagged: true},
+		{name: "conditionReason field assigned", body: `class.conditionReason = "Oops"`, flagged: true},
+		{name: "reason helper result", body: "_ = 0\n}\nfunc dominantReason() string {\nreturn \"Oops\"", flagged: true},
+		{name: "reason helper returning a constant", body: "_ = 0\n}\nfunc dominantReason() string {\nreturn reasonOther"},
+		{name: "Reason field assigned a constant", body: `cond.Reason = reasonOther`},
 		{name: "named constants", body: `reason := reasonReconciled; reason = reasonFeedErrors; _ = metav1.Condition{Reason: reason}; a.warn(reasonConfigError, action, "feed %s", u)`},
 		{name: "empty zero value", body: `prevReason, prevMessage := "", ""; _, _ = prevReason, prevMessage`},
 		{name: "failure class field", body: `a.setCondition(t, s, class.conditionReason, err.Error())`},
