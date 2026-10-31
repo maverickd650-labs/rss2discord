@@ -8,7 +8,7 @@ keywords:
   - kubernetes
   - operator
 sources:
-  - https://github.com/maverickd650/rss2discord-operator
+  - https://github.com/maverickd650-labs/rss2discord
 annotations:
   kubebuilder.io/generated-by: kubebuilder
-  org.opencontainers.image.source: https://github.com/maverickd650/rss2discord-operator
+  org.opencontainers.image.source: https://github.com/maverickd650-labs/rss2discord
