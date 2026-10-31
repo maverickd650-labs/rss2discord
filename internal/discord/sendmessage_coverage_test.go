@@ -32,4 +32,10 @@ func TestSendMessage_RejectsNilContext(t *testing.T) {
 	if requests != 0 {
 		t.Fatalf("server saw %d requests, want none", requests)
 	}
+	// Pin the error to the one http.NewRequestWithContext produces, so a
+	// different failure or an added wrapper fails the test.
+	_, want := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, nil)
+	if want == nil || err.Error() != want.Error() || errors.Unwrap(err) != nil {
+		t.Fatalf("err = %q (unwraps to %v), want the unwrapped request-construction error %q", err, errors.Unwrap(err), want)
+	}
 }
