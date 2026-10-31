@@ -59,9 +59,8 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   status written before `stateVersion` 1) and the previous-identity pass
   (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
   Both take the fetch's delivery ledger and write only through it. Before writing a stripped
-  key they ask it: the legacy pass reads the record's `unique` stripped identity
-  (`ownStripped`, in `legacy.go`: is this stripped identity the entry's own and unique in the
-  fetch?), the previous-identity pass asks `carriesOver` (full identities: may the stored entry
+  key they ask it: the legacy pass hands it the recovered identities (`forgetIdentity`, `recordSentAt`,
+  which writes a stripped key only when it is the entry's own and unique in the fetch), the previous-identity pass asks `carriesOver` (full identities: may the stored entry
   key move?) and, inside `rekeySent`, `ownsPrevious` (stripped identities: can an old stripped
   key only have been this one moved entry's?). The two rules differ on purpose and both live in
   the ledger. A stripped key a sibling shares is never recorded, or the sibling, alone under it

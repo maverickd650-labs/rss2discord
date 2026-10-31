@@ -76,10 +76,10 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 	if fs.StateVersion >= currentStateVersion {
 		return legacyState{}
 	}
-	// The one place legacy reads the status directly: it runs at open time,
-	// before any fetch (so before a ledger exists), to decide whether the
-	// fetch needs the legacy reading at all.
-	_, sentEmptyIdentity := fs.LastSent[hashIdentity("")]
+	// The one place legacy reads the status without a ledger: it runs at open
+	// time, before any fetch, to decide whether the fetch needs the legacy
+	// reading at all.
+	sentEmptyIdentity := identitySent(fs.LastSent, "")
 	delivered := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
 	noWatermark := fs.LastSeenEntry == ""
 	emptyWatermark := noWatermark &&
@@ -145,17 +145,6 @@ func (s *legacyState) settleOnClose(fs *v1alpha1.FeedStatus, verdict syncVerdict
 	}
 }
 
-// ownStripped returns stripped, a link identity the legacy pass recovered for
-// entries[i], when it is the entry's own stripped identity and unique in the
-// fetch (the only stripped key markHandled would record for it), else "". A
-// stripped identity recovered from the entry's previous ID is not its own.
-func ownStripped(ledger *deliveryLedger, i int, stripped string) string {
-	if stripped != "" && ledger.record(i).unique == stripped {
-		return stripped
-	}
-	return ""
-}
-
 // migrateLegacyIdentities rewrites a stateVersion 0 watermark and dedup keys
 // into the current identity scheme, using the ledger's entries (sorted
 // oldest-to-newest) to recover which entry each legacy value stood for. For an unshared legacy
@@ -215,32 +204,24 @@ func migrateLegacyIdentities(ledger *deliveryLedger, emptyWatermark bool, replay
 		if current[i] == legacy[i] {
 			continue
 		}
-		legacyKey := hashIdentity(legacy[i])
-		sentAt, ok := ledger.sentAtKey(legacyKey)
+		sentAt, ok := ledger.forgetIdentity(legacy[i])
 		if !ok {
 			continue
 		}
 		if sharing[legacy[i]] == 1 {
-			// A link's legacy identity is its stripped form; like
-			// deliveryLedger.markHandled, record it only when it is this
-			// entry's own and unique in the fetch, or a sibling sharing it
-			// would later be taken as sent.
-			ledger.recordKey(ledger.record(i).key, sentAt)
-			if stripped := ownStripped(ledger, i, legacy[i]); stripped != "" {
-				ledger.recordKey(strippedKey(stripped), sentAt)
-			}
+			// A link's legacy identity is its stripped form; recordSentAt
+			// writes its stripped key only when it is this entry's own and
+			// unique in the fetch, or a sibling sharing it would later be
+			// taken as sent.
+			ledger.recordSentAt(i, sentAt, legacy[i])
 		}
-		ledger.moveSent(legacyKey, "")
 	}
 
 	// With no watermark found, limitCatchUp already caps the whole fetch.
 	if watermark < 0 {
 		return
 	}
-	sent := func(i int) bool {
-		_, ok := ledger.sentAtKey(ledger.record(i).key)
-		return ok
-	}
+	sent := ledger.entryKeySent
 	replay := 0
 	for i := watermark + 1; i < len(entries); i++ {
 		if colliding[legacy[i]] && !sent(i) {

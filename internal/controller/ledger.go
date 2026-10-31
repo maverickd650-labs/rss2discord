@@ -392,6 +392,47 @@ func (l *deliveryLedger) setWatermark(i int) {
 	l.fs.LastSeenEntry = l.ids[i].mark
 }
 
+// identitySent reports whether lastSent holds the entry key of identity. It is
+// the key scheme's query for a status read before any fetch, when there is no
+// ledger yet (readLegacyState).
+func identitySent(lastSent map[string]string, identity string) bool {
+	_, ok := lastSent[hashIdentity(identity)]
+	return ok
+}
+
+// forgetIdentity drops the entry key of identity, a stored identity a
+// migration recovered, from LastSent and returns when it was recorded. Any
+// stripped key is left alone.
+func (l *deliveryLedger) forgetIdentity(identity string) (sentAt string, ok bool) {
+	key := hashIdentity(identity)
+	if sentAt, ok = l.sentAtKey(key); ok {
+		delete(l.fs.LastSent, key)
+	}
+	return sentAt, ok
+}
+
+// recordSentAt records entries[i] in LastSent at sentAt under its entry key,
+// overwriting what was there, and under the stripped key of stripped, a link
+// identity a migration recovered for it, only when that is the entry's own
+// stripped identity and unique in the fetch -- the only stripped key
+// markHandled would record for it. A stripped identity recovered from the
+// entry's previous ID is not its own, and one a sibling shares would later
+// mark that sibling as sent.
+func (l *deliveryLedger) recordSentAt(i int, sentAt, stripped string) {
+	rec := l.ids[i]
+	l.recordKey(rec.key, sentAt)
+	if stripped != "" && rec.unique == stripped {
+		l.recordKey(strippedKey(stripped), sentAt)
+	}
+}
+
+// entryKeySent reports whether LastSent holds entries[i]'s entry key (not its
+// stripped key).
+func (l *deliveryLedger) entryKeySent(i int) bool {
+	_, ok := l.sentAtKey(l.ids[i].key)
+	return ok
+}
+
 // sentAtKey returns when LastSent recorded key as sent.
 func (l *deliveryLedger) sentAtKey(key string) (string, bool) {
 	sentAt, ok := l.fs.LastSent[key]
