@@ -303,11 +303,24 @@ type feedPanic struct {
 	stack []byte
 }
 
-// Error is the full diagnostic -- the panic value and its stack -- for the
-// reconcile error, which controller-runtime logs. It is never persisted; see
-// summary.
+// Error is the diagnostic for the reconcile error, which controller-runtime
+// logs: the panic's detail and its stack. It is never persisted; see summary.
 func (p *feedPanic) Error() string {
-	return fmt.Sprintf("panic while processing feed %s: %v\n%s", p.url, p.value, p.stack)
+	return fmt.Sprintf("panic while processing feed %s: %s\n%s", p.url, p.detail(), p.stack)
+}
+
+// detail describes the panic value for the log without its content, unless
+// the Go runtime wrote it. A runtime error's message (an out-of-range index,
+// a nil dereference, a failed type assertion) comes from the runtime and names
+// only types and indices. Any other value is arbitrary -- a panic(err) can
+// carry a webhook URL with its token, which the Discord client otherwise
+// never lets into an error (redactURLError) -- so only its type is logged.
+// The stack, which says where the panic happened, holds no string contents.
+func (p *feedPanic) detail() string {
+	if rerr, ok := p.value.(goruntime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("a %T value (withheld)", p.value)
 }
 
 // summary is the stable description persisted in the Ready condition: the

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -547,8 +548,8 @@ func TestProcessFeed_PanicBeforeAnythingIsHandledRestoresTheStatus(t *testing.T)
 		t.Fatalf("feedPanic = {url: %q, value: %v, stack: %d bytes}, want the original panic for %q with a stack",
 			fp.url, fp.value, len(fp.stack), feed.RSSUrl)
 	}
-	if !strings.Contains(fp.Error(), "send exploded") {
-		t.Fatalf("feedPanic.Error() = %q, want it to carry the panic value", fp.Error())
+	if strings.Contains(fp.Error(), "send exploded") || !strings.Contains(fp.Error(), "a string value (withheld)") {
+		t.Fatalf("feedPanic.Error() = %q, want the value's type, never its content", fp.Error())
 	}
 	if got := feedStatusFor(fg, feed.RSSUrl); !apiequality.Semantic.DeepEqual(got, before) {
 		t.Fatalf("a sync that panicked before handling anything changed the status:\n got %+v\nwant %+v", got, before)
@@ -678,7 +679,8 @@ func TestFeedPanic_SummaryIsAStableClassNeverTheValue(t *testing.T) {
 		class string
 	}{
 		{name: "runtime error", value: runtimeErr, class: "a runtime error"},
-		{name: "other panic", value: "token=s3cr3t", class: "a panic"},
+		{name: "other panic", value: "https://discord.com/api/webhooks/1/s3cr3t-token", class: "a panic"},
+		{name: "error panic", value: fmt.Errorf("post https://discord.com/api/webhooks/1/s3cr3t-token: boom"), class: "a panic"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fp := &feedPanic{url: exampleFeedURL, value: tc.value, stack: []byte("goroutine 1")}
@@ -689,8 +691,16 @@ func TestFeedPanic_SummaryIsAStableClassNeverTheValue(t *testing.T) {
 			if strings.Contains(got, fmt.Sprint(tc.value)) || strings.Contains(got, "goroutine") {
 				t.Fatalf("summary() = %q leaks the panic value or stack", got)
 			}
-			if !strings.Contains(fp.Error(), fmt.Sprint(tc.value)) || !strings.Contains(fp.Error(), "goroutine 1") {
-				t.Fatalf("Error() = %q, want the full value and stack for the log", fp.Error())
+			logged := fp.Error()
+			if !strings.Contains(logged, "goroutine 1") || !strings.Contains(logged, exampleFeedURL) {
+				t.Fatalf("Error() = %q, want the feed and the stack for the log", logged)
+			}
+			if _, isRuntime := tc.value.(goruntime.Error); isRuntime {
+				if !strings.Contains(logged, fmt.Sprint(tc.value)) {
+					t.Fatalf("Error() = %q, want the runtime's own message", logged)
+				}
+			} else if strings.Contains(logged, "s3cr3t") || !strings.Contains(logged, fmt.Sprintf("%T", tc.value)) {
+				t.Fatalf("Error() = %q, want only the value's type, never its content", logged)
 			}
 		})
 	}
