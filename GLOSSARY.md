@@ -108,6 +108,12 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
   but not a delivery run. The rule is written once, in `feedAttempt.record`.
 
+**Feed check** (`feedCheck`, `check.go`)
+: A view over a `FeedStatus` of its last check, in the style of `feedBackoff`: `failed` (an error is
+  in status; what Ready's `FeedErrors` count and the `feed_healthy` gauge mean), `failedOrRetrying`
+  (the scheduler's wider notion, which also counts a retry run still in progress), and the parsed
+  `lastChecked` / `untilDue` that `feedDue` and `planFeeds` share.
+
 **Entry delivery** (`entryDelivery`, `delivery.go`)
 : The per-entry send loop of one feed's sync. `run` scans the entries the feed sync hands it,
   skipping those already sent or filtered out, rendering and sending the rest, and recording

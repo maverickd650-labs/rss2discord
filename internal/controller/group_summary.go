@@ -114,12 +114,11 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr, intervalErr er
 	})
 }
 
-// countFailingFeeds reports how many feeds currently have a non-empty
-// LastError.
+// countFailingFeeds reports how many feeds' last check failed (checkOf.failed).
 func countFailingFeeds(feeds []v1alpha1.FeedStatus) int {
 	count := 0
-	for _, fs := range feeds {
-		if fs.LastError != "" {
+	for i := range feeds {
+		if checkOf(&feeds[i]).failed() {
 			count++
 		}
 	}

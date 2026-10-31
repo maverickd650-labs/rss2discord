@@ -315,10 +315,12 @@ func (m groupMetrics) syncFeedState(feedGroup *v1alpha1.FeedGroup) {
 		paused[feed.RSSUrl] = paused[feed.RSSUrl] || feed.Paused
 	}
 
-	for _, fs := range feedGroup.Status.Feeds {
+	for i := range feedGroup.Status.Feeds {
+		fs := &feedGroup.Status.Feeds[i]
 		if fs.RSSUrl == "" {
 			continue
 		}
+		check := checkOf(fs)
 		ns, name := m.namespace, m.name
 		if paused[fs.RSSUrl] {
 			feedHealthy.DeleteLabelValues(ns, name, fs.RSSUrl)
@@ -327,12 +329,12 @@ func (m groupMetrics) syncFeedState(feedGroup *v1alpha1.FeedGroup) {
 		}
 
 		healthy := 0.0
-		if fs.LastError == "" {
+		if !check.failed() {
 			healthy = 1
 		}
 		feedHealthy.WithLabelValues(ns, name, fs.RSSUrl).Set(healthy)
 
-		if last, err := time.Parse(time.RFC3339, fs.LastChecked); err == nil {
+		if last, ok := check.lastChecked(); ok {
 			feedLastCheckedTimestamp.WithLabelValues(ns, name, fs.RSSUrl).Set(float64(last.Unix()))
 		} else {
 			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, fs.RSSUrl)
