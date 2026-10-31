@@ -317,11 +317,11 @@ func prepareRequest(webhookURL string, msg Message) (preparedRequest, error) {
 	if msg.Embed != nil {
 		payload.Embeds = []discordEmbed{embedToPayload(*msg.Embed)}
 	}
+	// The payload is strings, an int and string slices, so encoding it has no
+	// failing input; the error is still returned rather than dropped, without
+	// a branch no input can reach. Callers check it before using the request.
 	body, err := json.Marshal(payload)
-	if err != nil {
-		return preparedRequest{}, err
-	}
-	return preparedRequest{limiterKey: webhookURL, target: parsedURL.String(), body: body}, nil
+	return preparedRequest{limiterKey: webhookURL, target: parsedURL.String(), body: body}, err
 }
 
 // exchange sends an already-prepared request: it waits on and reserves the
