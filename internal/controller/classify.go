@@ -71,20 +71,6 @@ const (
 	reasonInvalidURL         = "InvalidURL"
 	reasonOther              = "Other"
 
-	// reasonConfigError and reasonRenderError are FeedConditionTypeDelivered
-	// reasons for failures that have no HTTP status to classify: a
-	// compile-time filter/template error (deterministic FeedSpec
-	// misconfiguration) vs. a per-entry template execution failure.
-	reasonConfigError = "ConfigError"
-	reasonRenderError = "RenderError"
-	// reasonEntrySkipped marks a Delivered condition left behind by an entry
-	// given up on after exhausting retries (see attemptEntrySkipped).
-	reasonEntrySkipped = "EntrySkipped"
-	// reasonBacklogSkipped marks a Delivered condition left behind by a first
-	// sync with catchUpLimit: 0, which sends nothing and starts from the
-	// newest entry (see attemptBacklogSkipped).
-	reasonBacklogSkipped = "BacklogSkipped"
-
 	metricNotFound           = "not_found"
 	metricGone               = "gone"
 	metricRateLimited        = "rate_limited"

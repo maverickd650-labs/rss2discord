@@ -120,7 +120,7 @@ func TestClassifySendError(t *testing.T) {
 
 // TestDominantErrorReason_Deterministic asserts ties are broken by sort
 // order rather than Go's randomized map iteration, since
-// setFeedReachableCondition's output (and thus whether requeueWithStatus
+// setFeedReachableCondition's output (and thus whether settleGroup
 // thinks the status changed) must be stable across reconciles given the same
 // input.
 func TestDominantErrorReason_Deterministic(t *testing.T) {

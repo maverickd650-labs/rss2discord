@@ -665,7 +665,7 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 }
 
 // TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile asserts the per-feed
-// gauges are refreshed even when requeueWithStatus short-circuits because
+// gauges are refreshed even when settleGroup short-circuits because
 // status is unchanged -- the common case for a feed idling in backoff -- so
 // they're populated after an operator restart without waiting for a change.
 func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
@@ -675,7 +675,7 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	fg, _ := newMetricsFeedGroup(ns, name, "")
 	fg.Status.Feeds[0].LastError = "http 410"
 	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:08Z"
-	// Apply the idempotent condition/generation updates requeueWithStatus makes
+	// Apply the idempotent condition/generation updates settleGroup makes
 	// up front so the snapshot below equals the final status and no API write
 	// (and therefore no client) is needed.
 	fg.Status.ObservedGeneration = fg.Generation
@@ -683,8 +683,8 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 	setFeedReachableCondition(fg)
 	original := fg.Status.DeepCopy()
 
-	if _, err := (&FeedGroupReconciler{}).requeueWithStatus(t.Context(), fg, original, cadenceOf(&fg.Spec), requeueDecision{delay: 30 * time.Minute}, nil); err != nil {
-		t.Fatalf("requeueWithStatus: %v", err)
+	if _, err := (&FeedGroupReconciler{}).settleGroup(t.Context(), fg, original, cadenceOf(&fg.Spec), requeueDecision{delay: 30 * time.Minute}, nil); err != nil {
+		t.Fatalf("settleGroup: %v", err)
 	}
 
 	if got, ok := feedGaugeValue(feedHealthy, ns, name, exampleFeedURL); !ok || got != 0 {

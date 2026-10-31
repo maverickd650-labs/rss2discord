@@ -33,8 +33,8 @@ const requeueJitterMaxFactor = 0.1
 
 // jitterDuration adds up to requeueJitterMaxFactor extra to duration when
 // enabled is true, and returns duration unchanged otherwise. Split out from
-// requeueWithStatus so it can be unit-tested without a real client.Client
-// (requeueWithStatus's applyStatus call needs one).
+// settleGroup so it can be unit-tested without a real client.Client
+// (settleGroup's applyStatus call needs one).
 func jitterDuration(duration time.Duration, enabled bool) time.Duration {
 	if !enabled {
 		return duration
@@ -59,7 +59,7 @@ type feedPlan struct {
 // cannot sleep past the moment it becomes due (e.g. after a restart
 // mid-interval). force (a spec change) makes every non-backed-off feed due. The
 // poll interval is cad.poll; an unparsable Interval is reported by
-// requeueWithStatus (cad.err).
+// settleGroup (cad.err).
 func planFeeds(feedGroup *v1alpha1.FeedGroup, cad cadence, now time.Time, force bool) feedPlan {
 	pollInterval := cad.poll
 	plan := feedPlan{active: make([]v1alpha1.FeedSpec, 0, len(feedGroup.Spec.Feeds))}

@@ -56,6 +56,13 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for
   the fetch.
 
+**Reconcile pass** (`reconcilePass`, `feedgroup_controller.go`)
+: The pure middle of a reconcile, once the webhook is resolved: plan the due feeds, fetch them
+  concurrently and fold each through `processFeed`, stopping after a Discord rate limit. It does
+  no Kubernetes I/O and returns the folded `attemptVerdict` and the `feedPlan`. `prepareStatus`
+  is its counterpart before it (normalize status, reset backoffs on a spec change, snapshot);
+  `settleGroup` is the write after it.
+
 **Group cadence** (`cadence`, `cadence.go`)
 : A FeedGroup's timing resolved once from its spec by `cadenceOf`: `poll` (`Spec.Interval`),
   `retry` (`Spec.RetryInterval`, also the permanent-failure backoff base) and `maxRetries`

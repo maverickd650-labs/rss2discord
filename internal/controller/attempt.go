@@ -202,20 +202,20 @@ func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) att
 		a.fs.LastChecked = a.now
 		metricsFor(a.group).checkSucceeded(time.Now())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
-			"FetchSucceeded", "Feed fetched successfully")
+			reasonFetchSucceeded, "Feed fetched successfully")
 		return attemptVerdict{}
 
 	case attemptFetchFailed:
-		return a.failed(v1alpha1.FeedConditionTypeReachable, class, "FetchFailed", err)
+		return a.failed(v1alpha1.FeedConditionTypeReachable, class, eventReasonFetchFailed, err)
 
 	case attemptRenderFailed:
 		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered,
-			failureClass{conditionReason: reasonRenderError}, "RenderFailed", err)
+			failureClass{conditionReason: reasonRenderError}, eventReasonRenderFailed, err)
 		verdict.pending = true
 		return verdict
 
 	case attemptSendFailed:
-		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered, class, "SendFailed", err)
+		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered, class, eventReasonSendFailed, err)
 		verdict.pending = true
 		return verdict
 
@@ -231,18 +231,18 @@ func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) att
 	case attemptSent:
 		clearFailure(a.fs)
 		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
-			"MessageSent", "Entry rendered and delivered to Discord")
+			reasonMessageSent, "Entry rendered and delivered to Discord")
 		return attemptVerdict{}
 
 	case attemptEntrySkipped:
 		// Surfaced via a Warning Event, a metric outcome and the Delivered
 		// condition rather than LastError, which would otherwise mark the feed
 		// failing forever.
-		const reason = "RenderFailed"
+		const reason = eventReasonRenderFailed
 		clearFailure(a.fs)
 		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonEntrySkipped,
 			fmt.Sprintf("skipped entry %q after %s: %v", clampText(o.entry, 100), reason, err))
-		a.warn(reasonEntrySkipped, "SkippedEntry", "feed %s: skipped entry %q after exhausting retries (%s): %v",
+		a.warn(reasonEntrySkipped, eventActionSkippedEntry, "feed %s: skipped entry %q after exhausting retries (%s): %v",
 			a.url, clampText(o.entry, 100), reason, err)
 		return attemptVerdict{}
 
@@ -259,7 +259,7 @@ func (a feedAttempt) record(o attemptOutcome, class failureClass, err error) att
 		// different typo), not on every reconcile of the same unresolved error.
 		a.fs.LastError = errText(err)
 		if a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, err.Error()) {
-			a.warn(reasonConfigError, "InvalidConfig", "feed %s: %v", a.url, err)
+			a.warn(reasonConfigError, eventActionInvalidConfig, "feed %s: %v", a.url, err)
 		}
 		return attemptVerdict{}
 	}
@@ -298,7 +298,7 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 	// ongoing failure would generate a fresh Warning Event every poll interval,
 	// indefinitely.
 	if a.fs.RetryCount == maxRetries {
-		a.warn(eventReason, "RetriesExhausted", "feed %s: giving up after exhausting retries: %v", a.url, err)
+		a.warn(eventReason, eventActionRetriesExhausted, "feed %s: giving up after exhausting retries: %v", a.url, err)
 	}
 	return attemptVerdict{}
 }
@@ -320,7 +320,7 @@ func (a feedAttempt) pastRetryLimit() bool {
 // the group's Interval is longer).
 func (a feedAttempt) backOff(reason string, err error) {
 	if backoffOf(a.fs).extend(a.cadence.retry, time.Now().UTC()) {
-		a.warn(reason, "BackoffCapped", "feed %s: still failing permanently, backoff now capped at %s: %v",
+		a.warn(reason, eventActionBackoffCapped, "feed %s: still failing permanently, backoff now capped at %s: %v",
 			a.url, maxPermanentBackoff, err)
 	}
 }

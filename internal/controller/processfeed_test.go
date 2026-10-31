@@ -377,7 +377,7 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 	}
 
 	// A further capped retry keeps the cap but does not re-fire the Event.
-	processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{}, notFoundErr, nil))
+	processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{}, notFoundErr, nil).withRecorder(recorder))
 	select {
 	case ev := <-recorder.Events:
 		t.Fatalf("unexpected repeat Event: %s", ev)
