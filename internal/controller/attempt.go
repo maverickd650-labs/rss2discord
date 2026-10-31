@@ -22,7 +22,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 
@@ -212,22 +211,9 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 //   - attemptConfigError: LastError, Delivered False ConfigError and one Warning
 //     Event per distinct error. No metric and no retry: it won't fix itself.
 //
-// A retry run belongs to one phase. RetryCount and BackoffUntil count
-// consecutive failures of one kind: either fetches (Reachable False) or
-// deliveries -- renders and sends (Reachable True, Delivered False). A
-// successful fetch ends a fetch-phase run, resetting RetryCount and clearing
-// the backoff through feedBackoff.clear, so the first render or send failure
-// after a recovered outage is the first of its own run: it is not already past
-// the retry limit (which would skip the entry without retries of its own and
-// skip the exhaustion Event, fired only at ==) and a permanent send failure
-// backs off from 1, not from the fetch failures' count. A successful fetch
-// leaves a delivery-phase run alone: every retry of a failing entry is preceded
-// by a successful fetch, so resetting there would stop the run ever exhausting.
-// The reverse holds too: a fetch failure while Reachable is True (the run in
-// progress is a delivery one) clears that run first and starts a fetch run at 1,
-// so delivery failures don't exhaust a fetch run's retries or inflate its
-// backoff. Both transitions read the phase from Reachable, which the status
-// already persists, rather than storing a separate phase field.
+// Retry runs (RetryCount, BackoffUntil, and which phase a run belongs to) are
+// owned by retryRun (backoff.go); record only calls it, in an order its doc
+// comment explains: before the condition that would hide the phase is set.
 // LastError is kept when a fetch-phase run ends: it is cleared only where a
 // fetch is settled as accounted for or an entry is sent or skipped
 // (clearFailure), and until then it keeps a feed that recovered but has not yet
@@ -248,36 +234,23 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 
 	switch o.kind {
 	case attemptFetchSucceeded:
-		// Read Reachable before setCondition flips it: False is what marks the
-		// feed's current run as a fetch-phase one.
-		endsFetchRun := apimeta.IsStatusConditionFalse(a.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
-			(a.fs.RetryCount > 0 || backoffOf(a.fs).set())
+		runOf(a.fs).fetchSucceeded() // before Reachable flips: it reads the phase from it
 		a.fs.LastChecked = a.now.Format(time.RFC3339)
 		metricsFor(a.group).checkSucceeded(a.recordedAt())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
 			reasonFetchSucceeded, "Feed fetched successfully")
-		if endsFetchRun {
-			backoffOf(a.fs).clear()
-		}
 		return attemptVerdict{}
 
 	case attemptFetchFailed:
-		// The reverse transition: Reachable True marks the run in progress as
-		// a delivery-phase one, so this fetch failure starts a new run rather
-		// than counting on from the delivery failures.
-		if apimeta.IsStatusConditionTrue(a.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
-			(a.fs.RetryCount > 0 || backoffOf(a.fs).set()) {
-			backoffOf(a.fs).clear()
-		}
-		return a.failed(v1alpha1.FeedConditionTypeReachable, class, eventReasonFetchFailed, err)
+		return a.failed(phaseFetch, class, eventReasonFetchFailed, err)
 
 	case attemptRenderFailed:
-		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered, class, eventReasonRenderFailed, err)
+		verdict := a.failed(phaseDelivery, class, eventReasonRenderFailed, err)
 		verdict.pending = true
 		return verdict
 
 	case attemptSendFailed:
-		verdict := a.failed(v1alpha1.FeedConditionTypeDelivered, class, eventReasonSendFailed, err)
+		verdict := a.failed(phaseDelivery, class, eventReasonSendFailed, err)
 		verdict.pending = true
 		return verdict
 
@@ -329,13 +302,18 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 }
 
 // failed records one counted failure -- LastError (errText, which is clamped),
-// RetryCount (which counts the failures of the current phase's run, see
-// record) and the condition of type condType (carrying the full err.Error())
+// the failure counted in the retry run (retryRun.fail, which starts a new run
+// when the one in progress is the other phase's) and the phase's condition
+// (Reachable for a fetch, Delivered otherwise; carrying the full err.Error())
 // -- and applies the retry policy to it. eventReason names the failure in the
 // Events.
-func (a feedAttempt) failed(condType string, class failureClass, eventReason string, err error) attemptVerdict {
+func (a feedAttempt) failed(phase retryPhase, class failureClass, eventReason string, err error) attemptVerdict {
 	a.fs.LastError = errText(err)
-	a.fs.RetryCount++
+	runOf(a.fs).fail(phase) // before the condition: it reads the old Reachable
+	condType := v1alpha1.FeedConditionTypeDelivered
+	if phase == phaseFetch {
+		condType = v1alpha1.FeedConditionTypeReachable
+	}
 	a.setCondition(condType, metav1.ConditionFalse, class.conditionReason, err.Error())
 
 	if class.permanent {
@@ -350,8 +328,8 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 		return attemptVerdict{}
 	}
 
-	maxRetries := a.cadence.maxRetries
-	if a.fs.RetryCount < maxRetries {
+	run, maxRetries := runOf(a.fs), a.cadence.maxRetries
+	if run.belowLimit(maxRetries) {
 		return attemptVerdict{retry: true}
 	}
 	// Fire the persistent-failure Event exactly once, the reconcile this
@@ -360,7 +338,7 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 	// >=), RetryCount keeps climbing past maxRetries forever and a single
 	// ongoing failure would generate a fresh Warning Event every poll interval,
 	// indefinitely.
-	if a.fs.RetryCount == maxRetries {
+	if run.exhaustedNow(maxRetries) {
 		a.warn(eventReason, eventActionRetriesExhausted, "feed %s: giving up after exhausting retries: %v", a.url, err)
 	}
 	return attemptVerdict{}
@@ -368,14 +346,14 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 
 // pastRetryLimit reports whether the failure just recorded came after the
 // retries were already exhausted a full reconcile ago: RetryCount went past
-// the limit, not just up to it. RetryCount is the current phase's run (see
-// record), so fetch failures never count against an entry's retries.
+// the limit, not just up to it. The count is the current phase's run (see
+// retryRun), so fetch failures never count against an entry's retries.
 func (a feedAttempt) pastRetryLimit() bool {
-	return a.fs.RetryCount > a.cadence.maxRetries
+	return runOf(a.fs).pastLimit(a.cadence.maxRetries)
 }
 
-// backOff extends fs's permanent backoff (feedBackoff.extend, based on
-// fs.RetryCount, which failed has already incremented for this failure). reason and err
+// backOff extends fs's permanent backoff (retryRun.extend, based on
+// the run's count, which failed has already incremented for this failure). reason and err
 // identify the Warning Event fired the first time the cap is reached -- not on
 // every capped retry after, so a feed that keeps failing at the cap doesn't
 // emit an Event every few hours. Unlike the exhaustion Event it doesn't speak
@@ -383,7 +361,7 @@ func (a feedAttempt) pastRetryLimit() bool {
 // keeps being retried, waiting at most the cap between attempts (or longer if
 // the group's Interval is longer).
 func (a feedAttempt) backOff(reason string, err error) {
-	if backoffOf(a.fs).extend(a.cadence.retry, a.recordedAt().UTC()) {
+	if runOf(a.fs).extend(a.cadence.retry, a.recordedAt().UTC()) {
 		a.warn(reason, eventActionBackoffCapped, "feed %s: still failing permanently, backoff now capped at %s: %v",
 			a.url, maxPermanentBackoff, err)
 	}
@@ -411,5 +389,5 @@ func (a feedAttempt) warn(reason, action, format string, args ...any) {
 // feedSync does when the fetch it applied is accounted for.
 func clearFailure(fs *v1alpha1.FeedStatus) {
 	fs.LastError = ""
-	backoffOf(fs).clear()
+	runOf(fs).clear()
 }

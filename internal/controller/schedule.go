@@ -68,7 +68,7 @@ func planFeeds(feedGroup *v1alpha1.FeedGroup, cad cadence, now time.Time, force 
 			continue
 		}
 		fs := feedStatusFor(feedGroup, feed.RSSUrl)
-		if fs != nil && backoffOf(fs).active(now) {
+		if fs != nil && runOf(fs).active(now) {
 			continue
 		}
 		if fs != nil && !feedDue(fs, pollInterval, now, force) {

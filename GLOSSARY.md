@@ -4,12 +4,14 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **Feed sync** (`feedSync`, `feed_sync.go`)
 : The application of one fetch of one feed to that feed's `FeedStatus`. It is opened
-  with `openFeedSync`, begun with `begin` once the feed's filter and templates are known to
-  compile, and closed exactly once with a `syncVerdict`. It owns the order in which a
-  fetch is applied (title stamping, sort, delivery ledger over the untrimmed fetch,
-  identity migrations, watermark lookup, delivery plan, catch-up limit, backlog skip) and is
-  the only place that settles the status. It hands the send loop the entries to consider
-  (`entries`) and two ledger operations (`sent`, `markHandled`).
+  with `openFeedSync` and run by one method, `apply`, which does the whole sequence
+  (record the fetch outcome, the config check that must precede `begin`, `begin`, the
+  send loop), derives the `syncVerdict` from how far it got and closes exactly once as its
+  last act. It owns the order in which a fetch is applied (title stamping, sort, delivery
+  ledger over the untrimmed fetch, identity migrations, watermark lookup, delivery plan,
+  catch-up limit, backlog skip) and is the only place that settles the status. It hands
+  the send loop the entries to consider (`entries`), the render-failure evidence window
+  (`renderEvidence`) and two ledger operations (`sent`, `markHandled`).
 
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
@@ -32,16 +34,23 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **Delivery ledger** (`deliveryLedger`, `ledger.go`)
 : A feed's delivery bookkeeping over one fetch, and the single identity index of it: the
-  `LastSeenEntry` watermark and the `LastSent` dedup keys, the whole sorted fetch, and the
-  stripped-identity counts they depend on. `feedSync.begin` builds it once per fetch, after the
-  sort and before the identity migrations (which change only the status, so the counts are the
-  same on either side), over the whole untrimmed fetch, so an entry's stripped identity is only
-  unique if it is across the feed, however the entries are later trimmed. It alone writes the
-  watermark and `LastSent` (apart from status normalization and pruning) and owns the key scheme
-  -- an entry's own key (`computeEntryKey`) plus, when its stripped link identity is unique in
-  the fetch, the stripped key (`strippedKey`). The migrations go through its methods
-  (`moveWatermark`, `setWatermark`, `setSent`, `forgetSent`, `rekeySent`) rather than building
-  keys or clamping watermarks themselves.
+  `LastSeenEntry` watermark and the `LastSent` dedup keys, the whole sorted fetch, one
+  `identityRecord` per entry (identity, watermark form, entry key, stripped identity, the
+  stripped identity when unique, the keys that record it, and for an entry the parser moved off
+  an earlier `PreviousID` its previous identity and keys) and every uniqueness count those
+  rules need (`claims`, `identities`, `previousIdentities`, `previousStripped`), all computed
+  once at construction. `feedSync.begin` builds it once per fetch, after the sort and before
+  the identity migrations (which change only the status, so the records are the same on either
+  side), over the whole untrimmed fetch, so an entry's stripped identity is only unique if it
+  is across the feed, however the entries are later trimmed. It alone writes the watermark and
+  `LastSent` (apart from status normalization and pruning) and owns the key scheme -- an
+  entry's own key (`computeEntryKey`) plus, when its stripped link identity is unique in the
+  fetch, the stripped key (`strippedKey`). Delivery uses `sent`/`markHandled`; the migrations
+  use entry-index methods (`carriesOver`, `ownsPrevious`, `rekeySent`, `moveWatermark`,
+  `setWatermark`) and the record's `unique`, so every "is this identity unique" rule is decided
+  in `ledger.go`. Nothing in `ledger.go` is legacy-only: the legacy pass composes the same
+  key-level primitives (`sentAtKey`, `recordKey`, `moveSent`) that `sent`, `markHandled` and
+  `rekeySent` use.
 
 **Identity migration** (`migrateIdentities`, `identity_migration.go`)
 : Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
@@ -49,11 +58,13 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, in `legacy.go`, only for a
   status written before `stateVersion` 1) and the previous-identity pass
   (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
-  Both take the fetch's delivery ledger, read its entries, and write only through it. Before
-  writing a stripped key they ask the ledger's `ownStripped` (is this stripped identity the
-  entry's own and unique in the fetch?) and `ownsPrevious` (can an old stripped key only have
-  been this one moved entry's?). A stripped key a sibling shares is never recorded, or the
-  sibling, alone under it later, would be taken as sent.
+  Both take the fetch's delivery ledger and write only through it. Before writing a stripped
+  key they ask it: the legacy pass hands it the recovered identities (`forgetIdentity`, `recordSentAt`,
+  which writes a stripped key only when it is the entry's own and unique in the fetch), the previous-identity pass asks `carriesOver` (full identities: may the stored entry
+  key move?) and, inside `rekeySent`, `ownsPrevious` (stripped identities: can an old stripped
+  key only have been this one moved entry's?). The two rules differ on purpose and both live in
+  the ledger. A stripped key a sibling shares is never recorded, or the sibling, alone under it
+  later, would be taken as sent.
 
 **Watermark** (`FeedStatus.LastSeenEntry`)
 : The identity of the last entry handled; a later scan resumes just past it.
@@ -106,10 +117,12 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
   delivery, meaning render and send (`Reachable` True, `Delivered` False). A run belongs to
   its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
-  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The rule is written once, in `feedAttempt.record`.
+  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The type is `retryRun` (`runOf(fs)`, `backoff.go`),
+  the only code that touches `RetryCount` and `BackoffUntil` and the only place the phase rule (read
+  from `Reachable`, never stored) is written; `feedAttempt.record` drives it.
 
 **Feed check** (`feedCheck`, `check.go`)
-: A view over a `FeedStatus` of its last check, in the style of `feedBackoff`: `failed` (an error is
+: A view over a `FeedStatus` of its last check, in the style of `retryRun`: `failed` (an error is
   in status; what Ready's `FeedErrors` count and the `feed_healthy` gauge mean), `failedOrRetrying`
   (the scheduler's wider notion, which also counts a retry run still in progress), and the parsed
   `lastChecked` / `untilDue` that `feedDue` and `planFeeds` share.
@@ -141,9 +154,9 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   transient failure instead retries until `RetryCount` reaches the retry limit, and one
   Event announces that.
 
-**Feed backoff** (`feedBackoff`, `backoff.go`)
-: A feed's permanent-failure backoff, as a view over its `FeedStatus` (`backoffOf(fs)`) and the
-  only code that touches `BackoffUntil`. `extend(base, now)` sets it to `base * 2^RetryCount`
+**Feed backoff** (`retryRun.extend`, `backoff.go`)
+: A feed's permanent-failure backoff, part of its retry run (a view over its `FeedStatus`,
+  `runOf(fs)`). `extend(base, now)` sets it to `base * 2^RetryCount`
   capped at `maxPermanentBackoff` (6h) and reports `firstCapped`, true only for the failure
   whose backoff first reaches the cap (the caller fires the `BackoffCapped` Event once);
   `active(now)` is what `planFeeds` skips on (a malformed value is not a backoff);

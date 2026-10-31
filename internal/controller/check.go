@@ -24,7 +24,7 @@ import (
 
 // feedCheck is the last check of one feed, as FeedStatus records it: whether it
 // left a failure and when it last succeeded. It is a view over the status, in
-// the style of feedBackoff, and the one place that parses LastChecked and says
+// the style of retryRun, and the one place that parses LastChecked and says
 // what a failing feed is. Two questions are deliberately separate: the
 // scheduler counts a feed that is still retrying as failing (failedOrRetrying),
 // while the Ready condition and the feed_healthy gauge report only what status
@@ -47,7 +47,7 @@ func (c feedCheck) failed() bool {
 // always due (see feedDue). It is wider than failed, which a feed mid-retry
 // with a cleared LastError does not satisfy.
 func (c feedCheck) failedOrRetrying() bool {
-	return c.failed() || c.fs.RetryCount > 0
+	return c.failed() || runOf(c.fs).outstanding()
 }
 
 // lastChecked is the time of the last successful check, and false when the feed
@@ -55,6 +55,11 @@ func (c feedCheck) failedOrRetrying() bool {
 func (c feedCheck) lastChecked() (time.Time, bool) {
 	last, err := time.Parse(time.RFC3339, c.fs.LastChecked)
 	return last, err == nil
+}
+
+// checked reports whether the feed has a LastChecked at all, parseable or not.
+func (c feedCheck) checked() bool {
+	return c.fs.LastChecked != ""
 }
 
 // untilDue is how long until a full interval has elapsed since the last
