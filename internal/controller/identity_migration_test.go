@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
@@ -31,6 +32,11 @@ const (
 // ownershipLink is a link-derived entry with id as both ID and title.
 func ownershipLink(id string) rss.Entry {
 	return rss.Entry{ID: id, IDSource: rss.IDFromLink, Title: id}
+}
+
+// indexOfEntry is where entry sits in entries, which must hold it.
+func indexOfEntry(entries []rss.Entry, entry rss.Entry) int {
+	return slices.IndexFunc(entries, func(e rss.Entry) bool { return refOf(e) == refOf(entry) })
 }
 
 // TestStrippedOwnership_OwnStripped covers the question the legacy migration
@@ -56,7 +62,7 @@ func TestStrippedOwnership_OwnStripped(t *testing.T) {
 		{name: "an entry without a link identity", entries: []rss.Entry{guidIsLink}, entry: guidIsLink, stripped: guidIsLink.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownStripped(tc.entry, tc.stripped); got != tc.want {
+			if got := ownStripped(newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries), indexOfEntry(tc.entries, tc.entry), tc.stripped); got != tc.want {
 				t.Errorf("ownStripped = %q, want %q", got, tc.want)
 			}
 		})
@@ -86,8 +92,7 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 		{name: "a previous ID without a stripped form", entries: []rss.Entry{guidMover}, mover: guidMover},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			previous, _ := previouslyIdentified(tc.mover)
-			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(previous); got != tc.want {
+			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(indexOfEntry(tc.entries, tc.mover)); got != tc.want {
 				t.Errorf("ownsPrevious = %v, want %v", got, tc.want)
 			}
 		})
