@@ -148,6 +148,55 @@ func (c strippedCounts) entryKeys(entry rss.Entry) []string {
 	return keys
 }
 
+// strippedOwnership answers, for one fetch, whether a stripped LastSent key can
+// be attributed to a single entry. A stripped key stands in for any entry whose
+// stripped link identity matches it, so one recorded for an identity another
+// entry also has would later mark that sibling, alone in the feed, as sent. The
+// identity migrations (identity_migration.go) rewrite stored keys for entries
+// that did not exist under their current identity when the key was written, so
+// each asks it before writing a stripped key; it is the one place that decides.
+type strippedOwnership struct {
+	// counts is the whole fetch's strippedCounts.
+	counts strippedCounts
+	// previous counts, per stripped identity, the entries whose previous ID
+	// (rss.Entry.PreviousID) was a link with that stripped identity.
+	previous map[string]int
+}
+
+// newStrippedOwnership indexes entries, the whole fetch before any catch-up
+// trim, for the ownership questions.
+func newStrippedOwnership(entries []rss.Entry) strippedOwnership {
+	owners := strippedOwnership{counts: countStripped(entries), previous: make(map[string]int)}
+	for _, entry := range entries {
+		if previous, changed := previouslyIdentified(entry); changed {
+			if stripped := strippedLinkIdentity(previous); stripped != "" {
+				owners.previous[stripped]++
+			}
+		}
+	}
+	return owners
+}
+
+// ownStripped returns stripped, a link identity a migration recovered for
+// entry, when it is entry's own stripped identity and unique in the fetch (the
+// only stripped key markHandled would record for it), else "". A stripped
+// identity recovered from the entry's previous ID is not its own.
+func (o strippedOwnership) ownStripped(entry rss.Entry, stripped string) string {
+	if stripped != "" && o.counts.unique(entry) == stripped {
+		return stripped
+	}
+	return ""
+}
+
+// ownsPrevious reports whether the stripped key of previous, a moved entry as
+// earlier releases identified it, can only have been recorded for that entry:
+// no other moved entry had the same stripped identity as its previous one, and
+// no current entry has it as its identity or stripped identity.
+func (o strippedOwnership) ownsPrevious(previous rss.Entry) bool {
+	stripped := strippedLinkIdentity(previous)
+	return stripped != "" && o.previous[stripped] == 1 && o.counts[stripped] == 0
+}
+
 // identitySent reports whether lastSent holds the entry key of identity.
 func identitySent(lastSent map[string]string, identity string) bool {
 	_, ok := lastSent[hashIdentity(identity)]
@@ -201,16 +250,16 @@ func moveSentKey(lastSent map[string]string, from, to string) {
 // under a shared stripped identity would later mark a sibling that is alone in
 // the feed as already sent, the same reason markHandled only writes it for a
 // unique entry. Otherwise, when ownsOldStripped says no other entry can claim
-// the old stripped identity, it falls back to the new entry key, so a record
+// the old stripped identity (strippedOwnership.ownsPrevious), it falls back to the new entry key, so a record
 // that pruning left only under the stripped key still dedups the entry; and
 // failing that it is dropped.
-func rekeySent(lastSent map[string]string, previous, current rss.Entry, counts strippedCounts, ownsOldStripped bool) {
+func rekeySent(lastSent map[string]string, previous, current rss.Entry, owners strippedOwnership) {
 	moveSentKey(lastSent, computeEntryKey(previous), computeEntryKey(current))
 	if oldStripped := strippedLinkIdentity(previous); oldStripped != "" {
 		target := ""
-		if newStripped := counts.unique(current); newStripped != "" {
+		if newStripped := owners.counts.unique(current); newStripped != "" {
 			target = strippedKey(newStripped)
-		} else if ownsOldStripped {
+		} else if owners.ownsPrevious(previous) {
 			target = computeEntryKey(current)
 		}
 		moveSentKey(lastSent, strippedKey(oldStripped), target)

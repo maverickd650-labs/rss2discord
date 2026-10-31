@@ -200,8 +200,7 @@ func (s *feedSync) begin() {
 		return cmp.Compare(b.Seq, a.Seq)
 	})
 
-	s.legacy.migrate(s.fs, entries, s.spec.catchUpLimit)
-	migratePreviousIdentities(s.fs, entries)
+	migrateIdentities(s.fs, entries, &s.legacy, s.spec.catchUpLimit)
 
 	// Built over the whole fetch, before any catch-up trim below, so an
 	// entry's stripped identity is only unique if it is across the feed.

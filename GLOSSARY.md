@@ -40,6 +40,18 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   the identity migrations (`identity_migration.go`) re-key through its helpers
   (`rekeySent`, `setSent`, `forgetSent`) rather than building keys themselves.
 
+**Identity migration** (`migrateIdentities`, `identity_migration.go`)
+: Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
+  entries are identified now, on every fetch, from `feedSync.begin`. It is the one entry point
+  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, only for a
+  status written before `stateVersion` 1) and the previous-identity pass
+  (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
+  Both write through the ledger's helpers and ask one `strippedOwnership` (`ledger.go`, built
+  once per fetch) before writing a stripped key: `ownStripped` (is this stripped identity the
+  entry's own and unique in the fetch?) and `ownsPrevious` (can an old stripped key only have
+  been this one moved entry's?). A stripped key a sibling shares is never recorded, or the
+  sibling, alone under it later, would be taken as sent.
+
 **Watermark** (`FeedStatus.LastSeenEntry`)
 : The identity of the last entry handled; a later scan resumes just past it.
 

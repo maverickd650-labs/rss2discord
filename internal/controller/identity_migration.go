@@ -50,6 +50,22 @@ func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
 	return entry, true
 }
 
+// migrateIdentities is the one entry point that brings a feed's stored
+// identities (the LastSeenEntry watermark and the LastSent keys) in line with
+// how entries, sorted oldest-to-newest, are identified now. It runs the two
+// migrations in order -- first legacy's stateVersion 0 translation (a no-op for
+// a current status; see migrateLegacyIdentities for replayLimit), then the move
+// off PreviousID identities (migratePreviousIdentities) -- over one
+// strippedOwnership of the fetch, so neither writes a stripped LastSent key a
+// sibling entry shares. The legacy pass has to go first: it reads the previous
+// ID as the legacy identity and writes under the current one, which is where
+// the second pass then finds it. Both are idempotent and run on every fetch.
+func migrateIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, legacy *legacyState, replayLimit int) {
+	owners := newStrippedOwnership(entries)
+	legacy.migrate(fs, entries, replayLimit, owners)
+	migratePreviousIdentities(fs, entries, owners)
+}
+
 // migratePreviousIdentities carries a feed's stored identities over for the
 // Atom entries whose ID the parser now picks differently from earlier releases
 // (rss.Entry.PreviousID): the watermark and the dedup keys, which are keyed by
@@ -62,7 +78,7 @@ func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
 // that is another entry's current identity, is left alone, as is a move onto an
 // identity more than one entry now has: it can't be told which entry the stored
 // value stands for.
-func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
+func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, owners strippedOwnership) {
 	type move struct{ previous, current rss.Entry }
 	var moves []move
 	shared := make(map[string]int)
@@ -75,15 +91,6 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 		}
 	}
 
-	counts := countStripped(entries)
-	// How many moved entries had each stripped identity as their previous one;
-	// with counts this says whether a single entry can own an old stripped key.
-	previousStripped := make(map[string]int, len(moves))
-	for _, m := range moves {
-		if stripped := strippedLinkIdentity(m.previous); stripped != "" {
-			previousStripped[stripped]++
-		}
-	}
 	for _, m := range moves {
 		old, now := entryIdentity(m.previous), entryIdentity(m.current)
 		if old == now || shared[old] > 1 || currentCounts[old] > 0 || currentCounts[now] > 1 {
@@ -92,9 +99,7 @@ func migratePreviousIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry) {
 		if fs.LastSeenEntry == clampWatermark(old) {
 			fs.LastSeenEntry = clampWatermark(now)
 		}
-		oldStripped := strippedLinkIdentity(m.previous)
-		owns := oldStripped != "" && previousStripped[oldStripped] == 1 && counts[oldStripped] == 0
-		rekeySent(fs.LastSent, m.previous, m.current, counts, owns)
+		rekeySent(fs.LastSent, m.previous, m.current, owners)
 	}
 }
 
@@ -147,11 +152,11 @@ func readLegacyState(fs *v1alpha1.FeedStatus) legacyState {
 // migrate translates fs's legacy identities using entries, sorted
 // oldest-to-newest; see migrateLegacyIdentities for replayLimit. It is a
 // no-op for a current status.
-func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry, replayLimit int) {
+func (s *legacyState) migrate(fs *v1alpha1.FeedStatus, entries []rss.Entry, replayLimit int, owners strippedOwnership) {
 	if !s.legacy {
 		return
 	}
-	migrateLegacyIdentities(fs, entries, s.emptyWatermark, replayLimit)
+	migrateLegacyIdentities(fs, entries, s.emptyWatermark, replayLimit, owners)
 	s.migrated = true
 }
 
@@ -183,11 +188,10 @@ func (s *legacyState) finish(fs *v1alpha1.FeedStatus) {
 // legacy empty identity rather than no watermark at all. Legacy values that
 // match no entry are left as they are: a watermark that matches nothing
 // falls back to the catch-up cap either way.
-func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool, replayLimit int) {
+func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, emptyWatermark bool, replayLimit int, owners strippedOwnership) {
 	current := make([]string, len(entries))
 	legacy := make([]string, len(entries))
 	sharing := make(map[string]int, len(entries))
-	counts := countStripped(entries)
 	for i, entry := range entries {
 		current[i], legacy[i] = entryIdentity(entry), legacyEntryIdentity(entry)
 		sharing[legacy[i]]++
@@ -226,11 +230,7 @@ func migrateLegacyIdentities(fs *v1alpha1.FeedStatus, entries []rss.Entry, empty
 			// deliveryLedger.markHandled, record it only when it is this
 			// entry's own and unique in the fetch, or a sibling sharing it
 			// would later be taken as sent.
-			stripped := ""
-			if entries[i].IDSource == rss.IDFromLink && counts.unique(entries[i]) == legacy[i] {
-				stripped = legacy[i]
-			}
-			setSent(fs.LastSent, current[i], stripped, sentAt)
+			setSent(fs.LastSent, current[i], owners.ownStripped(entries[i], legacy[i]), sentAt)
 		}
 		forgetSent(fs.LastSent, legacy[i])
 	}
