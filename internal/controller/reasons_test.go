@@ -23,6 +23,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,6 +45,10 @@ var reasonArgs = map[string]int{
 // reasonFields are the struct fields that hold a condition reason.
 var reasonFields = []string{"Reason", "conditionReason"}
 
+// reasonFiles are the files whose string constants may be reasons
+// (prelude.go is the self-test's stand-in for them).
+var reasonFiles = map[string]bool{"conditions.go": true, "classify.go": true, "prelude.go": true}
+
 // reasonFlow finds the string constants that reach a condition or Event reason
 // in one package, on its SSA form (golang.org/x/tools/go/ssa), where every
 // value has exactly one definition: shadowing, tuples, named results, closures
@@ -56,25 +61,26 @@ var reasonFields = []string{"Reason", "conditionReason"}
 // the package's own functions, methods or closures to what they return; a
 // parameter or free variable to every caller's argument or closure's binding;
 // a load to every store to that variable, global or field (any field, not only
-// the reason ones); and a map, slice or pointer to everything written into it.
+// the reason ones); and a map, slice or pointer to everything written into it
+// -- a map's values, and its keys only where a range over it yields them.
 // A call into another package is traced through its arguments, since its
 // result can only be made from them.
 //
 // SSA folds named constants into their values, so a constant that arrives is
-// accepted only if its value is that of one of the package's named string
-// constants, and checkReasonSpelling then requires that value to be spelled
+// accepted only if its value is that of a string constant declared in one of
+// the reasonFiles, and checkReasonSpelling then requires that value to be spelled
 // nowhere but in its const declaration. Together: every reason is one of the
 // declarations in conditions.go and classify.go, which are user-visible API.
 type reasonFlow struct {
 	fset         *token.FileSet
-	named        map[string]bool // values of the package's string constants
+	named        map[string]bool // values of the reasonFiles' string constants
 	funcs        []*ssa.Function // the package's, closures included
 	calls        []ssa.CallInstruction
 	globalWrites map[*ssa.Global][]ssa.Value
 	fieldWrites  map[*types.Var][]ssa.Value
 	bindings     map[*ssa.Function][]*ssa.MakeClosure
 	seen         map[ssa.Value]bool
-	seenValues   map[ssa.Value]bool // maps whose values traceMapValues followed
+	seenKeys     map[ssa.Value]bool // maps whose keys traceMapKeys followed
 	reached      map[string]bool    // named values found at a sink
 	problems     map[string]bool
 	where        string    // the sink being traced
@@ -88,12 +94,13 @@ func checkReasons(fset *token.FileSet, pkg *ssa.Package, files []*ast.File) []st
 		fset: fset, named: map[string]bool{},
 		globalWrites: map[*ssa.Global][]ssa.Value{}, fieldWrites: map[*types.Var][]ssa.Value{},
 		bindings: map[*ssa.Function][]*ssa.MakeClosure{},
-		seen:     map[ssa.Value]bool{}, seenValues: map[ssa.Value]bool{},
+		seen:     map[ssa.Value]bool{}, seenKeys: map[ssa.Value]bool{},
 		reached: map[string]bool{}, problems: map[string]bool{},
 	}
 	scope := pkg.Pkg.Scope()
 	for _, name := range scope.Names() {
-		if c, ok := scope.Lookup(name).(*types.Const); ok && c.Val().Kind() == constant.String {
+		c, ok := scope.Lookup(name).(*types.Const)
+		if ok && c.Val().Kind() == constant.String && reasonFiles[filepath.Base(fset.Position(c.Pos()).Filename)] {
 			f.named[constant.StringVal(c.Val())] = true
 		}
 	}
@@ -237,7 +244,7 @@ func (f *reasonFlow) trace(v ssa.Value) {
 	f.traceDef(v)
 	switch v.Type().Underlying().(type) {
 	case *types.Map, *types.Slice, *types.Pointer:
-		f.traceWrites(v, false)
+		f.traceWrites(v)
 	}
 }
 
@@ -247,15 +254,11 @@ func (f *reasonFlow) traceDef(v ssa.Value) {
 	case *ssa.Const:
 		f.checkConst(v)
 	case *ssa.Call:
-		f.traceCallResult(v, 0)
+		f.traceCallResult(v, 0, f.trace)
 	case *ssa.Extract:
-		if call, ok := v.Tuple.(*ssa.Call); ok {
-			f.traceCallResult(call, v.Index)
-		} else {
-			f.trace(v.Tuple)
-		}
+		f.traceExtract(v)
 	case *ssa.Parameter:
-		f.traceCallers(v)
+		f.traceCallers(v, f.trace)
 	case *ssa.FreeVar:
 		fn := v.Parent()
 		i := slices.Index(fn.FreeVars, v)
@@ -271,11 +274,7 @@ func (f *reasonFlow) traceDef(v ssa.Value) {
 	case *ssa.FieldAddr:
 		f.traceField(fieldOf(v.X.Type(), v.Field))
 	case *ssa.Lookup:
-		if _, isMap := v.X.Type().Underlying().(*types.Map); isMap {
-			f.traceMapValues(v.X) // the key looked up is not the value
-		} else {
-			f.trace(v.X)
-		}
+		f.trace(v.X) // a map's values; the key looked up is not the value
 	case *ssa.IndexAddr:
 		f.trace(v.X)
 	case *ssa.Index:
@@ -291,21 +290,55 @@ func (f *reasonFlow) traceDef(v ssa.Value) {
 	}
 }
 
-// traceMapValues follows the values (not the keys) a map is given.
-func (f *reasonFlow) traceMapValues(m ssa.Value) {
-	if f.seenValues[m] {
+// traceExtract follows one result of a tuple: a call's result by position, a
+// range over a map's key to the map's keys, anything else to the tuple.
+func (f *reasonFlow) traceExtract(v *ssa.Extract) {
+	switch t := v.Tuple.(type) {
+	case *ssa.Call:
+		f.traceCallResult(t, v.Index, f.trace)
+	case *ssa.Next:
+		if rng, ok := t.Iter.(*ssa.Range); ok && v.Index == 1 {
+			if _, isMap := rng.X.Type().Underlying().(*types.Map); isMap {
+				f.traceMapKeys(rng.X)
+				return
+			}
+		}
+		f.trace(t)
+	default:
+		f.trace(t)
+	}
+}
+
+// traceMapKeys follows the keys put into map m, and into the maps it is made
+// from: a phi's edges, a parameter's arguments and a call's results.
+func (f *reasonFlow) traceMapKeys(m ssa.Value) {
+	if f.seenKeys[m] {
 		return
 	}
-	f.seenValues[m] = true
-	f.traceDef(m)
-	f.traceWrites(m, true)
+	f.seenKeys[m] = true
+	if refs := m.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			if r, ok := ref.(*ssa.MapUpdate); ok && r.Map == m {
+				f.trace(r.Key)
+			}
+		}
+	}
+	switch m := m.(type) {
+	case *ssa.Phi:
+		for _, edge := range m.Edges {
+			f.traceMapKeys(edge)
+		}
+	case *ssa.Parameter:
+		f.traceCallers(m, f.traceMapKeys)
+	case *ssa.Call:
+		f.traceCallResult(m, 0, f.traceMapKeys)
+	}
 }
 
 // traceWrites follows everything written into the map, slice or pointer v:
-// map updates (only their values if valuesOnly), stores through it or an
-// element of it, and what a closure or function it is handed stores through
-// it.
-func (f *reasonFlow) traceWrites(v ssa.Value, valuesOnly bool) {
+// a map's values (traceMapKeys follows keys), stores through it or an element
+// of it, and what a closure or function it is handed stores through it.
+func (f *reasonFlow) traceWrites(v ssa.Value) {
 	refs := v.Referrers()
 	if refs == nil {
 		return
@@ -314,9 +347,6 @@ func (f *reasonFlow) traceWrites(v ssa.Value, valuesOnly bool) {
 		switch r := ref.(type) {
 		case *ssa.MapUpdate:
 			if r.Map == v {
-				if !valuesOnly {
-					f.trace(r.Key)
-				}
 				f.trace(r.Value)
 			}
 		case *ssa.Store:
@@ -365,28 +395,28 @@ func (f *reasonFlow) traceField(field *types.Var) {
 	}
 }
 
-// traceCallResult follows result i of call: what the package's callees
+// traceCallResult hands follow result i of call: what the package's callees
 // return there, or, for a call out of the package, its arguments.
-func (f *reasonFlow) traceCallResult(call *ssa.Call, i int) {
+func (f *reasonFlow) traceCallResult(call *ssa.Call, i int, follow func(ssa.Value)) {
 	callees := f.callees(&call.Call)
 	if len(callees) == 0 {
 		for _, arg := range call.Call.Args {
-			f.trace(arg)
+			follow(arg)
 		}
 		return
 	}
 	for _, callee := range callees {
 		for _, block := range callee.Blocks {
 			if ret, ok := block.Instrs[len(block.Instrs)-1].(*ssa.Return); ok && i < len(ret.Results) {
-				f.trace(ret.Results[i])
+				follow(ret.Results[i])
 			}
 		}
 	}
 }
 
-// traceCallers follows parameter p to the matching argument of every call
-// that can reach its function.
-func (f *reasonFlow) traceCallers(p *ssa.Parameter) {
+// traceCallers hands follow the argument for parameter p of every call that
+// can reach its function.
+func (f *reasonFlow) traceCallers(p *ssa.Parameter, follow func(ssa.Value)) {
 	fn := p.Parent()
 	index := slices.Index(fn.Params, p)
 	for _, call := range f.calls {
@@ -395,7 +425,7 @@ func (f *reasonFlow) traceCallers(p *ssa.Parameter) {
 			continue
 		}
 		if i := index - receiverShift(common, fn); i >= 0 && i < len(common.Args) {
-			f.trace(common.Args[i])
+			follow(common.Args[i])
 		}
 	}
 }
@@ -691,6 +721,11 @@ func f() { h(reasonOther) }`, want: planted},
 func f() { var other, x string; other, x = pair(); a.warn(x, action, other) }`, want: planted},
 		{name: "through a named result", src: `func pick() (out string) { out = "Oops"; return }
 func f() { a.warn(pick(), action, "f") }`, want: planted},
+		{name: "through a range key", src: `func f() { for k := range map[string]int{"Oops": 1} { a.warn(k, action, "f") } }`, want: planted},
+		{name: "through a range key of a parameter", src: `func h(m map[string]int) { for k := range m { a.warn(k, action, "f") } }
+func f() { h(map[string]int{"Oops": 1}) }`, want: planted},
+		{name: "a constant declared outside the reason files", src: `const fieldOwner = "feedgroup-controller"
+func f() { a.warn(fieldOwner, action, "f") }`, want: `"feedgroup-controller"`},
 		{name: "through a pointer", src: `func set(p *string) { *p = "Oops" }
 func f() { x := reasonOther; set(&x); a.warn(x, action, "f") }`, want: planted},
 
@@ -706,6 +741,10 @@ func f() { h(reasonOther) }`},
 		{name: "Reason field assigned a constant", src: `func f() { cond.Reason = reasonOther }`},
 		{name: "reason helper returning a constant", src: `func dominantReason() string { return reasonOther }`},
 		{name: "a map key and index", src: `func f() { m := map[string]string{"k": reasonOther}; a.warn(m["k"], action, "f") }`},
+		{name: "a map key through a phi", src: `func f() { m := map[string]string{"k": reasonOther}; if c { m = map[string]string{"j": reasonFeedErrors} }; a.warn(m["k"], action, "f") }`},
+		{name: "a map key through a call", src: `func reasons() map[string]string { return map[string]string{"k": reasonOther} }
+func f() { a.warn(reasons()["k"], action, "f") }`},
+		{name: "a map key beside a range value", src: `func f() { for _, r := range map[string]string{"k": reasonOther} { a.warn(r, action, "f") } }`},
 		{name: "a helper's unrelated input", src: `func pick(key string) string { return reasonOther }
 func f() { a.warn(pick("key"), action, "f") }`},
 		{name: "elided failureClass constants", src: "var cs = []failureClass{{metricOther, reasonOther, false}}"},
