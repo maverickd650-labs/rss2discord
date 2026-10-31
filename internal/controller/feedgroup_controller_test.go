@@ -1404,8 +1404,14 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(ready).NotTo(BeNil())
 			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 			Expect(ready.Reason).To(Equal(reasonReconcilePanicked))
-			Expect(ready.Message).To(ContainSubstring("send exploded"))
+			Expect(ready.Message).To(ContainSubstring(rssServer.URL()))
+			By("Verifying the panic value and stack are kept out of every persisted field")
+			Expect(ready.Message).NotTo(ContainSubstring("send exploded"))
 			Expect(ready.Message).NotTo(ContainSubstring("goroutine"))
+			Expect(fs.LastError).NotTo(ContainSubstring("send exploded"))
+			for _, c := range fs.Conditions {
+				Expect(c.Message).NotTo(ContainSubstring("send exploded"))
+			}
 
 			By("Reconciling again at once, with a working sender")
 			reconciler.DiscordClientBuilder = realBuilder

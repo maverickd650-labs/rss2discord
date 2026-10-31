@@ -581,7 +581,7 @@ func TestProcessFeed_PanicAfterASendKeepsTheSentEntryRecorded(t *testing.T) {
 	}
 	// The interruption is recorded as a failure, so the feed reads as failing
 	// and is due again at once, not only at its next poll.
-	if !strings.Contains(fs.LastError, errDeliveryPanicked.Error()) || fs.RetryCount != 1 {
+	if fs.LastError != errDeliveryPanicked.Error() || fs.RetryCount != 1 {
 		t.Fatalf("LastError = %q, RetryCount = %d; want the interrupted delivery recorded as one failure", fs.LastError, fs.RetryCount)
 	}
 	if !feedDue(fs, time.Hour, testReconcileInstant, false) {
@@ -663,4 +663,35 @@ func TestLimitCatchUp(t *testing.T) {
 			t.Fatalf("expected last two entries, got %q,%q", got[0].ID, got[1].ID)
 		}
 	})
+}
+
+func TestFeedPanic_SummaryIsAStableClassNeverTheValue(t *testing.T) {
+	var runtimeErr any
+	func() {
+		defer func() { runtimeErr = recover() }()
+		var v any = 1
+		_ = v.(string) // a failed type assertion: a runtime.Error panic
+	}()
+	for _, tc := range []struct {
+		name  string
+		value any
+		class string
+	}{
+		{name: "runtime error", value: runtimeErr, class: "a runtime error"},
+		{name: "other panic", value: "token=s3cr3t", class: "a panic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &feedPanic{url: exampleFeedURL, value: tc.value, stack: []byte("goroutine 1")}
+			got := fp.summary()
+			if !strings.HasPrefix(got, tc.class+" ") || !strings.Contains(got, exampleFeedURL) {
+				t.Fatalf("summary() = %q, want the class %q and the feed URL", got, tc.class)
+			}
+			if strings.Contains(got, fmt.Sprint(tc.value)) || strings.Contains(got, "goroutine") {
+				t.Fatalf("summary() = %q leaks the panic value or stack", got)
+			}
+			if !strings.Contains(fp.Error(), fmt.Sprint(tc.value)) || !strings.Contains(fp.Error(), "goroutine 1") {
+				t.Fatalf("Error() = %q, want the full value and stack for the log", fp.Error())
+			}
+		})
+	}
 }

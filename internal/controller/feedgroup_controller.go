@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	goruntime "runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -275,7 +276,7 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	attempt := run.newAttempt(fs)
 	defer func() {
 		if p := recover(); p != nil {
-			syncer.secureAfterPanic(before, attempt, fmt.Errorf("%w: %v", errDeliveryPanicked, p))
+			syncer.secureAfterPanic(before, attempt, errDeliveryPanicked)
 			panic(&feedPanic{url: run.feed.RSSUrl, value: p, stack: debug.Stack()})
 		}
 	}()
@@ -285,7 +286,11 @@ func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 // errDeliveryPanicked is the failure recorded for a feed whose delivery a
 // panic interrupted after it had handled an entry (see
 // feedSync.secureAfterPanic), so the feed reads as failing and is retried on
-// the reconcile's error backoff rather than its next poll.
+// the reconcile's error backoff rather than its next poll. It is recorded as
+// is, never wrapping the panic value: LastError, the Delivered condition and
+// Events are persisted and widely readable, and a panic value is arbitrary
+// (it may quote a payload, a URL or a dependency's internals). The value and
+// stack go only to the reconcile error, which is logged (feedPanic.Error).
 var errDeliveryPanicked = errors.New("delivery interrupted by a panic")
 
 // feedPanic is a panic raised while processFeed applied one feed's fetch,
@@ -298,13 +303,23 @@ type feedPanic struct {
 	stack []byte
 }
 
+// Error is the full diagnostic -- the panic value and its stack -- for the
+// reconcile error, which controller-runtime logs. It is never persisted; see
+// summary.
 func (p *feedPanic) Error() string {
-	return p.summary() + "\n" + string(p.stack)
+	return fmt.Sprintf("panic while processing feed %s: %v\n%s", p.url, p.value, p.stack)
 }
 
-// summary is the panic without its stack, for the Ready condition.
+// summary is the stable description persisted in the Ready condition: the
+// feed and the panic's class (a Go runtime error or any other panic), never
+// the panic value, which is arbitrary and may carry data that must not land in
+// a status every reader of the FeedGroup can see.
 func (p *feedPanic) summary() string {
-	return fmt.Sprintf("panic while processing feed %s: %v", p.url, p.value)
+	class := "a panic"
+	if _, ok := p.value.(goruntime.Error); ok {
+		class = "a runtime error"
+	}
+	return fmt.Sprintf("%s interrupted processing feed %s; see the controller log for the details", class, p.url)
 }
 
 // containedPass is reconcilePass with a *feedPanic recovered and returned
