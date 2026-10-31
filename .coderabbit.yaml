@@ -44,7 +44,7 @@ reviews:
         (CRDs, role.yaml, zz_generated.*, applyconfiguration, PROJECT) must not
         be hand-edited; changes come from `mise run manifests generate`. Dev
         tasks run via `mise run <task>`, not raw go test/golangci-lint.
-    - path: "internal/rss/client.go"
+    - path: "internal/rss/transport.go"
       instructions: >-
         SSRF guard, do not weaken or duplicate: newDefaultHTTPClient uses a
         custom DialContext that resolves the host and rejects any non-public IP

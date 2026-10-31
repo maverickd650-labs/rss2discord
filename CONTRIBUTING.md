@@ -33,7 +33,7 @@ and the architectural rationale behind the SSRF guards, status model, and metric
 
 ## Security-sensitive paths
 
-`internal/rss/client.go` and `internal/discord/client.go` carry SSRF guards (the RSS feed URL and
+`internal/rss/transport.go` and `internal/discord/client.go` carry SSRF guards (the RSS feed URL and
 Discord webhook URL are both user-supplied). Don't weaken or duplicate these checks, and don't
 relax them "just for tests" — test helpers in `internal/controller/*_test.go` already provide
 unguarded variants for hitting local `httptest` servers. See [SECURITY.md](SECURITY.md) to report
