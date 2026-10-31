@@ -9,9 +9,11 @@ func TestSyncFeedState_SkipsStatusWithoutURL(t *testing.T) {
 	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, _ := newMetricsFeedGroup(ns, name, "")
+	// Set before the copy, so the empty-url entry has a valid timestamp too and
+	// the timestamp assertion below would see a series if the skip were gone.
+	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:07Z"
 	fg.Status.Feeds = append(fg.Status.Feeds, fg.Status.Feeds[0])
 	fg.Status.Feeds[1].RSSUrl = ""
-	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:07Z"
 
 	metricsFor(fg).syncFeedState(fg)
 
