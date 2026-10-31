@@ -751,3 +751,53 @@ func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
 		})
 	}
 }
+
+// TestFeedAttempt_FetchFailureEndsADeliveryRun asserts the reverse transition:
+// a fetch failure while Reachable is True ends the delivery run in progress, so
+// the fetch run starts at 1 (transient: still retried; permanent: backed off
+// from 1), whereas a fetch failure inside a fetch run counts on and a feed never
+// fetched keeps its count.
+func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
+	const staleBackoff = "2026-01-01T01:00:00Z"
+	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
+		return []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}}
+	}
+	for _, tc := range []struct {
+		name        string
+		conditions  []metav1.Condition
+		retryCount  int32
+		backoff     string
+		class       failureClass
+		wantRetries int32
+		wantRetry   bool
+	}{
+		{"delivery run, transient fetch failure", reachable(metav1.ConditionTrue), 2, "", classServerError, 1, true},
+		{"delivery run in backoff, transient fetch failure", reachable(metav1.ConditionTrue), 2, staleBackoff, classServerError, 1, true},
+		{"delivery run, permanent fetch failure", reachable(metav1.ConditionTrue), 4, "", classNotFound, 1, false},
+		{"fetch run counts on", reachable(metav1.ConditionFalse), 2, "", classServerError, 3, false},
+		{"never fetched", nil, 1, "", classServerError, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &v1alpha1.FeedStatus{
+				RSSUrl: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount, BackoffUntil: tc.backoff,
+			}
+			attempt := testAttempt(t, &v1alpha1.FeedGroup{Spec: v1alpha1.FeedGroupSpec{Retries: 3}}, fs, attemptURL, attemptInstant)
+			verdict := attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(tc.class))
+
+			if fs.RetryCount != tc.wantRetries {
+				t.Errorf("RetryCount = %d, want %d", fs.RetryCount, tc.wantRetries)
+			}
+			if verdict.retry != tc.wantRetry {
+				t.Errorf("verdict.retry = %v, want %v", verdict.retry, tc.wantRetry)
+			}
+			if tc.class == classNotFound {
+				want := nextBackoffUntil(attempt.recordedAt().UTC(), permanentBackoffDuration(1, attempt.cadence.retry))
+				if fs.BackoffUntil != want {
+					t.Errorf("BackoffUntil = %q, want %q (backed off from 1)", fs.BackoffUntil, want)
+				}
+			} else if fs.BackoffUntil == staleBackoff {
+				t.Error("the delivery run's backoff should be cleared")
+			}
+		})
+	}
+}

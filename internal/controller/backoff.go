@@ -44,6 +44,10 @@ type feedBackoff struct {
 // backoffOf returns the backoff of fs.
 func backoffOf(fs *v1alpha1.FeedStatus) feedBackoff { return feedBackoff{fs: fs} }
 
+// set reports whether a backoff is recorded at all, expired or not: an
+// expired backoff still belongs to the run of failures that set it.
+func (b feedBackoff) set() bool { return b.fs.BackoffUntil != "" }
+
 // active reports whether the backoff is still in the future as of now. A
 // malformed or empty BackoffUntil is treated as "not in backoff" so a bad value
 // can never permanently wedge a feed without a spec change.

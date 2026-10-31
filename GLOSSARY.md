@@ -106,7 +106,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
   delivery, meaning render and send (`Reachable` True, `Delivered` False). A run belongs to
   its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
-  but not a delivery run. The rule is written once, in `feedAttempt.record`.
+  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The rule is written once, in `feedAttempt.record`.
 
 **Feed check** (`feedCheck`, `check.go`)
 : A view over a `FeedStatus` of its last check, in the style of `feedBackoff`: `failed` (an error is

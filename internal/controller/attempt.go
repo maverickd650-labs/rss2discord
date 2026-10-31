@@ -223,6 +223,11 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 // backs off from 1, not from the fetch failures' count. A successful fetch
 // leaves a delivery-phase run alone: every retry of a failing entry is preceded
 // by a successful fetch, so resetting there would stop the run ever exhausting.
+// The reverse holds too: a fetch failure while Reachable is True (the run in
+// progress is a delivery one) clears that run first and starts a fetch run at 1,
+// so delivery failures don't exhaust a fetch run's retries or inflate its
+// backoff. Both transitions read the phase from Reachable, which the status
+// already persists, rather than storing a separate phase field.
 // LastError is kept when a fetch-phase run ends: it is cleared only where a
 // fetch is settled as accounted for or an entry is sent or skipped
 // (clearFailure), and until then it keeps a feed that recovered but has not yet
@@ -246,7 +251,7 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 		// Read Reachable before setCondition flips it: False is what marks the
 		// feed's current run as a fetch-phase one.
 		endsFetchRun := apimeta.IsStatusConditionFalse(a.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
-			(a.fs.RetryCount > 0 || a.fs.BackoffUntil != "")
+			(a.fs.RetryCount > 0 || backoffOf(a.fs).set())
 		a.fs.LastChecked = a.now.Format(time.RFC3339)
 		metricsFor(a.group).checkSucceeded(a.recordedAt())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
@@ -257,6 +262,13 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 		return attemptVerdict{}
 
 	case attemptFetchFailed:
+		// The reverse transition: Reachable True marks the run in progress as
+		// a delivery-phase one, so this fetch failure starts a new run rather
+		// than counting on from the delivery failures.
+		if apimeta.IsStatusConditionTrue(a.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
+			(a.fs.RetryCount > 0 || backoffOf(a.fs).set()) {
+			backoffOf(a.fs).clear()
+		}
 		return a.failed(v1alpha1.FeedConditionTypeReachable, class, eventReasonFetchFailed, err)
 
 	case attemptRenderFailed:
