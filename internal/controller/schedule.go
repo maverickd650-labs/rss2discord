@@ -72,8 +72,8 @@ func planFeeds(feedGroup *v1alpha1.FeedGroup, cad cadence, now time.Time, force 
 			continue
 		}
 		if fs != nil && !feedDue(fs, pollInterval, now, force) {
-			if last, err := time.Parse(time.RFC3339, fs.LastChecked); err == nil {
-				if until := last.Add(pollInterval).Sub(now); plan.nextDue == 0 || until < plan.nextDue {
+			if until, ok := checkOf(fs).untilDue(pollInterval, now); ok {
+				if plan.nextDue == 0 || until < plan.nextDue {
 					plan.nextDue = until
 				}
 			}
@@ -136,17 +136,15 @@ func (d requeueDecision) bound(delay time.Duration) time.Duration {
 }
 
 // feedDue reports whether fs should be fetched this reconcile. A feed is due
-// when its spec just changed (force), it has never been checked, it has an
+// when its spec just changed (force), it has never been checked (or LastChecked does not parse), it has an
 // outstanding failure (those follow the RetryInterval cadence the group's
 // requeue already encodes), or a full interval has elapsed since its last
 // successful check. An unparsable LastChecked counts as due.
 func feedDue(fs *v1alpha1.FeedStatus, interval time.Duration, now time.Time, force bool) bool {
-	if force || fs.LastChecked == "" || fs.LastError != "" || fs.RetryCount > 0 {
+	check := checkOf(fs)
+	if force || check.failedOrRetrying() {
 		return true
 	}
-	last, err := time.Parse(time.RFC3339, fs.LastChecked)
-	if err != nil {
-		return true
-	}
-	return !now.Before(last.Add(interval))
+	until, ok := check.untilDue(interval, now)
+	return !ok || until <= 0
 }

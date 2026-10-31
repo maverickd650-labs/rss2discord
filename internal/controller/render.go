@@ -188,7 +188,7 @@ func (fr *feedRenderer) matches(entry rss.Entry) bool {
 // single discord.Fit call at the end; the second return value is how many
 // runes that trimmed (0 when nothing was); it is data only. The caller
 // that actually sends the message records it in messageOverflowChars, so
-// diagnostic renders (see otherEntryRenders) don't add samples.
+// diagnostic renders (see entryDelivery.otherEntryRenders) don't add samples.
 func (fr *feedRenderer) build(raw rss.Entry) (discord.Message, int, error) {
 	entry := displayOf(raw)
 	msg := discord.Message{
@@ -247,19 +247,4 @@ func (fr *feedRenderer) build(raw rss.Entry) (discord.Message, int, error) {
 
 	fitted, overflow := discord.Fit(msg)
 	return fitted, overflow, nil
-}
-
-// otherEntryRenders reports whether any entry other than skip renders
-// successfully with the feed's templates, which distinguishes "this entry is
-// the problem" from "the template is broken for everything".
-func (fr *feedRenderer) otherEntryRenders(entries []rss.Entry, skip rss.Entry) bool {
-	for _, other := range entries {
-		if entryIdentity(other) == entryIdentity(skip) {
-			continue
-		}
-		if _, _, err := fr.build(other); err == nil {
-			return true
-		}
-	}
-	return false
 }

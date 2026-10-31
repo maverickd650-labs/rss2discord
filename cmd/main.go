@@ -250,7 +250,8 @@ func main() {
 		Scheme:    mgr.GetScheme(),
 		RSSClient: rssClient,
 		DiscordClientBuilder: func(webhookURL string) controller.MessageSender {
-			return discord.NewClientWithLimiter(webhookURL, discordHTTPClient, discordRateLimiter)
+			return discord.NewClient(webhookURL,
+				discord.WithHTTPClient(discordHTTPClient), discord.WithRateLimiter(discordRateLimiter))
 		},
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
 		WatchWebhookSecrets:     watchWebhookSecrets,

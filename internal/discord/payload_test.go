@@ -146,7 +146,7 @@ func TestSendMessage_BoundedRetryAfterControlsCooldown(t *testing.T) {
 					}, nil
 				})}
 				limiter := NewRateLimiter()
-				first := NewClientWithLimiter(testWebhookURL, httpClient, limiter)
+				first := NewClient(testWebhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 				err := first.SendMessageText(t.Context(), "first")
 				rle, ok := errors.AsType[*RateLimitError](err)
 				if !ok || rle.RetryAfter != tc.want || requests != 1 {
@@ -155,7 +155,7 @@ func TestSendMessage_BoundedRetryAfterControlsCooldown(t *testing.T) {
 
 				// Fake time verifies expiry without sleeping for a real hour.
 				time.Sleep(tc.want - time.Nanosecond)
-				second := NewClientWithLimiter(testWebhookURL, httpClient, limiter)
+				second := NewClient(testWebhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 				err = second.SendMessageText(t.Context(), "held")
 				rle, ok = errors.AsType[*RateLimitError](err)
 				if !ok || rle.RetryAfter != time.Nanosecond || requests != 1 {
@@ -208,7 +208,7 @@ func TestSendMessage_ReturnsRateLimitError(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessageText(t.Context(), "rate limited test")
 
 	rle, ok := errors.AsType[*RateLimitError](err)
@@ -226,7 +226,7 @@ func TestSendMessage_ReturnsErrorOnNon2xx(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"bad"}`))
 	}))
 
-	c := NewClientWithHTTP(webhookURL, httpClient)
+	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	err := c.SendMessageText(t.Context(), "non-2xx test")
 	if err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("expected 400 error, got %v", err)

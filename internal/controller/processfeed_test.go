@@ -1411,7 +1411,7 @@ const (
 const skipProbeTemplate = `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`
 
 // runSkipProbe holds a poison entry past its retries, then runs the
-// reconcile whose otherEntryRenders probe lets the feed skip it. prepare may
+// reconcile whose entryDelivery.otherEntryRenders probe lets the feed skip it. prepare may
 // adjust the feed or seed status before the probing reconcile.
 func runSkipProbe(
 	t *testing.T, ns, name string, entries []rss.Entry, prepare func(*v1alpha1.FeedGroup, *v1alpha1.FeedSpec),
@@ -1439,7 +1439,7 @@ func runSkipProbe(
 }
 
 // TestProcessFeed_SkipProbeDoesNotRecordOverflow asserts the diagnostic
-// render in otherEntryRenders adds no messageOverflowChars sample: a long
+// render in entryDelivery.otherEntryRenders adds no messageOverflowChars sample: a long
 // healthy entry behind a skipped poison entry is observed once, when it is
 // actually sent, not once more by the probe.
 func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {
@@ -1492,10 +1492,12 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 	}
 }
 
-// TestProcessFeed_SkipProbeOverflowOnFilteredSibling characterizes the same
-// for a filtered-out entry: it still counts as evidence, but is never sent, so
-// its overflow is not observed.
-func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
+// TestProcessFeed_SkipProbeIgnoresFilteredSibling asserts a filtered-out entry
+// is no evidence that the templates work: it would never be delivered, so its
+// rendering says nothing about the entries that would. With it as the only
+// sibling, the poison entry is held rather than skipped, and nothing is sent or
+// observed.
+func TestProcessFeed_SkipProbeIgnoresFilteredSibling(t *testing.T) {
 	long := strings.Repeat("f", discord.MaxContentLength+100)
 	entries := []rss.Entry{
 		{ID: "https://example.com/probe-filtered", Title: long, Description: "drop", Seq: 3},
@@ -1509,8 +1511,11 @@ func TestProcessFeed_SkipProbeOverflowOnFilteredSibling(t *testing.T) {
 	if got := server.MessageCount(); got != 0 {
 		t.Fatalf("messages sent = %d, want 0 (the sibling is filtered out)", got)
 	}
-	if fs.LastSeenEntry != entries[1].ID {
-		t.Fatalf("poison entry should be skipped using the filtered sibling as the only evidence: LastSeenEntry = %q", fs.LastSeenEntry)
+	if fs.LastSeenEntry == entries[1].ID {
+		t.Fatal("poison entry was skipped on the evidence of a filtered-out sibling; it must be held")
+	}
+	if got := outcomeCount(ns, name, outcomeSkipped); got != 0 {
+		t.Fatalf("skipped outcomes = %v, want 0", got)
 	}
 	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
@@ -1548,5 +1553,100 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	// title, link and markup), 548 over the limit, on each of the 3 attempts.
 	if got := messageOverflowSampleSum(t, ns, name); got != 3*548 {
 		t.Fatalf("messageOverflowChars sample sum = %v, want %d", got, 3*548)
+	}
+}
+
+// failFetchRun drives n failed fetches of the feed through processFeed, which
+// leaves a fetch-phase retry run: Reachable False, RetryCount n and LastError.
+func failFetchRun(t *testing.T, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, n int, fetchErr error) {
+	t.Helper()
+	for range n {
+		processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{}, fetchErr, nil))
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if !apimeta.IsStatusConditionFalse(fs.Conditions, v1alpha1.FeedConditionTypeReachable) ||
+		fs.RetryCount != int32(n) || fs.LastError == "" {
+		t.Fatalf("precondition: want a fetch-phase failure run of %d, got %+v", n, fs)
+	}
+}
+
+// TestProcessFeed_FetchRecoveryStartsDeliveryRetriesFresh asserts a successful
+// fetch ends a fetch-phase retry run: the first render failure afterwards is
+// that entry's first retry, so the entry is held (not skipped as though its
+// retries were already spent), a retry is requested, and no exhaustion Event
+// fires early.
+func TestProcessFeed_FetchRecoveryStartsDeliveryRetriesFresh(t *testing.T) {
+	ns, name := "processfeed-fetch-then-render", "fg-fetch-then-render"
+
+	discordServer := NewMockDiscordServer(t)
+	defer discordServer.Close()
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+
+	fg, feed := newMetricsFeedGroup(ns, name, `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`)
+	fg.Spec.Retries = 3
+	fetch := rss.FetchResult{Entries: []rss.Entry{
+		{ID: "https://example.com/bad", Title: "bad", Seq: 1},
+		{ID: "https://example.com/ok-entry", Title: "fine", Seq: 0},
+	}}
+	failFetchRun(t, fg, feed, 5, errors.New("connection reset by peer"))
+
+	recorder := events.NewFakeRecorder(10)
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
+
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.RetryCount != 1 {
+		t.Errorf("RetryCount = %d, want 1: the render failure is the first of a new run", fs.RetryCount)
+	}
+	if !verdict.retry {
+		t.Error("verdict.retry = false, want a retry for the first render failure")
+	}
+	if len(fs.LastSent) != 0 || fs.LastSeenEntry != "" || discordServer.MessageCount() != 0 {
+		t.Errorf("the bad entry must be held, not skipped: LastSent=%v seen=%q sent=%d",
+			fs.LastSent, fs.LastSeenEntry, discordServer.MessageCount())
+	}
+	for len(recorder.Events) > 0 {
+		if ev := <-recorder.Events; strings.Contains(ev, reasonEntrySkipped) {
+			t.Errorf("unexpected skip event: %s", ev)
+		}
+	}
+}
+
+// TestProcessFeed_FetchRecoveryBacksOffSendFailureFromOne asserts a permanent
+// send failure after a fetch-phase run backs off from RetryCount 1, not from
+// the count the fetch failures left behind.
+func TestProcessFeed_FetchRecoveryBacksOffSendFailureFromOne(t *testing.T) {
+	ns, name := "processfeed-fetch-then-send", "fg-fetch-then-send"
+
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	fg.Spec.RetryInterval = "5m"
+	failFetchRun(t, fg, feed, 5, errors.New("connection reset by peer"))
+
+	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 400, Status: "400 Bad Request"}}}
+	processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
+
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.RetryCount != 1 {
+		t.Errorf("RetryCount = %d, want 1", fs.RetryCount)
+	}
+	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); fs.BackoffUntil != want {
+		t.Errorf("BackoffUntil = %q, want %q (5m * 2^1)", fs.BackoffUntil, want)
+	}
+}
+
+// TestProcessFeed_DeliveryRunSurvivesSuccessfulFetches pins the other half: a
+// render-failure run belongs to the delivery phase, so the successful fetch
+// that precedes each retry must not reset it, or it could never exhaust.
+func TestProcessFeed_DeliveryRunSurvivesSuccessfulFetches(t *testing.T) {
+	ns, name := "processfeed-delivery-run", "fg-delivery-run"
+
+	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title.Nope}}")
+	fg.Spec.Retries = 10
+	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "https://example.com/only-entry", Title: "only"}}}
+
+	for want := int32(1); want <= 3; want++ {
+		processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, &fakeSender{}))
+		if got := feedStatusFor(fg, feed.RSSUrl).RetryCount; got != want {
+			t.Fatalf("after render failure %d: RetryCount = %d, want %d", want, got, want)
+		}
 	}
 }

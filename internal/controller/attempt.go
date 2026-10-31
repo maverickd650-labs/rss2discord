@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 
@@ -194,7 +195,8 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 // attemptSendFailed and becomes attemptRateLimited when Discord limited the
 // webhook. The effects, per kind:
 //
-//   - attemptFetchSucceeded: LastChecked, the success gauge, Reachable True.
+//   - attemptFetchSucceeded: LastChecked, the success gauge, Reachable True;
+//     and if the feed was in a fetch-phase retry run, that run ends (see below).
 //   - attemptFetchFailed / attemptSendFailed: LastError, RetryCount++, the
 //     outcome metric, Reachable / Delivered False with the class's reason, then
 //     the retry policy below. Not pending for a fetch; pending for a send.
@@ -210,6 +212,28 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 //   - attemptConfigError: LastError, Delivered False ConfigError and one Warning
 //     Event per distinct error. No metric and no retry: it won't fix itself.
 //
+// A retry run belongs to one phase. RetryCount and BackoffUntil count
+// consecutive failures of one kind: either fetches (Reachable False) or
+// deliveries -- renders and sends (Reachable True, Delivered False). A
+// successful fetch ends a fetch-phase run, resetting RetryCount and clearing
+// the backoff through feedBackoff.clear, so the first render or send failure
+// after a recovered outage is the first of its own run: it is not already past
+// the retry limit (which would skip the entry without retries of its own and
+// skip the exhaustion Event, fired only at ==) and a permanent send failure
+// backs off from 1, not from the fetch failures' count. A successful fetch
+// leaves a delivery-phase run alone: every retry of a failing entry is preceded
+// by a successful fetch, so resetting there would stop the run ever exhausting.
+// The reverse holds too: a fetch failure while Reachable is True (the run in
+// progress is a delivery one) clears that run first and starts a fetch run at 1,
+// so delivery failures don't exhaust a fetch run's retries or inflate its
+// backoff. Both transitions read the phase from Reachable, which the status
+// already persists, rather than storing a separate phase field.
+// LastError is kept when a fetch-phase run ends: it is cleared only where a
+// fetch is settled as accounted for or an entry is sent or skipped
+// (clearFailure), and until then it keeps a feed that recovered but has not yet
+// delivered counted as failing (countFailingFeeds); the next delivery failure
+// overwrites it, and settlement clears it.
+//
 // The retry policy: a permanent failure backs off exponentially right away
 // (BackoffUntil; one Warning Event, the first time the backoff reaches its cap)
 // and never asks for a retry, so it doesn't pull the group onto the faster
@@ -224,13 +248,27 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 
 	switch o.kind {
 	case attemptFetchSucceeded:
+		// Read Reachable before setCondition flips it: False is what marks the
+		// feed's current run as a fetch-phase one.
+		endsFetchRun := apimeta.IsStatusConditionFalse(a.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
+			(a.fs.RetryCount > 0 || backoffOf(a.fs).set())
 		a.fs.LastChecked = a.now.Format(time.RFC3339)
 		metricsFor(a.group).checkSucceeded(a.recordedAt())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
 			reasonFetchSucceeded, "Feed fetched successfully")
+		if endsFetchRun {
+			backoffOf(a.fs).clear()
+		}
 		return attemptVerdict{}
 
 	case attemptFetchFailed:
+		// The reverse transition: Reachable True marks the run in progress as
+		// a delivery-phase one, so this fetch failure starts a new run rather
+		// than counting on from the delivery failures.
+		if apimeta.IsStatusConditionTrue(a.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
+			(a.fs.RetryCount > 0 || backoffOf(a.fs).set()) {
+			backoffOf(a.fs).clear()
+		}
 		return a.failed(v1alpha1.FeedConditionTypeReachable, class, eventReasonFetchFailed, err)
 
 	case attemptRenderFailed:
@@ -291,7 +329,8 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 }
 
 // failed records one counted failure -- LastError (errText, which is clamped),
-// RetryCount and the condition of type condType (carrying the full err.Error())
+// RetryCount (which counts the failures of the current phase's run, see
+// record) and the condition of type condType (carrying the full err.Error())
 // -- and applies the retry policy to it. eventReason names the failure in the
 // Events.
 func (a feedAttempt) failed(condType string, class failureClass, eventReason string, err error) attemptVerdict {
@@ -329,7 +368,8 @@ func (a feedAttempt) failed(condType string, class failureClass, eventReason str
 
 // pastRetryLimit reports whether the failure just recorded came after the
 // retries were already exhausted a full reconcile ago: RetryCount went past
-// the limit, not just up to it.
+// the limit, not just up to it. RetryCount is the current phase's run (see
+// record), so fetch failures never count against an entry's retries.
 func (a feedAttempt) pastRetryLimit() bool {
 	return a.fs.RetryCount > a.cadence.maxRetries
 }

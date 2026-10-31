@@ -18,7 +18,7 @@ import (
 // turn.
 //
 // A single RateLimiter must be constructed once and shared across every
-// Client the process builds (see NewClientWithLimiter and cmd/main.go, which
+// Client the process builds (see WithRateLimiter and cmd/main.go, which
 // already shares one *http.Client the same way for connection pooling).
 type RateLimiter struct {
 	mu        sync.Mutex

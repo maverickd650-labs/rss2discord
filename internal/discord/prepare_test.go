@@ -176,7 +176,7 @@ func TestSend_NeverLeaksWebhookURL(t *testing.T) {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(`{"message":"unknown webhook","code":10015}`))
 		}))
-		return NewClientWithHTTP(webhookURL, httpClient)
+		return NewClient(webhookURL, WithHTTPClient(httpClient))
 	}
 	// newWebhookServer's URL has the fixed "mock-token"; check it as well.
 	assertNoMock := func(t *testing.T, err error) {
@@ -188,7 +188,7 @@ func TestSend_NeverLeaksWebhookURL(t *testing.T) {
 
 	abortClient := func() *Client {
 		srv := newAbortingServer(t)
-		return NewClientWithHTTP("https://"+testWebhookHost+secretPath, srv.Client())
+		return NewClient("https://"+testWebhookHost+secretPath, WithHTTPClient(srv.Client()))
 	}
 
 	tests := []struct {
@@ -222,7 +222,7 @@ func TestSend_NeverLeaksWebhookURL(t *testing.T) {
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
 		}))
-		err := NewClientWithLimiter(webhookURL, httpClient, NewRateLimiter()).SendMessageText(t.Context(), "hello")
+		err := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(NewRateLimiter())).SendMessageText(t.Context(), "hello")
 		if _, ok := errors.AsType[*RateLimitError](err); !ok {
 			t.Fatalf("expected *RateLimitError, got %v", err)
 		}
@@ -234,7 +234,7 @@ func TestSend_NeverLeaksWebhookURL(t *testing.T) {
 		}))
 		limiter := NewRateLimiter()
 		limiter.cooldown(webhookURL, 30e9)
-		err := NewClientWithLimiter(webhookURL, httpClient, limiter).SendMessageText(t.Context(), "hello")
+		err := NewClient(webhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter)).SendMessageText(t.Context(), "hello")
 		if _, ok := errors.AsType[*RateLimitError](err); !ok {
 			t.Fatalf("expected *RateLimitError, got %v", err)
 		}
@@ -262,7 +262,7 @@ func TestSendMessage_RejectedRequestNeverReachesLimiterOrNetwork(t *testing.T) {
 				return nil, errors.New("network must not be reached")
 			})}
 
-			err := NewClientWithLimiter(webhookURL, client, limiter).SendMessageText(t.Context(), "hello")
+			err := NewClient(webhookURL, WithHTTPClient(client), WithRateLimiter(limiter)).SendMessageText(t.Context(), "hello")
 			if err == nil || !strings.Contains(err.Error(), errNotAllowed) {
 				t.Fatalf("err = %v, want the allowlist rejection", err)
 			}

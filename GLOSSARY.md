@@ -46,7 +46,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 **Identity migration** (`migrateIdentities`, `identity_migration.go`)
 : Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
   entries are identified now, on every fetch, from `feedSync.begin`. It is the one entry point
-  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, only for a
+  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, in `legacy.go`, only for a
   status written before `stateVersion` 1) and the previous-identity pass
   (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
   Both take the fetch's delivery ledger, read its entries, and write only through it. Before
@@ -65,7 +65,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   fetch it stands for). `planDelivery` decides from it: found resumes past the entry; lost
   falls through to the catch-up cap, unlike none, which may skip the backlog.
 
-**Ambiguous legacy status** (`legacyState.ambiguous`)
+**Ambiguous legacy status** (`legacyState.ambiguous`, `legacy.go`)
 : A `FeedStatus` written before `stateVersion` 1, checked but with no watermark, that can't
   say whether the feed was empty when last checked. Under `catchUpLimit: 0` it is capped
   at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for
@@ -102,6 +102,18 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision.
 
+**Retry run** (`RetryCount`, `BackoffUntil`)
+: The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
+  delivery, meaning render and send (`Reachable` True, `Delivered` False). A run belongs to
+  its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
+  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The rule is written once, in `feedAttempt.record`.
+
+**Feed check** (`feedCheck`, `check.go`)
+: A view over a `FeedStatus` of its last check, in the style of `feedBackoff`: `failed` (an error is
+  in status; what Ready's `FeedErrors` count and the `feed_healthy` gauge mean), `failedOrRetrying`
+  (the scheduler's wider notion, which also counts a retry run still in progress), and the parsed
+  `lastChecked` / `untilDue` that `feedDue` and `planFeeds` share.
+
 **Entry delivery** (`entryDelivery`, `delivery.go`)
 : The per-entry send loop of one feed's sync. `run` scans the entries the feed sync hands it,
   skipping those already sent or filtered out, rendering and sending the rest, and recording
@@ -109,7 +121,9 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   rate-limit failure stops it, so the watermark never moves past an unresolved entry -- and
   the render-failure policy (`renderFailed`): an entry that still fails to render after its
   retries are exhausted is skipped (marked handled, recorded as skipped) only if another entry
-  of the window renders, otherwise the scan holds. It is the only caller of
+  of the window renders (`entryDelivery.otherEntryRenders`, which owns that scan: the window counts
+  entries before the watermark and already sent ones, but not filtered-out ones -- which would
+  never be delivered, so prove nothing -- nor those the catch-up trim left out), otherwise the scan holds. It is the only caller of
   `groupMetrics.overflow`. Its result is an attempt verdict.
 
 **Attempt verdict** (`attemptVerdict`)

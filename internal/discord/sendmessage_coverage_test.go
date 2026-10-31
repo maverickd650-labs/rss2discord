@@ -19,7 +19,7 @@ func TestSendMessage_RejectsNilContext(t *testing.T) {
 	}))
 
 	var ctx context.Context
-	err := NewClientWithHTTP(webhookURL, httpClient).SendMessage(ctx, Message{Content: "nil context"})
+	err := NewClient(webhookURL, WithHTTPClient(httpClient)).SendMessage(ctx, Message{Content: "nil context"})
 	if err == nil {
 		t.Fatal("expected an error for a nil context")
 	}

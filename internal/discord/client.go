@@ -35,27 +35,35 @@ type Client struct {
 	rateLimiter *RateLimiter
 }
 
-func NewClient(webhookURL string) *Client {
-	return NewClientWithHTTP(webhookURL, nil)
+// A ClientOption customizes a Client built by NewClient.
+type ClientOption func(*Client)
+
+// WithHTTPClient sets the HTTP client a Client sends with. A nil client (or no
+// option) uses NewHTTPClient.
+func WithHTTPClient(httpClient *http.Client) ClientOption {
+	return func(c *Client) { c.httpClient = httpClient }
 }
 
-func NewClientWithHTTP(webhookURL string, httpClient *http.Client) *Client {
-	return NewClientWithLimiter(webhookURL, httpClient, nil)
+// WithRateLimiter wires in a shared RateLimiter: a 429 seen on webhookURL by any
+// Client built with the same limiter puts every one of them into cooldown, not
+// just this one. A nil limiter (or no option) disables that cross-Client
+// behavior.
+func WithRateLimiter(limiter *RateLimiter) ClientOption {
+	return func(c *Client) { c.rateLimiter = limiter }
 }
 
-// NewClientWithLimiter is like NewClientWithHTTP, but also wires in a shared
-// RateLimiter: a 429 seen on webhookURL by any Client built with the same
-// limiter puts every one of them into cooldown, not just this one. Passing a
-// nil limiter disables that cross-Client behavior (equivalent to
-// NewClientWithHTTP).
-// Surrounding URL whitespace is trimmed, and PTB/Canary hosts are normalized
-// before choosing the shared rate-limit key. A nil httpClient uses NewHTTPClient;
-// URL validation is deferred to SendMessage.
-func NewClientWithLimiter(webhookURL string, httpClient *http.Client, limiter *RateLimiter) *Client {
-	if httpClient == nil {
-		httpClient = NewHTTPClient()
+// NewClient returns a Client for webhookURL. Surrounding URL whitespace is
+// trimmed, and PTB/Canary hosts are normalized before choosing the shared
+// rate-limit key. URL validation is deferred to SendMessage.
+func NewClient(webhookURL string, opts ...ClientOption) *Client {
+	c := &Client{webhookURL: normalizeWebhookURL(strings.TrimSpace(webhookURL))}
+	for _, opt := range opts {
+		opt(c)
 	}
-	return &Client{webhookURL: normalizeWebhookURL(strings.TrimSpace(webhookURL)), httpClient: httpClient, rateLimiter: limiter}
+	if c.httpClient == nil {
+		c.httpClient = NewHTTPClient()
+	}
+	return c
 }
 
 // normalizeWebhookURL rewrites the host of a webhook URL copied from Discord's
@@ -83,7 +91,7 @@ func normalizeWebhookURL(raw string) string {
 
 // NewHTTPClient returns the default HTTP client used for webhook delivery.
 // Callers that build many *Client instances (one per FeedGroup webhook
-// secret) should construct this once and share it via NewClientWithHTTP, so
+// secret) should construct this once and share it via WithHTTPClient, so
 // that connections to discord.com are pooled instead of rebuilt per client.
 func NewHTTPClient() *http.Client {
 	return NewHTTPClientWithTransportWrap(nil)
@@ -377,8 +385,7 @@ func (c *Client) exchange(ctx context.Context, p preparedRequest) error {
 }
 
 // SendMessage delivers msg to the webhook. Either Content or Embed (or both)
-// must be set. SendMessageText is a convenience wrapper for the common
-// plain-content-only case.
+// must be set.
 func (c *Client) SendMessage(ctx context.Context, msg Message) error {
 	p, err := prepareRequest(c.webhookURL, msg)
 	if err != nil {
@@ -433,12 +440,6 @@ func decodeErrorDetail(body io.Reader) string {
 		return fmt.Sprintf(": %s (code %d)", parsed.Message, parsed.Code)
 	}
 	return fmt.Sprintf(": %s", parsed.Message)
-}
-
-// SendMessageText is a convenience wrapper around SendMessage for plain,
-// embed-less content.
-func (c *Client) SendMessageText(ctx context.Context, content string) error {
-	return c.SendMessage(ctx, Message{Content: content})
 }
 
 // embedToPayload converts e to the webhook payload, omitting empty media,
