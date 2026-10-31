@@ -29,13 +29,6 @@ import (
 	"github.com/maverickd650/rss2discord-operator/internal/rss"
 )
 
-// defaultCatchUpLimit is the cap used when a watermark has scrolled out of a
-// feed's window, and by limitCatchUp for any non-positive limit. On a true
-// first sync an explicit catchUpLimit of 0 means "skip the backlog" instead
-// (see feedSync.skipBacklog); an omitted field is defaulted to 5 by the API
-// server.
-const defaultCatchUpLimit = 5
-
 // A feedSync applies one fetch of one feed to that feed's FeedStatus. It is the
 // single owner of two things:
 //
@@ -71,11 +64,9 @@ type feedSync struct {
 	wasInitialized bool
 
 	ledger *deliveryLedger
-	// scan is the plan's whole window, in order: the entries the send loop may
-	// consider start at resumeAt, and the ones before it are kept as render
-	// evidence (see renderEvidence); set by begin.
-	scan     []rss.Entry
-	resumeAt int
+	// plan is what planDelivery decided; set by begin. Its window is read
+	// through entries and renderEvidence.
+	plan deliveryPlan
 	// cappedAmbiguousLegacy says the catch-up was capped at
 	// defaultCatchUpLimit because fs is an ambiguous legacy status; set by
 	// begin, and logged by logLegacyCatchUpCap (legacy.go).
@@ -97,11 +88,7 @@ type feedSyncSpec struct {
 
 // feedSyncSpecFor derives the spec of a sync of one of group's feeds.
 func feedSyncSpecFor(group *v1alpha1.FeedGroup, now time.Time) feedSyncSpec {
-	limit := defaultCatchUpLimit
-	if group.Spec.CatchUpLimit != nil {
-		limit = int(*group.Spec.CatchUpLimit)
-	}
-	return feedSyncSpec{catchUpLimit: limit, now: now}
+	return feedSyncSpec{catchUpLimit: catchUpLimitOf(group.Spec), now: now}
 }
 
 // syncVerdict says how the processing of a fetch ended, and so what close
@@ -280,33 +267,30 @@ func (s *feedSync) begin() {
 	// so an entry's stripped identity is only unique if it is across the feed.
 	s.ledger = newDeliveryLedger(s.fs, entries)
 	migrateIdentities(s.ledger, &s.legacy, s.spec.catchUpLimit)
-	plan := planDelivery(deliveryInputs{
+	s.plan = planDelivery(deliveryInputs{
 		entries:        entries,
 		watermark:      s.ledger.resume(),
 		catchUpLimit:   s.spec.catchUpLimit,
 		legacy:         s.legacy,
 		wasInitialized: s.wasInitialized,
 	})
-	s.cappedAmbiguousLegacy = plan.cappedAmbiguousLegacy
-	if plan.skipBacklog {
+	s.cappedAmbiguousLegacy = s.plan.cappedAmbiguousLegacy
+	if s.plan.skipBacklog {
 		s.skipBacklog(entries)
 	}
-	s.scan, s.resumeAt = plan.scan, plan.resumeAt
 }
 
-// entries returns the entries the send loop should consider, oldest-to-newest:
-// the plan's scan from just past the watermark. It is only valid after begin.
+// entries returns the entries the send loop should consider, oldest-to-newest
+// (deliveryPlan.entries). It is only valid after begin.
 func (s *feedSync) entries() []rss.Entry {
-	return s.scan[s.resumeAt:]
+	return s.plan.entries()
 }
 
 // renderEvidence is the entries whose rendering counts as evidence that the
-// feed's templates work, for entryDelivery.otherEntryRenders: the plan's whole
-// scan, untrimmed past-watermark entries included (before the watermark and
-// already sent ones passed the filter when they were delivered), but not the
-// ones the catch-up trim left out. It is only valid after begin.
+// feed's templates work, for entryDelivery.otherEntryRenders
+// (deliveryPlan.renderEvidence). It is only valid after begin.
 func (s *feedSync) renderEvidence() []rss.Entry {
-	return s.scan
+	return s.plan.renderEvidence()
 }
 
 // sent reports whether entry was already delivered; see deliveryLedger.sent.
@@ -328,22 +312,6 @@ func (s *feedSync) markHandled(entry rss.Entry) {
 func (s *feedSync) skipBacklog(entries []rss.Entry) {
 	s.ledger.markNewest()
 	s.skippedBacklog = len(entries)
-}
-
-// limitCatchUp trims entries to at most limit, keeping the most recent ones
-// (entries is assumed sorted ascending by Published). A non-positive limit
-// falls back to defaultCatchUpLimit rather than disabling the cap, so a feed
-// can never dump its entire backlog on first reconcile. (An explicit
-// catchUpLimit of 0 is handled earlier, by skipBacklog, on a true first
-// sync only.)
-func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
-	if limit <= 0 {
-		limit = defaultCatchUpLimit
-	}
-	if len(entries) <= limit {
-		return entries
-	}
-	return entries[len(entries)-limit:]
 }
 
 // close settles what the verdict allows and ends the sync; it is the only place

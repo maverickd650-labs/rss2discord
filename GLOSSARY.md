@@ -26,11 +26,13 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `syncPending` (some entry is still unresolved, even if its retries are exhausted) or
   `syncAccountedFor`.
 
-**Catch-up** (`catchUpLimit`, `limitCatchUp`, `defaultCatchUpLimit`)
+**Catch-up** (`catchUpLimit`, `limitCatchUp`, `defaultCatchUpLimit`; all in `delivery_plan.go`)
 : How much of a feed's existing entries are delivered when there is no usable watermark:
   the newest `catchUpLimit` of them, falling back to `defaultCatchUpLimit` (5) for a
   non-positive limit. An explicit limit of 0 on a true first sync skips the backlog
   instead (`BacklogSkipped`): the newest entry becomes the watermark and nothing is sent.
+  `catchUpLimitOf` resolves the spec once; `planDelivery` decides, and the resulting
+  `deliveryPlan` exposes the window as `entries` (to send) and `renderEvidence`.
 
 **Delivery ledger** (`deliveryLedger`, `ledger.go`)
 : A feed's delivery bookkeeping over one fetch, and the single identity index of it: the
