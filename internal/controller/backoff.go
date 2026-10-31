@@ -102,8 +102,9 @@ func (r retryRun) fetchSucceeded() {
 // fail counts one failure of phase in the run, first ending the run in
 // progress when it belongs to the other phase: a fetch failure while Reachable
 // is True means the run is a delivery one. Call it before setting the
-// condition for this failure. It does not touch BackoffUntil; permanent
-// failures follow it with extend.
+// condition for this failure. Apart from ending the other phase's run (which
+// clears that run's backoff), it does not set BackoffUntil; permanent failures
+// follow it with extend.
 func (r retryRun) fail(phase retryPhase) {
 	if phase == phaseFetch &&
 		apimeta.IsStatusConditionTrue(r.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
