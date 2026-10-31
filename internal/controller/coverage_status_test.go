@@ -11,6 +11,12 @@ import (
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 )
 
+// Diagnostics shared by the conversion-failure tests below.
+const (
+	msgWantConversionError = "expected a conversion error"
+	msgWantTimeParseError  = "expected a *time.ParseError in the chain, got %T: %v"
+)
+
 // outOfRangeStatus carries a condition time that metav1.Time marshals without
 // complaint but cannot read back (RFC 3339 has four-digit years), so the
 // JSON round trip fails while decoding into the apply configuration. That is
@@ -32,13 +38,13 @@ func TestStatusApplyConfiguration_DecodeFailureIsWrapped(t *testing.T) {
 
 	ac, err := statusApplyConfiguration(&status)
 	if err == nil {
-		t.Fatal("expected a conversion error")
+		t.Fatal(msgWantConversionError)
 	}
 	if ac != nil {
 		t.Fatalf("got apply configuration %v alongside the error", ac)
 	}
 	if _, ok := errors.AsType[*time.ParseError](err); !ok {
-		t.Fatalf("expected a *time.ParseError in the chain, got %T: %v", err, err)
+		t.Fatalf(msgWantTimeParseError, err, err)
 	}
 	const wantPrefix = "converting FeedGroup status to an apply configuration: "
 	if got := err.Error(); !strings.HasPrefix(got, wantPrefix) {
@@ -54,9 +60,9 @@ func TestApplyStatus_ReturnsConversionErrorWithoutWriting(t *testing.T) {
 
 	err := (&FeedGroupReconciler{}).applyStatus(t.Context(), fg)
 	if err == nil {
-		t.Fatal("expected a conversion error")
+		t.Fatal(msgWantConversionError)
 	}
 	if _, ok := errors.AsType[*time.ParseError](err); !ok {
-		t.Fatalf("expected a *time.ParseError in the chain, got %T: %v", err, err)
+		t.Fatalf(msgWantTimeParseError, err, err)
 	}
 }
