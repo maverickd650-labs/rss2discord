@@ -186,14 +186,17 @@ func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1alph
 // remembered to wire it in. The round trip also preserves omitempty exactly:
 // a field the typed status omits is absent from the apply, so this manager
 // releases it and the API server removes it, just as before.
-// JSON encoding or decoding errors return nil and a wrapped error.
+// JSON encoding or decoding errors return nil and a wrapped error. Encoding
+// has no failing input today (every FeedGroupStatus field is a plain string,
+// number, bool or time), so both steps share one error path rather than
+// keeping a branch no input can reach.
 func statusApplyConfiguration(status *v1alpha1.FeedGroupStatus) (*acv1alpha1.FeedGroupStatusApplyConfiguration, error) {
-	raw, err := json.Marshal(status)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling FeedGroup status: %w", err)
-	}
 	ac := &acv1alpha1.FeedGroupStatusApplyConfiguration{}
-	if err := json.Unmarshal(raw, ac); err != nil {
+	raw, err := json.Marshal(status)
+	if err == nil {
+		err = json.Unmarshal(raw, ac)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("converting FeedGroup status to an apply configuration: %w", err)
 	}
 	return ac, nil
