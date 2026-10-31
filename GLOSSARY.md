@@ -102,6 +102,12 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision.
 
+**Retry run** (`RetryCount`, `BackoffUntil`)
+: The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
+  delivery, meaning render and send (`Reachable` True, `Delivered` False). A run belongs to
+  its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
+  but not a delivery run. The rule is written once, in `feedAttempt.record`.
+
 **Entry delivery** (`entryDelivery`, `delivery.go`)
 : The per-entry send loop of one feed's sync. `run` scans the entries the feed sync hands it,
   skipping those already sent or filtered out, rendering and sending the rest, and recording

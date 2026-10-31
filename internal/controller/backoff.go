@@ -35,7 +35,8 @@ const maxPermanentBackoff = 6 * time.Hour
 // reads, writes or clears FeedStatus.BackoffUntil and does the backoff math.
 // It is a view over the status, not a copy, so changes land on the FeedStatus.
 // The backoff is driven by fs.RetryCount, which the failure being recorded has
-// already incremented.
+// already incremented. RetryCount counts one phase's retry run (see
+// feedAttempt.record), so the backoff never inherits the other phase's count.
 type feedBackoff struct {
 	fs *v1alpha1.FeedStatus
 }
@@ -77,8 +78,9 @@ func (b feedBackoff) extend(base time.Duration, now time.Time) (firstCapped bool
 
 // clear ends the backoff and resets RetryCount with it: leaving RetryCount at
 // its old value would make the next extend compute base*2^oldRetryCount, which
-// jumps straight back to maxPermanentBackoff on the first retry. LastError is
-// not touched (see clearFailure).
+// jumps straight back to maxPermanentBackoff on the first retry. It ends a
+// retry run (see feedAttempt.record). LastError is not touched (see
+// clearFailure).
 func (b feedBackoff) clear() {
 	b.fs.BackoffUntil = ""
 	b.fs.RetryCount = 0
@@ -88,8 +90,9 @@ func (b feedBackoff) clear() {
 // webhook failed, as opposed to its own URL failing to fetch. It is inferred
 // from the Reachable condition: a fetch failure sets Reachable False, whereas a
 // send or render failure leaves it True (the fetch succeeded), and a later
-// successful fetch sets it True again. So a backoff with Reachable not False is
-// a send backoff, which replacing the webhook may fix. This must stay in step
+// successful fetch sets it True again (ending a fetch-phase run and its
+// backoff, see feedAttempt.record). So a backoff with Reachable not False is a
+// send backoff, which replacing the webhook may fix. This must stay in step
 // with where extend is called (feedAttempt.failed): the fetch path sets
 // Reachable, the send path sets Delivered.
 func (b feedBackoff) sendCaused() bool {

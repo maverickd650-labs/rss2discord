@@ -706,3 +706,48 @@ func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
 
 	assertBackoffUntil(t, fs.BackoffUntil, recorded, 10*time.Minute)
 }
+
+// TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun asserts what a successful
+// fetch does to the retry run in progress: a fetch-phase run (Reachable False)
+// ends, with RetryCount and the backoff reset but LastError kept; a delivery
+// run (Reachable True) and a feed never fetched are left alone.
+func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
+	const backoffUntil = "2026-01-01T01:00:00Z"
+	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
+		return []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}}
+	}
+	for _, tc := range []struct {
+		name        string
+		conditions  []metav1.Condition
+		retryCount  int32
+		backoff     string
+		wantRetries int32
+		wantBackoff string
+	}{
+		{"fetch run with retries", reachable(metav1.ConditionFalse), 5, "", 0, ""},
+		{"fetch run in backoff", reachable(metav1.ConditionFalse), 2, backoffUntil, 0, ""},
+		{"fetch run with only a backoff", reachable(metav1.ConditionFalse), 0, backoffUntil, 0, ""},
+		{"delivery run", reachable(metav1.ConditionTrue), 2, "", 2, ""},
+		{"delivery run in backoff", reachable(metav1.ConditionTrue), 2, backoffUntil, 2, backoffUntil},
+		{"never fetched", nil, 2, "", 2, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &v1alpha1.FeedStatus{
+				RSSUrl: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount,
+				BackoffUntil: tc.backoff, LastError: "earlier failure",
+			}
+			testAttempt(t, &v1alpha1.FeedGroup{}, fs, attemptURL, attemptInstant).
+				record(attemptOutcome{kind: attemptFetchSucceeded}, nil)
+
+			if fs.RetryCount != tc.wantRetries || fs.BackoffUntil != tc.wantBackoff {
+				t.Errorf("RetryCount=%d BackoffUntil=%q, want %d and %q", fs.RetryCount, fs.BackoffUntil, tc.wantRetries, tc.wantBackoff)
+			}
+			if fs.LastError != "earlier failure" {
+				t.Errorf("LastError = %q, want it kept", fs.LastError)
+			}
+			if !apimeta.IsStatusConditionTrue(fs.Conditions, v1alpha1.FeedConditionTypeReachable) {
+				t.Error("Reachable should be True after a successful fetch")
+			}
+		})
+	}
+}
