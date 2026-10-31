@@ -231,9 +231,9 @@ func TestComputeEntryKey_IgnoresLinkAndTitleChurn(t *testing.T) {
 	// place would otherwise get re-sent as a "new" duplicate every time the
 	// headline changed).
 	original := rss.Entry{ID: "churn-test-entry", Link: "https://example.com/churn", Title: "Original Title"}
-	edited := rss.Entry{ID: "churn-test-entry", Link: "https://example.com/churn", Title: "Updated Title"}
+	edited := rss.Entry{ID: "churn-test-entry", Link: "https://example.com/churn-edited?utm_source=feed", Title: "Updated Title"}
 
 	if computeEntryKey(original) != computeEntryKey(edited) {
-		t.Fatal("expected entries sharing an ID to produce the same key despite a title edit")
+		t.Fatal("expected entries sharing an ID to produce the same key despite a link and title edit")
 	}
 }
