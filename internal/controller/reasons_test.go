@@ -151,9 +151,19 @@ func (c *reasonChecker) checkNode(n ast.Node, fn *ast.FuncDecl) {
 			c.trace(n.Value, fn, key.Name)
 		}
 	case *ast.CompositeLit:
-		if typ, ok := n.Type.(*ast.Ident); ok && typ.Name == "failureClass" && len(n.Elts) > 1 {
-			if _, keyed := n.Elts[1].(*ast.KeyValueExpr); !keyed {
-				c.trace(n.Elts[1], fn, "failureClass.conditionReason")
+		if isFailureClass(n.Type) {
+			c.checkFailureClassLit(n, fn)
+		}
+		if elem := elemType(n.Type); isFailureClass(elem) {
+			// []failureClass{{metric, reason, permanent}}: the inner
+			// literals elide their type.
+			for _, elt := range n.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					elt = kv.Value
+				}
+				if inner, ok := elt.(*ast.CompositeLit); ok && inner.Type == nil {
+					c.checkFailureClassLit(inner, fn)
+				}
 			}
 		}
 	case *ast.CallExpr:
@@ -172,6 +182,34 @@ func (c *reasonChecker) checkNode(n ast.Node, fn *ast.FuncDecl) {
 			}
 		}
 	}
+}
+
+// checkFailureClassLit checks the reason element of an unkeyed failureClass
+// literal (keyed ones are reasonFields).
+func (c *reasonChecker) checkFailureClassLit(lit *ast.CompositeLit, fn *ast.FuncDecl) {
+	if len(lit.Elts) > 1 {
+		if _, keyed := lit.Elts[1].(*ast.KeyValueExpr); !keyed {
+			c.trace(lit.Elts[1], fn, "failureClass.conditionReason")
+		}
+	}
+}
+
+// isFailureClass reports whether typ names the failureClass type.
+func isFailureClass(typ ast.Expr) bool {
+	id, ok := typ.(*ast.Ident)
+	return ok && id.Name == "failureClass"
+}
+
+// elemType is the element type of a slice, array or map type expression, or
+// nil.
+func elemType(typ ast.Expr) ast.Expr {
+	switch t := typ.(type) {
+	case *ast.ArrayType:
+		return t.Elt
+	case *ast.MapType:
+		return t.Value
+	}
+	return nil
 }
 
 // checkAssignment checks a value assigned to a reason-named variable or to a
@@ -211,6 +249,14 @@ func (c *reasonChecker) trace(expr ast.Expr, fn *ast.FuncDecl, where string) {
 		case *ast.FuncLit, *ast.SelectorExpr:
 			// A closure's body runs elsewhere; a field read is covered where
 			// the field is written.
+			return false
+		case *ast.IndexExpr:
+			// m["key"]: what is looked up is not the value.
+			c.trace(n.X, fn, where)
+			return false
+		case *ast.KeyValueExpr:
+			// map[string]string{"key": reasonX}: only the value can arrive.
+			c.trace(n.Value, fn, where)
 			return false
 		case *ast.BasicLit:
 			if n.Kind == token.STRING && n.Value != `""` {
@@ -396,41 +442,48 @@ func TestProductionReasonsAreNamedConstants(t *testing.T) {
 // vacuously: each sink and each path it traces is flagged when it carries a
 // literal, and the constant forms production uses are not.
 func TestCheckReasonLiterals_CatchesEverySink(t *testing.T) {
+	// planted is the literal (as source text) most cases plant at a sink.
+	const planted = `"Oops"`
 	for _, tc := range []struct {
 		name, src string
-		flagged   bool
+		// want is the literal the checker must report ("" for none).
+		want string
 	}{
-		{name: "Reason field", src: `func f() { _ = metav1.Condition{Reason: "Oops"} }`, flagged: true},
-		{name: "conditionReason field", src: `func f() { _ = failureClass{conditionReason: "Oops"} }`, flagged: true},
-		{name: "unkeyed failureClass", src: `var c = failureClass{metricOther, "Oops", false}`, flagged: true},
-		{name: "setFeedCondition", src: `func f() { setFeedCondition(fs, t, s, "Oops", m, 1) }`, flagged: true},
-		{name: "setCondition", src: `func f() { a.setCondition(t, s, "Oops", m) }`, flagged: true},
-		{name: "warn", src: `func f() { a.warn("Oops", action, "f") }`, flagged: true},
-		{name: "Eventf", src: `func f() { r.Eventf(g, nil, typ, "Oops", action, "f") }`, flagged: true},
-		{name: "concatenated literal", src: `func f() { _ = metav1.Condition{Reason: reasonOther + "2"} }`, flagged: true},
-		{name: "Reason field assigned", src: `func f() { cond.Reason = "Oops" }`, flagged: true},
-		{name: "conditionReason field assigned", src: `func f() { class.conditionReason = "Oops" }`, flagged: true},
-		{name: "reason variable", src: `func f() { reason := "Oops"; _ = reason }`, flagged: true},
-		{name: "reason var declaration", src: "func f() {\nvar eventReason = \"Oops\"\n_ = eventReason\n}", flagged: true},
-		{name: "reason helper result", src: `func dominantReason() string { return "Oops" }`, flagged: true},
-		{name: "a local constant used as a reason", src: "func f() {\nconst x = \"Oops\"\na.warn(x, action, \"f\")\n}", flagged: true},
+		{name: "Reason field", src: `func f() { _ = metav1.Condition{Reason: "Oops"} }`, want: planted},
+		{name: "conditionReason field", src: `func f() { _ = failureClass{conditionReason: "Oops"} }`, want: planted},
+		{name: "unkeyed failureClass", src: `var c = failureClass{metricOther, "Oops", false}`, want: planted},
+		{name: "setFeedCondition", src: `func f() { setFeedCondition(fs, t, s, "Oops", m, 1) }`, want: planted},
+		{name: "setCondition", src: `func f() { a.setCondition(t, s, "Oops", m) }`, want: planted},
+		{name: "warn", src: `func f() { a.warn("Oops", action, "f") }`, want: planted},
+		{name: "Eventf", src: `func f() { r.Eventf(g, nil, typ, "Oops", action, "f") }`, want: planted},
+		{name: "concatenated literal", src: `func f() { _ = metav1.Condition{Reason: reasonOther + "2"} }`, want: `"2"`},
+		{name: "Reason field assigned", src: `func f() { cond.Reason = "Oops" }`, want: planted},
+		{name: "conditionReason field assigned", src: `func f() { class.conditionReason = "Oops" }`, want: planted},
+		{name: "reason variable", src: `func f() { reason := "Oops"; _ = reason }`, want: planted},
+		{name: "reason var declaration", src: "func f() {\nvar eventReason = \"Oops\"\n_ = eventReason\n}", want: planted},
+		{name: "reason helper result", src: `func dominantReason() string { return "Oops" }`, want: planted},
+		{name: "a local constant used as a reason", src: "func f() {\nconst x = \"Oops\"\na.warn(x, action, \"f\")\n}", want: planted},
 
 		// Indirect paths, through names that say nothing about reasons.
-		{name: "through a local variable", src: `func f() { x := "Oops"; a.warn(x, action, "f") }`, flagged: true},
-		{name: "through a reassigned local", src: `func f() { x := reasonOther; if c { x = "Oops" }; a.warn(x, action, "f") }`, flagged: true},
+		{name: "through a local variable", src: `func f() { x := "Oops"; a.warn(x, action, "f") }`, want: planted},
+		{name: "through a reassigned local", src: `func f() { x := reasonOther; if c { x = "Oops" }; a.warn(x, action, "f") }`, want: planted},
 		{name: "through a helper's result", src: `func pick() string { return "Oops" }
-func f() { a.warn(pick(), action, "f") }`, flagged: true},
+func f() { a.warn(pick(), action, "f") }`, want: planted},
 		{name: "through one of a helper's results", src: `func pair() (string, string) { return "Oops", reasonOther }
-func f() { r, m := pair(); a.warn(r, action, m) }`, flagged: true},
+func f() { r, m := pair(); a.warn(r, action, m) }`, want: planted},
 		{name: "through a package variable", src: `var bad = "Oops"
-func f() { a.warn(bad, action, "f") }`, flagged: true},
+func f() { a.warn(bad, action, "f") }`, want: planted},
 		{name: "through a parameter", src: `func h(r string) { a.warn(r, action, "f") }
-func f() { h("Oops") }`, flagged: true},
+func f() { h("Oops") }`, want: planted},
 		{name: "through two parameters", src: `func h(r string) { g(r) }
 func g(r string) { a.warn(r, action, "f") }
-func f() { h("Oops") }`, flagged: true},
+func f() { h("Oops") }`, want: planted},
 		{name: "through a method parameter", src: `func (a feedAttempt) h(x int, r string) { a.warn(r, action, "f") }
-func f() { a.h(1, "Oops") }`, flagged: true},
+func f() { a.h(1, "Oops") }`, want: planted},
+
+		{name: "an elided failureClass in a slice", src: "var cs = []failureClass{{metricOther, \"Oops\", false}}", want: planted},
+		{name: "an elided failureClass in a map", src: "var cs = map[string]failureClass{\"k\": {metricOther, \"Oops\", false}}", want: planted},
+		{name: "through a map value", src: `func f() { m := map[string]string{"k": "Oops"}; a.warn(m["k"], action, "f") }`, want: planted},
 
 		// What production does, which must pass.
 		{name: "named constants", src: `func f() { reason := reasonReconciled; reason = reasonFeedErrors; _ = metav1.Condition{Reason: reason}; a.warn(reasonConfigError, action, "feed %s", u) }`},
@@ -443,6 +496,8 @@ func f() { h(reasonOther) }`},
 		{name: "a message beside the reason", src: `func f() { msg := "message"; a.setCondition(t, s, reasonOther, msg) }`},
 		{name: "Reason field assigned a constant", src: `func f() { cond.Reason = reasonOther }`},
 		{name: "reason helper returning a constant", src: `func dominantReason() string { return reasonOther }`},
+		{name: "a map key and index", src: `func f() { m := map[string]string{"k": reasonOther}; a.warn(m["k"], action, "f") }`},
+		{name: "elided failureClass constants", src: "var cs = []failureClass{{metricOther, reasonOther, false}}"},
 		{name: "reason constants declared", src: "const reasonOops = \"Oops\"\nfunc f() {\nconst reason = reasonOops\na.warn(reason, action, \"f\")\n}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -452,8 +507,16 @@ func f() { h(reasonOther) }`},
 				t.Fatal(err)
 			}
 			problems := checkReasonLiterals(fset, []*ast.File{file})
-			if got := len(problems) > 0; got != tc.flagged {
-				t.Fatalf("flagged = %v (%v), want %v for:\n%s", got, problems, tc.flagged, tc.src)
+			if tc.want == "" {
+				if len(problems) > 0 {
+					t.Fatalf("flagged %v, want nothing for:\n%s", problems, tc.src)
+				}
+				return
+			}
+			// Each problem names its literal; the one the case plants must be
+			// among them, not just some other literal in the snippet.
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "literal "+tc.want+" ") }) {
+				t.Fatalf("problems %v do not report %s for:\n%s", problems, tc.want, tc.src)
 			}
 		})
 	}
