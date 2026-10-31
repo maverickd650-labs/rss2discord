@@ -78,6 +78,16 @@ reviews:
         RetryCount == the retry limit (not >=). Changing entry identity,
         LastSent keys or watermark semantics needs a lossless migration of
         existing status. User-supplied templates must have bounded output.
+        The RSS client is built with rss.NewClient(nil) so it falls back to the
+        SSRF-guarded transport (internal/rss/transport.go); flag any production
+        code that passes its own *http.Client or transport instead.
+    - path: "cmd/**/*.go"
+      instructions: >-
+        The manager builds the production RSS client with
+        rss.NewClientWithTransportWrap, which must wrap the SSRF-guarded
+        transport from internal/rss/transport.go; flag any change that passes a
+        raw *http.Client to rss.NewClient or builds an unguarded transport for
+        feed fetching.
     - path: "**/*_test.go"
       instructions: >-
         Tests reach local httptest servers through the unguarded helpers
