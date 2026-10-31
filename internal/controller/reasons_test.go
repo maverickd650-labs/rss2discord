@@ -310,7 +310,7 @@ func (f *reasonFlow) traceExtract(v *ssa.Extract) {
 }
 
 // traceMapKeys follows the keys put into map m, and into the maps it is made
-// from: a phi's edges, a parameter's arguments and a call's results.
+// from: a phi's edges, a parameter's arguments, a call's results and globals.
 func (f *reasonFlow) traceMapKeys(m ssa.Value) {
 	if f.seenKeys[m] {
 		return
@@ -332,6 +332,16 @@ func (f *reasonFlow) traceMapKeys(m ssa.Value) {
 		f.traceCallers(m, f.traceMapKeys)
 	case *ssa.Call:
 		f.traceCallResult(m, 0, f.traceMapKeys)
+	case *ssa.UnOp:
+		// A package-level map is loaded from its global pointer. Follow the
+		// load back to the global so its initialisers' MapUpdates are visited.
+		if m.Op == token.MUL {
+			f.traceMapKeys(m.X)
+		}
+	case *ssa.Global:
+		for _, stored := range f.globalWrites[m] {
+			f.traceMapKeys(stored)
+		}
 	}
 }
 
@@ -488,15 +498,55 @@ func (f *reasonFlow) checkConst(c *ssa.Const) {
 	}
 }
 
-// checkReasonSpelling reports a string literal outside a const declaration
-// whose value is one of the reasons in use: a reason's value is spelled once,
-// in its constant.
+// checkReasonSpelling reports a reason spelling outside its one canonical
+// const declaration. A reason value may be declared only once, and only in
+// the designated reason files.
 func checkReasonSpelling(fset *token.FileSet, files []*ast.File, reasons, problems map[string]bool) {
+	type spelling struct {
+		pos       token.Pos
+		canonical bool
+	}
+
+	constSpellings := map[string][]spelling{}
 	for _, file := range files {
+		filename := filepath.Base(fset.Position(file.Pos()).Filename)
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.GenDecl:
-				return n.Tok != token.CONST && n.Tok != token.IMPORT
+				if n.Tok == token.CONST {
+					// Do not exempt every const declaration: only the canonical
+					// reason files may introduce a reason spelling, and each value
+					// must be spelled there exactly once.
+					for _, spec := range n.Specs {
+						values, ok := spec.(*ast.ValueSpec)
+						if !ok {
+							continue
+						}
+						for _, value := range values.Values {
+							ast.Inspect(value, func(n ast.Node) bool {
+								lit, ok := n.(*ast.BasicLit)
+								if !ok || lit.Kind != token.STRING {
+									return true
+								}
+								s, err := strconv.Unquote(lit.Value)
+								if err != nil || !reasons[s] {
+									return true
+								}
+
+								canonical := reasonFiles[filename]
+								constSpellings[s] = append(constSpellings[s], spelling{
+									pos: lit.Pos(), canonical: canonical,
+								})
+								if !canonical {
+									problems[fmt.Sprintf("%s: string %s duplicates a reason spelling outside its canonical const", fset.Position(lit.Pos()), lit.Value)] = true
+								}
+								return true
+							})
+						}
+					}
+					return false
+				}
+				return n.Tok != token.IMPORT
 			case *ast.BasicLit:
 				if s, err := strconv.Unquote(n.Value); n.Kind == token.STRING && err == nil && reasons[s] {
 					problems[fmt.Sprintf("%s: string %s spells a reason; use its constant", fset.Position(n.Pos()), n.Value)] = true
@@ -504,6 +554,20 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, reasons, proble
 			}
 			return true
 		})
+	}
+
+	for reason, spellings := range constSpellings {
+		canonicalSeen := false
+		for _, spelling := range spellings {
+			if !spelling.canonical {
+				continue
+			}
+			if canonicalSeen {
+				problems[fmt.Sprintf("%s: string %s duplicates a reason spelling; keep it in one canonical const", fset.Position(spelling.pos), strconv.Quote(reason))] = true
+				continue
+			}
+			canonicalSeen = true
+		}
 	}
 }
 
@@ -524,6 +588,26 @@ func buildSSA(fset *token.FileSet, pkg *types.Package, files []*ast.File, info *
 	ssaPkg := prog.CreatePackage(pkg, files, info, false)
 	ssaPkg.Build()
 	return ssaPkg
+}
+
+// TestCheckReasonSpellingRejectsDuplicateConstSpellings ensures that even
+// the designated reason files contain only one literal declaration per value.
+func TestCheckReasonSpellingRejectsDuplicateConstSpellings(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "conditions.go", `package controller
+const (
+	reasonReconciled = "Reconciled"
+	aliasReconciled  = "Reconciled"
+)`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	problems := map[string]bool{}
+	checkReasonSpelling(fset, []*ast.File{file}, map[string]bool{"Reconciled": true}, problems)
+	if len(problems) == 0 {
+		t.Fatal("duplicate reason spelling was not reported")
+	}
 }
 
 // TestProductionReasonsAreNamedConstants enforces CLAUDE.md's "every reason
@@ -724,8 +808,13 @@ func f() { a.warn(pick(), action, "f") }`, want: planted},
 		{name: "through a range key", src: `func f() { for k := range map[string]int{"Oops": 1} { a.warn(k, action, "f") } }`, want: planted},
 		{name: "through a range key of a parameter", src: `func h(m map[string]int) { for k := range m { a.warn(k, action, "f") } }
 func f() { h(map[string]int{"Oops": 1}) }`, want: planted},
+		{name: "through a range key of a package map", src: `var keys map[string]int
+func init() { keys = map[string]int{"Oops": 1} }
+func f() { for k := range keys { a.warn(k, action, "f") } }`, want: planted},
 		{name: "a constant declared outside the reason files", src: `const fieldOwner = "feedgroup-controller"
 func f() { a.warn(fieldOwner, action, "f") }`, want: `"feedgroup-controller"`},
+		{name: "a duplicate reason constant", src: `const alias = "Reconciled"
+func f() { a.warn(alias, action, "f") }`, want: `"Reconciled"`},
 		{name: "through a pointer", src: `func set(p *string) { *p = "Oops" }
 func f() { x := reasonOther; set(&x); a.warn(x, action, "f") }`, want: planted},
 
