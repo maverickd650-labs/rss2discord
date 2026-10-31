@@ -823,7 +823,7 @@ func checkSnippet(t *testing.T, src string) []string {
 func TestCheckReasons_CatchesEverySink(t *testing.T) {
 	// planted is the string (quoted) most cases plant at a sink.
 	const (
-		planted         = `"Oops"`
+		planted        = `"Oops"`
 		wantReconciled = `"Reconciled"`
 	)
 	for _, tc := range []struct {
