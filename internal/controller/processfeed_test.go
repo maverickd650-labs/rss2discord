@@ -1369,8 +1369,8 @@ func TestWatermarkIndex_LinkFallback(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := &v1alpha1.FeedStatus{LastSeenEntry: watermark}
-			if got, found := newDeliveryLedger(fs, tc.entries).resume(tc.entries); got != tc.want || found != (tc.want >= 0) {
-				t.Fatalf("resume = (%d, %v), want index %d", got, found, tc.want)
+			if got := newDeliveryLedger(fs, tc.entries).resume(tc.entries); got.index != tc.want || (got.state == watermarkFound) != (tc.want >= 0) {
+				t.Fatalf("resume = %+v, want index %d", got, tc.want)
 			}
 		})
 	}
@@ -1749,7 +1749,7 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 		if st.LastSent == nil {
 			st.LastSent = map[string]string{}
 		}
-		recordSent(st.LastSent, entries[0], countStripped(entries), testReconcileTime)
+		newDeliveryLedger(st, entries).markHandled(entries[0], testReconcileTime)
 	})
 
 	if got := server.MessageCount(); got != 0 {
