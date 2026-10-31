@@ -16,7 +16,43 @@ limitations under the License.
 
 package controller
 
-import "github.com/maverickd650/rss2discord-operator/internal/rss"
+import (
+	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650/rss2discord-operator/internal/rss"
+)
+
+// defaultCatchUpLimit is the cap used when a watermark has scrolled out of a
+// feed's window, and by limitCatchUp for any non-positive limit. On a true
+// first sync an explicit catchUpLimit of 0 means "skip the backlog" instead
+// (see feedSync.skipBacklog); an omitted field is defaulted to 5 by the API
+// server.
+const defaultCatchUpLimit = 5
+
+// catchUpLimitOf is the effective catch-up limit of spec: Spec.CatchUpLimit, or
+// defaultCatchUpLimit when it is unset. It is the only code that reads
+// Spec.CatchUpLimit; everything downstream takes the resolved int.
+func catchUpLimitOf(spec v1alpha1.FeedGroupSpec) int {
+	if spec.CatchUpLimit != nil {
+		return int(*spec.CatchUpLimit)
+	}
+	return defaultCatchUpLimit
+}
+
+// limitCatchUp trims entries to at most limit, keeping the most recent ones
+// (entries is assumed sorted ascending by Published). A non-positive limit
+// falls back to defaultCatchUpLimit rather than disabling the cap, so a feed
+// can never dump its entire backlog on first reconcile. (An explicit
+// catchUpLimit of 0 is handled earlier, by skipBacklog, on a true first
+// sync only.)
+func limitCatchUp(entries []rss.Entry, limit int) []rss.Entry {
+	if limit <= 0 {
+		limit = defaultCatchUpLimit
+	}
+	if len(entries) <= limit {
+		return entries
+	}
+	return entries[len(entries)-limit:]
+}
 
 // deliveryInputs is what planDelivery decides from: the outcome of the
 // watermark lookup and the feed's catch-up configuration and history.
@@ -46,6 +82,21 @@ type deliveryPlan struct {
 	// cappedAmbiguousLegacy says the catch-up was capped at
 	// defaultCatchUpLimit because the status is an ambiguous legacy one.
 	cappedAmbiguousLegacy bool
+}
+
+// entries returns the entries the send loop should consider, oldest-to-newest:
+// the scan from just past the watermark.
+func (p deliveryPlan) entries() []rss.Entry {
+	return p.scan[p.resumeAt:]
+}
+
+// renderEvidence is the entries whose rendering counts as evidence that the
+// feed's templates work, for entryDelivery.otherEntryRenders: the whole scan,
+// untrimmed past-watermark entries included (before the watermark and already
+// sent ones passed the filter when they were delivered), but not the ones the
+// catch-up trim left out.
+func (p deliveryPlan) renderEvidence() []rss.Entry {
+	return p.scan
 }
 
 // planDelivery decides, without side effects, what to send after the
