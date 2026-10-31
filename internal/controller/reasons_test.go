@@ -310,7 +310,7 @@ func (f *reasonFlow) traceExtract(v *ssa.Extract) {
 }
 
 // traceMapKeys follows the keys put into map m, and into the maps it is made
-// from: a phi's edges, a parameter's arguments, a call's results and globals.
+// from: phis, parameters, calls, globals, fields, closures and allocations.
 func (f *reasonFlow) traceMapKeys(m ssa.Value) {
 	if f.seenKeys[m] {
 		return
@@ -338,10 +338,40 @@ func (f *reasonFlow) traceMapKeys(m ssa.Value) {
 		if m.Op == token.MUL {
 			f.traceMapKeys(m.X)
 		}
+	case *ssa.FieldAddr:
+		f.traceFieldMapKeys(m.X.Type(), m.Field)
+	case *ssa.Field:
+		f.traceFieldMapKeys(m.X.Type(), m.Field)
+	case *ssa.FreeVar:
+		fn := m.Parent()
+		if i := slices.Index(fn.FreeVars, m); i >= 0 {
+			for _, closure := range f.bindings[fn] {
+				if i < len(closure.Bindings) {
+					f.traceMapKeys(closure.Bindings[i])
+				}
+			}
+		}
+	case *ssa.Alloc:
+		// Follow the values assigned to a local variable whose address is
+		// taken, including a map captured by a closure.
+		if refs := m.Referrers(); refs != nil {
+			for _, ref := range *refs {
+				if store, ok := ref.(*ssa.Store); ok && store.Addr == m {
+					f.traceMapKeys(store.Val)
+				}
+			}
+		}
 	case *ssa.Global:
 		for _, stored := range f.globalWrites[m] {
 			f.traceMapKeys(stored)
 		}
+	}
+}
+
+// traceFieldMapKeys follows maps stored in a struct field.
+func (f *reasonFlow) traceFieldMapKeys(typ types.Type, field int) {
+	for _, stored := range f.fieldWrites[fieldOf(typ, field)] {
+		f.traceMapKeys(stored)
 	}
 }
 
@@ -811,6 +841,25 @@ func f() { h(map[string]int{"Oops": 1}) }`, want: planted},
 		{name: "through a range key of a package map", src: `var keys map[string]int
 func init() { keys = map[string]int{"Oops": 1} }
 func f() { for k := range keys { a.warn(k, action, "f") } }`, want: planted},
+		{name: "through a range key of a captured map", src: `func f() {
+	m := map[string]int{"Oops": 1}
+	g := func() {
+		for k := range m { a.warn(k, action, "f") }
+	}
+	g()
+}`, want: planted},
+		{name: "through a range key of a struct field map", src: `type reasonHolder struct { reasons map[string]int }
+func f() {
+	h := &reasonHolder{}
+	h.reasons = map[string]int{"Oops": 1}
+	for k := range h.reasons { a.warn(k, action, "f") }
+}`, want: planted},
+		{name: "through a range key of a locally allocated map variable", src: `func f() {
+	var keys map[string]int
+	ptr := &keys
+	*ptr = map[string]int{"Oops": 1}
+	for k := range keys { a.warn(k, action, "f") }
+}`, want: planted},
 		{name: "a constant declared outside the reason files", src: `const fieldOwner = "feedgroup-controller"
 func f() { a.warn(fieldOwner, action, "f") }`, want: `"feedgroup-controller"`},
 		{name: "a duplicate reason constant", src: `const alias = "Reconciled"
