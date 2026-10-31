@@ -319,10 +319,10 @@ func TestFeedSync_BeginStampsTitleSortsAndPlansFromTheWatermark(t *testing.T) {
 	if got, want := syncIDs(s.entries()), syncIDs(entries[2:]); !slices.Equal(got, want) {
 		t.Fatalf("entries() = %q, want only those past the watermark: %q", got, want)
 	}
-	if got, want := syncIDs(s.window()), syncIDs(entries); !slices.Equal(got, want) {
-		t.Fatalf("window() = %q, want the whole sorted fetch %q", got, want)
+	if got, want := syncIDs(s.scan), syncIDs(entries); !slices.Equal(got, want) {
+		t.Fatalf("scan = %q, want the whole sorted fetch %q", got, want)
 	}
-	for _, entry := range s.window() {
+	for _, entry := range s.scan {
 		if entry.FeedTitle != syncTestTitle {
 			t.Fatalf("entry %s has FeedTitle %q", entry.ID, entry.FeedTitle)
 		}

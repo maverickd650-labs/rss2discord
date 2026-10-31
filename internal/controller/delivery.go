@@ -78,7 +78,7 @@ func (d entryDelivery) run(ctx context.Context) attemptVerdict {
 
 		// Recorded per send attempt, before the outcome is known, so a retried
 		// entry counts again; renders that are never sent (see
-		// otherEntryRenders) are not observed.
+		// entryDelivery.otherEntryRenders) are not observed.
 		if overflow > 0 {
 			d.metrics.overflow(overflow)
 		}
@@ -116,7 +116,7 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 	// surfaces an Event instead of looping indefinitely, the
 	// reconcile RetryCount first reaches maxRetries.
 	verdict = d.attempt.record(attemptOutcome{kind: attemptRenderFailed}, err)
-	if d.attempt.pastRetryLimit() && d.renderer.otherEntryRenders(d.syncer.window(), entry) {
+	if d.attempt.pastRetryLimit() && d.otherEntryRenders(entry) {
 		// Retries were exhausted a full reconcile ago and the entry
 		// still can't render, yet a sibling entry renders fine with
 		// the same templates: the problem is this entry's content, it
@@ -130,4 +130,22 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 		return attemptVerdict{}, true
 	}
 	return verdict, false
+}
+
+// otherEntryRenders reports whether any entry other than skip renders
+// successfully with the feed's templates, which distinguishes "this entry is
+// the problem" from "the template is broken for everything". It scans the whole
+// plan window, deliberately counting entries before the watermark, already sent
+// ones and ones the filter rejects (build does not apply the filter), but not
+// entries the catch-up trim left out; skip is excluded by identity.
+func (d entryDelivery) otherEntryRenders(skip rss.Entry) bool {
+	for _, other := range d.syncer.scan {
+		if entryIdentity(other) == entryIdentity(skip) {
+			continue
+		}
+		if _, _, err := d.renderer.build(other); err == nil {
+			return true
+		}
+	}
+	return false
 }

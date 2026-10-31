@@ -1411,7 +1411,7 @@ const (
 const skipProbeTemplate = `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`
 
 // runSkipProbe holds a poison entry past its retries, then runs the
-// reconcile whose otherEntryRenders probe lets the feed skip it. prepare may
+// reconcile whose entryDelivery.otherEntryRenders probe lets the feed skip it. prepare may
 // adjust the feed or seed status before the probing reconcile.
 func runSkipProbe(
 	t *testing.T, ns, name string, entries []rss.Entry, prepare func(*v1alpha1.FeedGroup, *v1alpha1.FeedSpec),
@@ -1439,7 +1439,7 @@ func runSkipProbe(
 }
 
 // TestProcessFeed_SkipProbeDoesNotRecordOverflow asserts the diagnostic
-// render in otherEntryRenders adds no messageOverflowChars sample: a long
+// render in entryDelivery.otherEntryRenders adds no messageOverflowChars sample: a long
 // healthy entry behind a skipped poison entry is observed once, when it is
 // actually sent, not once more by the probe.
 func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {

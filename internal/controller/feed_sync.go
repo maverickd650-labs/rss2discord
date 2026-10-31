@@ -67,8 +67,9 @@ type feedSync struct {
 	began  bool
 	closed bool
 	ledger *deliveryLedger
-	// scan is the entries the send loop may consider, in order, starting at
-	// resumeAt; set by begin.
+	// scan is the plan's whole window, in order: the entries the send loop may
+	// consider start at resumeAt, and the ones before it are kept for
+	// entryDelivery.otherEntryRenders; set by begin.
 	scan     []rss.Entry
 	resumeAt int
 	// cappedAmbiguousLegacy says the catch-up was capped at
@@ -225,12 +226,6 @@ func (s *feedSync) begin() {
 // the plan's scan from just past the watermark. It is only valid after begin.
 func (s *feedSync) entries() []rss.Entry {
 	return s.scan[s.resumeAt:]
-}
-
-// window returns every entry of the plan's scan, including those before the
-// watermark that entries leaves out. It is only valid after begin.
-func (s *feedSync) window() []rss.Entry {
-	return s.scan
 }
 
 // sent reports whether entry was already delivered; see deliveryLedger.sent.
