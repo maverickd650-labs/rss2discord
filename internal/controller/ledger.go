@@ -197,17 +197,21 @@ func moveSentKey(lastSent map[string]string, from, to string) {
 // keeping their send times; see moveSentKey. The entry key moves to the new
 // identity's. The stripped key, which only a link-derived previous identity
 // has, moves to the new stripped identity's when current is link-derived too
-// and that stripped identity is unique in counts (the current fetch's), and is
-// otherwise dropped: the entry no longer has one to be found under, and a key
-// under a shared stripped identity would later mark a sibling that is alone
-// in the feed as already sent, the same reason markHandled only writes it for
-// a unique entry.
-func rekeySent(lastSent map[string]string, previous, current rss.Entry, counts strippedCounts) {
+// and that stripped identity is unique in counts (the current fetch's): a key
+// under a shared stripped identity would later mark a sibling that is alone in
+// the feed as already sent, the same reason markHandled only writes it for a
+// unique entry. Otherwise, when ownsOldStripped says no other entry can claim
+// the old stripped identity, it falls back to the new entry key, so a record
+// that pruning left only under the stripped key still dedups the entry; and
+// failing that it is dropped.
+func rekeySent(lastSent map[string]string, previous, current rss.Entry, counts strippedCounts, ownsOldStripped bool) {
 	moveSentKey(lastSent, computeEntryKey(previous), computeEntryKey(current))
 	if oldStripped := strippedLinkIdentity(previous); oldStripped != "" {
 		target := ""
 		if newStripped := counts.unique(current); newStripped != "" {
 			target = strippedKey(newStripped)
+		} else if ownsOldStripped {
+			target = computeEntryKey(current)
 		}
 		moveSentKey(lastSent, strippedKey(oldStripped), target)
 	}

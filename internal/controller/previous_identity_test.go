@@ -253,3 +253,49 @@ func TestMigrateLegacyIdentities_StrippedKeyOnlyForOwnUniqueIdentity(t *testing.
 		t.Errorf("sibling taken as sent; LastSent = %v", fs.LastSent)
 	}
 }
+
+// When pruning has left a moved entry's send recorded only under its old
+// stripped key and its new stripped identity is shared, that record falls back
+// to the entry's new key, so the entry is not sent again; but only when no
+// other entry can claim the old stripped identity.
+func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T) {
+	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	sibling := rss.Entry{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink, Title: "sibling"}
+	for _, tc := range []struct {
+		name      string
+		entries   []rss.Entry
+		wantMoved bool
+	}{
+		{name: "sole owner keeps its record", entries: []rss.Entry{moved, sibling}, wantMoved: true},
+		{
+			name: "an entry now under the old stripped identity makes it ambiguous",
+			entries: []rss.Entry{moved, sibling,
+				{ID: prevLinkOld + "#z", IDSource: rss.IDFromLink, Title: "claimant"}},
+		},
+		{
+			name: "another entry previously under it makes it ambiguous",
+			entries: []rss.Entry{moved, sibling,
+				changedID(prevIDOther, rss.IDFromGUID, prevLinkOld+"#y", rss.IDFromLink)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The full key was pruned; only the stripped key is left.
+			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
+			migratePreviousIdentities(fs, slices.Clone(tc.entries))
+
+			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
+				t.Errorf("old stripped key kept; LastSent = %v", fs.LastSent)
+			}
+			if _, ok := fs.LastSent[strippedKey(normalizeIdentity(prevLinkNew))]; ok {
+				t.Errorf("shared new stripped key recorded; LastSent = %v", fs.LastSent)
+			}
+			got, ok := fs.LastSent[computeEntryKey(moved)]
+			if ok != tc.wantMoved || (ok && got != prevSentAt) {
+				t.Errorf("moved entry key = %q (present %v), want present %v at %q", got, ok, tc.wantMoved, prevSentAt)
+			}
+			if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
+				t.Errorf("sibling taken as sent; LastSent = %v", fs.LastSent)
+			}
+		})
+	}
+}
