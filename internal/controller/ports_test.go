@@ -81,7 +81,7 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "ports-timed-sender-"+tc.name, "fg-timed-sender-"+tc.name
-			defer groupMetrics{namespace: ns, name: name}.forget()
+			forgetMetricsAfter(t, ns, name)
 
 			inner := &fakeSender{results: []error{tc.err}}
 			sender := newTimedSender(inner, ns, name)
@@ -122,7 +122,7 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := "ports-timed-fetcher-"+tc.name, "fg-timed-fetcher-"+tc.name
-			defer groupMetrics{namespace: ns, name: name}.forget()
+			forgetMetricsAfter(t, ns, name)
 
 			inner := &fakeFetcher{result: tc.result, err: tc.err}
 			fetcher := newTimedFetcher(inner, ns, name)
@@ -152,13 +152,11 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 // verdict carrying the Retry-After and leaves the entry unsent.
 func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 	ns, name := "ports-fake-429", "fg-fake-429"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	sender := &fakeSender{results: []error{&discord.RateLimitError{RetryAfter: 7 * time.Second}}}
 
-	verdict := (&FeedGroupReconciler{}).processFeed(
-		t.Context(), fg, feed, oneEntryFetch(), nil, sender, testReconcileTime)
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 
 	if verdict.retryAfter != 7*time.Second {
 		t.Fatalf("verdict.retryAfter = %v, want 7s", verdict.retryAfter)
@@ -178,14 +176,12 @@ func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 // one, and records the classified send_error outcome.
 func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	ns, name := "ports-fake-5xx", "fg-fake-5xx"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.Retries = 3
 	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 503, Status: "503 Service Unavailable"}}}
 
-	verdict := (&FeedGroupReconciler{}).processFeed(
-		t.Context(), fg, feed, oneEntryFetch(), nil, sender, testReconcileTime)
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 
 	if !verdict.retry {
 		t.Fatal("verdict.retry = false, want a transient send failure to ask for a retry")
@@ -209,15 +205,13 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 // the feed off at once and does not ask for a prompt retry.
 func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	ns, name := "ports-fake-4xx", "fg-fake-4xx"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.RetryInterval = "5m"
 	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 400, Status: "400 Bad Request"}}}
 
 	before := time.Now().UTC()
-	verdict := (&FeedGroupReconciler{}).processFeed(
-		t.Context(), fg, feed, oneEntryFetch(), nil, sender, testReconcileTime)
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 
 	if verdict.retry {
 		t.Fatal("verdict.retry = true, want a permanent failure to back off instead")
@@ -242,13 +236,11 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 // TestProcessFeed_FakeSenderSuccess asserts a nil send marks the entry sent.
 func TestProcessFeed_FakeSenderSuccess(t *testing.T) {
 	ns, name := "ports-fake-ok", "fg-fake-ok"
-	defer groupMetrics{namespace: ns, name: name}.forget()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	sender := &fakeSender{}
 
-	verdict := (&FeedGroupReconciler{}).processFeed(
-		t.Context(), fg, feed, oneEntryFetch(), nil, sender, testReconcileTime)
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 
 	if verdict.retry || verdict.retryAfter != 0 {
 		t.Fatalf("verdict = %+v, want none", verdict)

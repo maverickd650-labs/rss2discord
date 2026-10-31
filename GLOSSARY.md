@@ -65,6 +65,11 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `InvalidInterval`. `planFeeds`, `requeueDecision`, `feedAttempt` and `summarizeGroup` all
   read it; none parses those spec fields itself.
 
+**Feed run** (`feedRun`, `feedgroup_controller.go`)
+: Everything one feed's handling in one reconcile needs, as one value: the group, the feed's
+  spec, its `fetchOutcome`, the `MessageSender`, the group's `cadence`, the Event recorder (nil
+  drops Events) and the reconcile's timestamp. `newAttempt` opens the `feedAttempt` from it.
+
 **Feed attempt** (`feedAttempt`, `attempt.go`)
 : The outcomes of processing one feed in one reconcile -- a fetch succeeding or failing,
   an entry failing to render, failing to send, being rate limited, sent or skipped, a

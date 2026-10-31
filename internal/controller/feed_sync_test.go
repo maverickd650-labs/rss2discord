@@ -561,3 +561,41 @@ func TestFeedSync_CloseOnReturnKeepsTheOriginalPanic(t *testing.T) {
 		t.Fatal("a return with a verdict should close the sync")
 	}
 }
+
+func TestLimitCatchUp(t *testing.T) {
+	mk := func(n int) []rss.Entry {
+		entries := make([]rss.Entry, n)
+		for i := range entries {
+			entries[i] = rss.Entry{ID: string(rune('a' + i))}
+		}
+		return entries
+	}
+
+	t.Run("non-positive limit falls back to default", func(t *testing.T) {
+		got := limitCatchUp(mk(10), 0)
+		if len(got) != defaultCatchUpLimit {
+			t.Fatalf("expected %d entries, got %d", defaultCatchUpLimit, len(got))
+		}
+		// Keeps the most recent (tail) entries.
+		if got[len(got)-1].ID != mk(10)[9].ID {
+			t.Fatalf("expected most recent entry retained, got %q", got[len(got)-1].ID)
+		}
+	})
+
+	t.Run("under limit returns all", func(t *testing.T) {
+		got := limitCatchUp(mk(3), 5)
+		if len(got) != 3 {
+			t.Fatalf("expected 3 entries, got %d", len(got))
+		}
+	})
+
+	t.Run("trims to limit keeping newest", func(t *testing.T) {
+		got := limitCatchUp(mk(10), 2)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(got))
+		}
+		if got[0].ID != "i" || got[1].ID != "j" {
+			t.Fatalf("expected last two entries, got %q,%q", got[0].ID, got[1].ID)
+		}
+	})
+}

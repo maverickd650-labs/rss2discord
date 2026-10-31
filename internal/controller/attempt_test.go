@@ -371,7 +371,7 @@ func TestFeedAttempt_Record(t *testing.T) {
 // checks every effect TestFeedAttempt_Record covers.
 func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	t.Helper()
-	defer groupMetrics{namespace: attemptNS, name: name}.forget()
+	forgetMetricsAfter(t, attemptNS, name)
 	fg := &v1alpha1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
 	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
@@ -380,7 +380,7 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(time.Now().UTC(), time.Hour)
 	}
 	recorder := events.NewFakeRecorder(10)
-	attempt := (&FeedGroupReconciler{Recorder: recorder}).newFeedAttempt(fg, fs, attemptURL, attemptNow)
+	attempt := testAttempt(t, fg, fs, attemptURL, attemptNow).withRecorder(recorder)
 
 	now := time.Now().UTC()
 	verdict := attempt.record(tc.outcome, tc.class, tc.err)
@@ -490,12 +490,12 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 	for i, tc := range attemptCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			name := fmt.Sprintf("attempt-nil-%d", i)
-			defer groupMetrics{namespace: attemptNS, name: name}.forget()
+			forgetMetricsAfter(t, attemptNS, name)
 			fg := &v1alpha1.FeedGroup{}
 			fg.Namespace, fg.Name = attemptNS, name
 			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
 			fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
-			(&FeedGroupReconciler{}).newFeedAttempt(fg, fs, attemptURL, attemptNow).record(tc.outcome, tc.class, tc.err)
+			testAttempt(t, fg, fs, attemptURL, attemptNow).record(tc.outcome, tc.class, tc.err)
 		})
 	}
 }
@@ -505,12 +505,12 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 // appears or its message changes, and not while it recurs.
 func TestFeedAttempt_ConfigErrorWarnsOncePerDistinctError(t *testing.T) {
 	name := "attempt-config-once"
-	defer groupMetrics{namespace: attemptNS, name: name}.forget()
+	forgetMetricsAfter(t, attemptNS, name)
 	fg := &v1alpha1.FeedGroup{}
 	fg.Namespace, fg.Name = attemptNS, name
 	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL}
 	recorder := events.NewFakeRecorder(10)
-	attempt := (&FeedGroupReconciler{Recorder: recorder}).newFeedAttempt(fg, fs, attemptURL, attemptNow)
+	attempt := testAttempt(t, fg, fs, attemptURL, attemptNow).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
 
 	for _, step := range []struct {
@@ -538,7 +538,7 @@ func TestFeedAttempt_PastRetryLimit(t *testing.T) {
 		fg := &v1alpha1.FeedGroup{}
 		fg.Spec.Retries = tc.retries
 		fs := &v1alpha1.FeedStatus{RetryCount: tc.retryCount}
-		if got := (&FeedGroupReconciler{}).newFeedAttempt(fg, fs, attemptURL, attemptNow).pastRetryLimit(); got != tc.want {
+		if got := testAttempt(t, fg, fs, attemptURL, attemptNow).pastRetryLimit(); got != tc.want {
 			t.Errorf("retries %d, RetryCount %d: pastRetryLimit = %t, want %t", tc.retries, tc.retryCount, got, tc.want)
 		}
 	}
@@ -600,7 +600,7 @@ func TestAttemptOutcome_MetricLabels(t *testing.T) {
 		}
 	}()
 	fg := &v1alpha1.FeedGroup{}
-	(&FeedGroupReconciler{}).newFeedAttempt(fg, &v1alpha1.FeedStatus{}, attemptURL, attemptNow).
+	testAttempt(t, fg, &v1alpha1.FeedStatus{}, attemptURL, attemptNow).
 		record(attemptOutcome{kind: attemptKindEnd}, noClass, nil)
 }
 

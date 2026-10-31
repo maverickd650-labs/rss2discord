@@ -274,3 +274,54 @@ func TestRequeueDecisionWait(t *testing.T) {
 		}
 	})
 }
+
+// TestFeedDue covers the per-feed poll-interval gate.
+func TestFeedDue(t *testing.T) {
+	const recentCheck = "2026-01-01T11:59:00Z"
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	interval := 30 * time.Minute
+	cases := []struct {
+		name  string
+		fs    v1alpha1.FeedStatus
+		force bool
+		want  bool
+	}{
+		{name: "never checked", want: true},
+		{name: "checked recently", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:45:00Z"}, want: false},
+		{name: "interval elapsed", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:30:00Z"}, want: true},
+		{name: "malformed LastChecked", fs: v1alpha1.FeedStatus{LastChecked: "garbage"}, want: true},
+		{name: "recent but failing", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, LastError: testBoom}, want: true},
+		{name: "recent but retrying", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, RetryCount: 1}, want: true},
+		{name: "recent but spec changed", fs: v1alpha1.FeedStatus{LastChecked: recentCheck}, force: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := feedDue(&tc.fs, interval, now, tc.force); got != tc.want {
+				t.Errorf("feedDue() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestJitterDuration asserts enabled=true adds up to requeueJitterMaxFactor
+// extra to the duration (so FeedGroups created together with the same
+// interval don't requeue in lockstep forever), while enabled=false -- used
+// for Discord's rate-limit Retry-After, an externally-dictated minimum wait
+// -- leaves it exact.
+func TestJitterDuration(t *testing.T) {
+	const base = 10 * time.Minute
+
+	if got := jitterDuration(base, false); got != base {
+		t.Fatalf("expected exact %v with jitter disabled, got %v", base, got)
+	}
+
+	for range 20 {
+		got := jitterDuration(base, true)
+		if got < base {
+			t.Fatalf("jittered duration %v must never be shorter than base %v", got, base)
+		}
+		if max := time.Duration(1.1 * float64(base)); got > max {
+			t.Fatalf("jittered duration %v exceeds %v (base + %.0f%%)", got, max, requeueJitterMaxFactor*100)
+		}
+	}
+}

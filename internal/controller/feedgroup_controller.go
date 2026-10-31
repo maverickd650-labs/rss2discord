@@ -150,6 +150,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	fetched := fetchAll(ctx, rssClient, &feedGroup, activeFeeds)
 
+	run := feedRun{group: &feedGroup, sender: discordClient, cadence: cad, recorder: r.Recorder, now: now}
 	var verdict attemptVerdict
 	for i, feed := range activeFeeds {
 		// All feeds in a group share one webhook, so once any feed hits
@@ -159,16 +160,37 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if verdict.retryAfter > 0 {
 			break
 		}
-		verdict = verdict.fold(r.processFeed(ctx, &feedGroup, feed, fetched[i].result, fetched[i].err, discordClient, now))
+		run.feed, run.fetched = feed, fetched[i]
+		verdict = verdict.fold(processFeed(ctx, run))
 	}
 
 	decision := plan.requeue(cad, verdict.retry, verdict.retryAfter)
 	return r.requeueWithStatus(ctx, &feedGroup, statusSnapshot, cad, decision, nil)
 }
 
+// feedRun is everything processFeed needs to handle one feed's completed fetch
+// in one reconcile, so a caller (Reconcile, or a test) builds one value instead
+// of passing a reconciler and a string of positional arguments.
+type feedRun struct {
+	group *v1alpha1.FeedGroup
+	feed  v1alpha1.FeedSpec
+	// fetched is the feed's fetch: the result and the error FetchEntries
+	// returned for it.
+	fetched fetchOutcome
+	// sender delivers the feed's messages to the group's webhook.
+	sender MessageSender
+	// cadence is the group's resolved timing (cadenceOf), computed once per
+	// reconcile.
+	cadence cadence
+	// recorder receives the Warning Events; nil drops them.
+	recorder events.EventRecorder
+	// now is the RFC3339 status timestamp of the reconcile.
+	now string
+}
+
 // processFeed handles a completed fetch for a single feed: it records the
 // fetch outcome, sends new entries that pass the filter, and updates the feed's
-// FeedStatus. now is an RFC3339 status timestamp. Fetch, configuration,
+// FeedStatus. Fetch, configuration,
 // rendering, and delivery errors are recorded in status by the feed's
 // feedAttempt, which also decides whether the failure is worth retrying.
 // Applying the fetch to the FeedStatus -- the order of the steps and what is
@@ -176,18 +198,12 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // verdict on every return. The returned verdict says whether the reconcile
 // should retry sooner than the normal interval and, if Discord rate limited the
 // webhook, how long to wait before the next attempt.
-func (r *FeedGroupReconciler) processFeed(
-	ctx context.Context,
-	feedGroup *v1alpha1.FeedGroup,
-	feed v1alpha1.FeedSpec,
-	fetchResult rss.FetchResult,
-	fetchErr error,
-	discordClient MessageSender,
-	now string,
-) attemptVerdict {
+func processFeed(ctx context.Context, run feedRun) attemptVerdict {
+	feedGroup, feed, now := run.group, run.feed, run.now
+	fetchResult, fetchErr := run.fetched.result, run.fetched.err
 	log := logf.FromContext(ctx)
 	fs := feedStatusFor(feedGroup, feed.RSSUrl)
-	attempt := r.newFeedAttempt(feedGroup, fs, feed.RSSUrl, now)
+	attempt := run.newAttempt(fs)
 
 	// Every return below sets settlement first; the deferred close is what
 	// settles the FeedStatus, and rejects a return that forgot to. A panic
@@ -241,7 +257,7 @@ func (r *FeedGroupReconciler) processFeed(
 		renderer: renderer,
 		syncer:   syncer,
 		attempt:  attempt,
-		sender:   discordClient,
+		sender:   run.sender,
 		metrics:  metricsFor(feedGroup),
 	}.run(ctx)
 	settlement = verdict.settlement()

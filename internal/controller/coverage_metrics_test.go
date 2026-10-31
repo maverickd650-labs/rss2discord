@@ -6,7 +6,7 @@ import "testing"
 // syncFeedState skips it instead of creating a series with an empty url.
 func TestSyncFeedState_SkipsStatusWithoutURL(t *testing.T) {
 	ns, name := "metrics-nourl", "fg-nourl"
-	defer groupMetrics{namespace: ns, name: name}.forget()
+	forgetMetricsAfter(t, ns, name)
 
 	fg, _ := newMetricsFeedGroup(ns, name, "")
 	// Set before the copy, so the empty-url entry has a valid timestamp too and

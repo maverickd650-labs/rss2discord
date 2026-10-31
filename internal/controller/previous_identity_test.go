@@ -188,7 +188,7 @@ func TestLegacyEntryIdentity_UsesThePreviousID(t *testing.T) {
 // picks differently, and carries on from there.
 func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(legacyStateNS, "previous-identity", "{{.Title}}")
-	defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
+	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	fs := feedStatusFor(fg, feed.RSSUrl)
 	fs.LastChecked, fs.Initialized, fs.StateVersion = "2025-12-29T00:00:00Z", true, currentStateVersion
 	fs.LastSeenEntry = prevIDOld

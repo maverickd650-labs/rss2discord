@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 
 	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
 	"github.com/maverickd650/rss2discord-operator/internal/discord"
@@ -143,19 +144,23 @@ func (v attemptVerdict) settlement() syncVerdict {
 // permanent failure backs off immediately, a transient one retries until its
 // retries run out and is then announced once -- is written once, in record.
 type feedAttempt struct {
-	r     *FeedGroupReconciler
 	group *v1alpha1.FeedGroup
 	fs    *v1alpha1.FeedStatus
 	url   string
 	// now is the RFC3339 timestamp of the reconcile, for LastChecked.
 	now string
-	// cadence is the group's retry limit and backoff base, resolved from
-	// group.Spec when the attempt is created.
+	// cadence is the group's retry limit and backoff base.
 	cadence cadence
+	// recorder receives the attempt's Warning Events; nil drops them.
+	recorder events.EventRecorder
 }
 
-func (r *FeedGroupReconciler) newFeedAttempt(group *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url, now string) feedAttempt {
-	return feedAttempt{r: r, group: group, fs: fs, url: url, now: now, cadence: cadenceOf(&group.Spec)}
+// newAttempt opens the attempt for the run's feed, whose status is fs.
+func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
+	return feedAttempt{
+		group: run.group, fs: fs, url: run.feed.RSSUrl, now: run.now,
+		cadence: run.cadence, recorder: run.recorder,
+	}
 }
 
 // record applies one outcome to the feed's status and says what the reconcile
@@ -331,10 +336,10 @@ func (a feedAttempt) setCondition(condType string, status metav1.ConditionStatus
 // is a no-op if Recorder is unset (e.g. in unit tests that construct the
 // reconciler directly rather than through SetupWithManager).
 func (a feedAttempt) warn(reason, action, format string, args ...any) {
-	if a.r.Recorder == nil {
+	if a.recorder == nil {
 		return
 	}
-	a.r.Recorder.Eventf(a.group, nil, corev1.EventTypeWarning, reason, action, format, args...)
+	a.recorder.Eventf(a.group, nil, corev1.EventTypeWarning, reason, action, format, args...)
 }
 
 // clearFailure resets fs's retry state: its last error, its retry count and

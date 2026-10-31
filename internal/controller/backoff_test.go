@@ -123,3 +123,117 @@ func TestFeedBackoffSendCaused(t *testing.T) {
 		})
 	}
 }
+
+// TestPermanentBackoffDuration verifies the exponential formula and cap.
+func TestPermanentBackoffDuration(t *testing.T) {
+	base := 5 * time.Minute
+	cases := []struct {
+		retryCount int
+		wantCapped bool
+	}{
+		{retryCount: 1, wantCapped: false}, // 5m * 2^1 = 10m
+		{retryCount: 2, wantCapped: false}, // 5m * 2^2 = 20m
+		{retryCount: 6, wantCapped: false}, // 5m * 2^6 = 320m < 6h
+		{retryCount: 7, wantCapped: true},  // 5m * 2^7 = 640m > 6h
+		{retryCount: 62, wantCapped: true}, // overflow guard
+		{retryCount: 63, wantCapped: true}, // overflow guard
+	}
+	for _, tc := range cases {
+		got := permanentBackoffDuration(tc.retryCount, base)
+		if tc.wantCapped {
+			if got != maxPermanentBackoff {
+				t.Errorf("retryCount=%d: got %v, want cap %v", tc.retryCount, got, maxPermanentBackoff)
+			}
+		} else {
+			if got >= maxPermanentBackoff {
+				t.Errorf("retryCount=%d: got %v >= cap %v, expected uncapped", tc.retryCount, got, maxPermanentBackoff)
+			}
+			want := base * (1 << uint(tc.retryCount))
+			if got != want {
+				t.Errorf("retryCount=%d: got %v, want %v", tc.retryCount, got, want)
+			}
+		}
+	}
+}
+
+// TestPermanentBackoffDuration_ClampsRetryCountBelowOne asserts a retryCount
+// of zero (or negative) is treated the same as 1, so a caller can never get a
+// larger backoff than the first retry by passing an unclamped count.
+func TestPermanentBackoffDuration_ClampsRetryCountBelowOne(t *testing.T) {
+	base := 5 * time.Minute
+	want := permanentBackoffDuration(1, base)
+
+	if got := permanentBackoffDuration(0, base); got != want {
+		t.Errorf("retryCount=0: got %v, want %v (same as retryCount=1)", got, want)
+	}
+	if got := permanentBackoffDuration(-1, base); got != want {
+		t.Errorf("retryCount=-1: got %v, want %v (same as retryCount=1)", got, want)
+	}
+}
+
+// TestFeedBackoffActive verifies the active-feeds skip predicate: empty or
+// malformed BackoffUntil values are treated as "not in backoff" so a bad
+// value can never permanently wedge a feed, and the comparison is a strict
+// "now before until".
+func TestFeedBackoffActive(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name         string
+		backoffUntil string
+		want         bool
+	}{
+		{name: "empty", backoffUntil: "", want: false},
+		{name: "malformed", backoffUntil: "not-a-timestamp", want: false},
+		{name: "future", backoffUntil: "2026-01-01T00:00:01Z", want: true},
+		{name: "past", backoffUntil: "2025-12-31T23:59:59Z", want: false},
+		{name: "equal to now", backoffUntil: testReconcileTime, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := backoffOf(&v1alpha1.FeedStatus{BackoffUntil: tc.backoffUntil}).active(now); got != tc.want {
+				t.Errorf("active(%q, %v) = %v, want %v", tc.backoffUntil, now, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNextBackoffUntil verifies the RFC3339 formatting of a computed backoff
+// expiry, and that the result round-trips through feedBackoff.active as expected.
+func TestNextBackoffUntil(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := nextBackoffUntil(now, 10*time.Minute)
+	want := "2026-01-01T00:10:00Z"
+	if got != want {
+		t.Fatalf("nextBackoffUntil() = %q, want %q", got, want)
+	}
+	if !backoffOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now) {
+		t.Fatalf("active(%q, %v) = false, want true (still in the future)", got, now)
+	}
+	if backoffOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now.Add(10 * time.Minute)) {
+		t.Fatalf("active(%q, %v) = true, want false (backoff expired)", got, now.Add(10*time.Minute))
+	}
+}
+
+// TestClearPermanentBackoffs asserts the helper resets BackoffUntil and
+// RetryCount on every feed, including those not in backoff, so the first
+// permanentBackoffDuration call after a spec change uses a fresh RetryCount.
+func TestClearPermanentBackoffs(t *testing.T) {
+	fg, _ := newMetricsFeedGroup("clear-backoff-ns", "clear-backoff", "")
+	fg.Spec.Feeds = append(fg.Spec.Feeds, v1alpha1.FeedSpec{RSSUrl: "https://other.example.com/feed.xml"})
+	ensureFeedStatuses(fg)
+
+	feedStatusFor(fg, exampleFeedURL).BackoffUntil = "2030-01-01T00:00:00Z"
+	feedStatusFor(fg, exampleFeedURL).RetryCount = 7
+	feedStatusFor(fg, "https://other.example.com/feed.xml").RetryCount = 2
+
+	clearPermanentBackoffs(fg)
+
+	for _, fs := range fg.Status.Feeds {
+		if fs.BackoffUntil != "" {
+			t.Errorf("feed %s: BackoffUntil = %q, want empty", fs.RSSUrl, fs.BackoffUntil)
+		}
+		if fs.RetryCount != 0 {
+			t.Errorf("feed %s: RetryCount = %d, want 0", fs.RSSUrl, fs.RetryCount)
+		}
+	}
+}

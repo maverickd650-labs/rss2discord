@@ -106,3 +106,45 @@ func BenchmarkStripHTML(b *testing.B) {
 		})
 	}
 }
+
+func TestStripHTML(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "plain text unchanged", input: "plain text body", want: "plain text body"},
+		{name: "paragraphs become blank lines", input: "<p>one</p><p>two</p>", want: "one\n\ntwo"},
+		{name: "br becomes newline", input: "a<br>b", want: "a\nb"},
+		{name: "inline tags stripped", input: "<b>bold</b> text", want: "bold text"},
+		{name: "entities unescaped", input: "a &amp; b &lt;c&gt;", want: "a & b <c>"},
+		{name: "collapses excess blank lines", input: "<p>a</p><br><br><br><p>b</p>", want: "a\n\nb"},
+		{
+			name:  "trailing continue reading link stripped",
+			input: `<p>` + excerptText + `</p><a href="https://example.com/full">Continue reading...</a>`,
+			want:  excerptText,
+		},
+		{
+			name:  "trailing continue reading link with ellipsis char stripped",
+			input: `<p>` + excerptText + `</p><p><a href="https://example.com/full">Continue reading…</a></p>`,
+			want:  excerptText,
+		},
+		{
+			name:  "trailing continue reading plain text stripped",
+			input: excerptText + "\nContinue reading...",
+			want:  excerptText,
+		},
+		{
+			name:  "continue reading mid-text kept",
+			input: "<p>Click <a href=\"https://example.com\">Continue reading</a> below for more, then come back.</p>",
+			want:  "Click Continue reading below for more, then come back.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripHTML(tc.input); got != tc.want {
+				t.Fatalf("stripHTML(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

@@ -74,19 +74,18 @@ func TestProcessFeed_AmbiguousCapSurvivesFailedFirstSend(t *testing.T) {
 	defer server.Close()
 	client := server.DiscordClientBuilder()(server.URL())
 	server.FailNextRequests(1, http.StatusInternalServerError)
-	r := &FeedGroupReconciler{}
 	fetch := func() rss.FetchResult { return rss.FetchResult{Entries: slices.Clone(entries), ETag: validatorsOld} }
 
-	r.processFeed(t.Context(), fg, feed, fetch(), nil, client, testReconcileTime)
+	processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client))
 	fs := reloadStatus(t, fg)
 	if fs.Initialized || fs.StateVersion != 0 || fs.ETag != "" || server.MessageCount() != 0 {
 		t.Fatalf("after the failed send: initialized=%t stateVersion=%d etag=%q sent=%d, want a still-ambiguous status",
 			fs.Initialized, fs.StateVersion, fs.ETag, server.MessageCount())
 	}
 
-	r.processFeed(t.Context(), fg, feed, fetch(), nil, client, testReconcileTime)
+	processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client))
 	fs = reloadStatus(t, fg)
-	r.processFeed(t.Context(), fg, feed, fetch(), nil, client, testReconcileTime)
+	processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client))
 
 	want := make([]string, 0, defaultCatchUpLimit)
 	for _, entry := range entries[len(entries)-defaultCatchUpLimit:] {
@@ -138,7 +137,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "validators-" + tc.name
 			fg, feed := newMetricsFeedGroup(settlementNS, name, "{{.Title}}")
-			defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
+			forgetMetricsAfter(t, fg.Namespace, fg.Name)
 			fg.Spec.Retries = 2
 			server := NewMockDiscordServer(t)
 			defer server.Close()
@@ -155,7 +154,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			fs.LastModified = "Wed, 31 Dec 2025 00:00:00 GMT"
 
 			tc.prepare(server, &feed)
-			r := &FeedGroupReconciler{Recorder: events.NewFakeRecorder(20)}
+			recorder := events.NewFakeRecorder(20)
 			now := time.Now().UTC()
 			fetch := func() rss.FetchResult {
 				return rss.FetchResult{
@@ -165,7 +164,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			}
 			// Past the retry limit, so exhaustion is covered too.
 			for pass := range 4 {
-				r.processFeed(t.Context(), fg, feed, fetch(), nil, client, now.Format(time.RFC3339))
+				processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withNow(now.Format(time.RFC3339)).withRecorder(recorder))
 				fs = reloadStatus(t, fg)
 				if fs.ETag != validatorsOld || fs.LastModified != "Wed, 31 Dec 2025 00:00:00 GMT" {
 					t.Fatalf("pass %d: validators = %q / %q, want the stored ones kept", pass, fs.ETag, fs.LastModified)
@@ -179,7 +178,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			}
 
 			tc.fix(&feed)
-			r.processFeed(t.Context(), fg, feed, fetch(), nil, client, now.Format(time.RFC3339))
+			processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withNow(now.Format(time.RFC3339)).withRecorder(recorder))
 			fs = reloadStatus(t, fg)
 			if server.MessageCount() != 1 {
 				t.Fatalf("sent %d messages after the fix, want 1", server.MessageCount())
@@ -206,12 +205,12 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fg, feed := newMetricsFeedGroup(settlementNS, "skip-"+tc.name, skipProbeTemplate)
-			defer groupMetrics{namespace: fg.Namespace, name: fg.Name}.forget()
+			forgetMetricsAfter(t, fg.Namespace, fg.Name)
 			fg.Spec.Retries = 2
 			server := NewMockDiscordServer(t)
 			defer server.Close()
 			client := server.DiscordClientBuilder()(server.URL())
-			r := &FeedGroupReconciler{Recorder: events.NewFakeRecorder(20)}
+			recorder := events.NewFakeRecorder(20)
 
 			bad := rss.Entry{ID: "https://example.com/skip-bad", Title: probePoisonTitle, Seq: 1}
 			good := rss.Entry{ID: "https://example.com/skip-good", Title: "good", Seq: 0}
@@ -224,7 +223,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 			}
 
 			for range 2 {
-				r.processFeed(t.Context(), fg, feed, fetch(), nil, client, testReconcileTime)
+				processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withRecorder(recorder))
 				fs = reloadStatus(t, fg)
 			}
 			if fs.ETag != validatorsOld {
@@ -234,7 +233,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 			if tc.failLaterSend {
 				server.FailNextRequests(1, http.StatusInternalServerError)
 			}
-			r.processFeed(t.Context(), fg, feed, fetch(), nil, client, testReconcileTime)
+			processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withRecorder(recorder))
 			fs = reloadStatus(t, fg)
 			if fs.ETag != tc.wantETag {
 				t.Fatalf("validators after the skip pass = %q, want %q", fs.ETag, tc.wantETag)
@@ -244,7 +243,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 			}
 
 			if tc.failLaterSend {
-				r.processFeed(t.Context(), fg, feed, fetch(), nil, client, testReconcileTime)
+				processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client).withRecorder(recorder))
 				fs = reloadStatus(t, fg)
 			}
 			if server.MessageCount() != 1 || fs.ETag != validatorsNext || fs.LastSeenEntry != good.ID {

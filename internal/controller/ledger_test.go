@@ -158,3 +158,82 @@ func TestDeliveryLedger_CountsCoverWholeFetch(t *testing.T) {
 		t.Fatal("a sibling sharing the stripped identity was treated as sent")
 	}
 }
+
+func TestPruneLastSent(t *testing.T) {
+	t.Run("ties on timestamp are broken deterministically by key", func(t *testing.T) {
+		const ts = "2024-01-01T00:00:00Z"
+		for range 50 {
+			sent := map[string]string{}
+			for _, k := range []string{"e", "b", "g", "a", "f", "c", "d"} {
+				sent[k] = ts
+			}
+			pruneLastSent(sent, 3)
+			if len(sent) != 3 {
+				t.Fatalf("expected 3 entries, got %d", len(sent))
+			}
+			for _, k := range []string{"e", "f", "g"} {
+				if _, ok := sent[k]; !ok {
+					t.Fatalf("expected %q to be kept, got %v", k, sent)
+				}
+			}
+		}
+	})
+
+	t.Run("under cap unchanged", func(t *testing.T) {
+		sent := map[string]string{"a": "2024-01-01T00:00:00Z", "b": "2024-01-02T00:00:00Z"}
+		pruneLastSent(sent, 5)
+		if len(sent) != 2 {
+			t.Fatalf("expected map unchanged, got %d entries", len(sent))
+		}
+	})
+
+	t.Run("drops oldest by timestamp", func(t *testing.T) {
+		sent := map[string]string{
+			"oldest": "2024-01-01T00:00:00Z",
+			"middle": "2024-01-02T00:00:00Z",
+			"newest": "2024-01-03T00:00:00Z",
+		}
+		pruneLastSent(sent, 2)
+		if len(sent) != 2 {
+			t.Fatalf("expected 2 entries after prune, got %d", len(sent))
+		}
+		if _, ok := sent["oldest"]; ok {
+			t.Fatal("expected the oldest entry to be pruned")
+		}
+		if _, ok := sent["newest"]; !ok {
+			t.Fatal("expected the newest entry to be retained")
+		}
+	})
+}
+
+func TestComputeEntryKey(t *testing.T) {
+	const entryLink = "http://x"
+	a := computeEntryKey(rss.Entry{ID: "1", Link: entryLink, Title: "T"})
+	b := computeEntryKey(rss.Entry{ID: "1", Link: entryLink, Title: "T"})
+	c := computeEntryKey(rss.Entry{ID: "2", Link: entryLink, Title: "T"})
+
+	if a != b {
+		t.Fatal("expected identical entries to produce the same key")
+	}
+	if a == c {
+		t.Fatal("expected differing IDs to produce different keys")
+	}
+	if len(a) != 64 {
+		t.Fatalf("expected 64-char hex sha256, got %d chars", len(a))
+	}
+}
+
+func TestComputeEntryKey_IgnoresLinkAndTitleChurn(t *testing.T) {
+	// A feed editing a headline or rotating a tracking parameter on an
+	// otherwise-unchanged article must not look like a new entry, as long
+	// as its GUID-derived ID is unchanged (the failure mode this guards
+	// against: a feed like the Guardian's that live-edits articles in
+	// place would otherwise get re-sent as a "new" duplicate every time the
+	// headline changed).
+	original := rss.Entry{ID: "churn-test-entry", Link: "https://example.com/churn", Title: "Original Title"}
+	edited := rss.Entry{ID: "churn-test-entry", Link: "https://example.com/churn", Title: "Updated Title"}
+
+	if computeEntryKey(original) != computeEntryKey(edited) {
+		t.Fatal("expected entries sharing an ID to produce the same key despite a title edit")
+	}
+}
