@@ -37,6 +37,15 @@ func newWebhookServer(t testing.TB, h http.Handler) (webhookURL string, client *
 	return "https://" + testWebhookHost + testWebhookPath, srv.Client()
 }
 
+// newAbortingServer starts an in-memory server that aborts every response
+// mid-request, forcing a transport error (the in-memory network has no refused
+// connections to dial into).
+func newAbortingServer(t testing.TB) *httptest.Server {
+	return httptest.NewTestServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+}
+
 func TestSendMessage_RejectsNonDiscordHost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("attacker-controlled server should never receive a request")
