@@ -2,12 +2,17 @@ name: Dependency Review
 
 on:
   pull_request:
+  # Required checks must report on merge-queue entries too. The action only
+  # works on pull requests, so the job is skipped there (a skipped job
+  # satisfies a required check).
+  merge_group:
 
 permissions: {}
 
 jobs:
   dependency-review:
     name: Dependency review
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
