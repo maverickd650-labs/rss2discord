@@ -3,6 +3,7 @@ name: CodeQL
 on:
   push:
     branches: [main]
+  merge_group:
   pull_request:
   schedule:
     # Weekly scan to catch advisories published after the last code change.
