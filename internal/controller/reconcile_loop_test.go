@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	rss2discordv1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // These specs run the real controller under a manager (every other spec calls

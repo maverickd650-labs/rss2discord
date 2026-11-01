@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // displayEntry is an rss.Entry as it is shown to Discord: every presentation

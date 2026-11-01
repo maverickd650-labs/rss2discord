@@ -2,6 +2,9 @@ name: Dependency Review
 
 on:
   pull_request:
+  # Required checks must report on merge-queue entries too; the action reads
+  # merge_group.base_sha/head_sha, so it scans the queue's merge commit.
+  merge_group:
 
 permissions: {}
 

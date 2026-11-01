@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
 
 // Entry identity runs several times per entry on every reconcile whose feed

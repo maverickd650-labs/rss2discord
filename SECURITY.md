@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-This project releases continuously from `main` (see [Releases](https://github.com/maverickd650/rss2discord-operator/releases)).
+This project releases continuously from `main` (see [Releases](https://github.com/maverickd650-labs/rss2discord/releases)).
 Only the latest released version is supported — please upgrade before reporting an issue.
 
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities privately using
-[GitHub's private vulnerability reporting](https://github.com/maverickd650/rss2discord-operator/security/advisories/new)
+[GitHub's private vulnerability reporting](https://github.com/maverickd650-labs/rss2discord/security/advisories/new)
 (Security tab → "Report a vulnerability"). Do not open a public issue for security reports.
 
 You should receive an initial response within a few days. If the issue is confirmed, we'll work

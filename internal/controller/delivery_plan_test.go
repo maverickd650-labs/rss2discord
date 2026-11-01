@@ -21,7 +21,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 func planEntries(n int) []rss.Entry {

@@ -27,7 +27,7 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
 
-	rss2discordv1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // These specs persist every status through the API server (applyStatus, then

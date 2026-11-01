@@ -8,7 +8,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // Diagnostics shared by the conversion-failure tests below.

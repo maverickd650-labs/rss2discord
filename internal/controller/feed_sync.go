@@ -25,8 +25,8 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // A feedSync applies one fetch of one feed to that feed's FeedStatus. It is the

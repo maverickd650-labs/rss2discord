@@ -21,7 +21,7 @@ import (
 
 	neturl "net/url"
 
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // trackingQueryParams lists query-string parameters added by analytics or

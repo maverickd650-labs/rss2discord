@@ -23,7 +23,7 @@ import (
 	"text/template"
 	"text/template/parse"
 
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
 
 // entry stands in for the controller's template data: the fields the tests'

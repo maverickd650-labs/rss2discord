@@ -19,8 +19,8 @@ package controller
 import (
 	"testing"
 
-	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 func TestCompileEntryFilter(t *testing.T) {
