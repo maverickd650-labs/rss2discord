@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/maverickd650/rss2discord-operator/test/utils"
+	"github.com/maverickd650-labs/rss2discord/test/utils"
 )
 
 // managerImage is the manager image to be built and loaded for testing.

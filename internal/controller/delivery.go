@@ -21,7 +21,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // entryDelivery is the per-entry send loop of one feed's sync: it scans the

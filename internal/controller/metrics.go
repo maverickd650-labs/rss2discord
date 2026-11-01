@@ -22,7 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // Metric label names, shared across the vectors below and

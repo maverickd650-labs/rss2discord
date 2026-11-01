@@ -47,7 +47,7 @@ spec:
             resourceFieldRef:
               containerName: manager
               resource: limits.memory
-        image: "ghcr.io/maverickd650/rss2discord-operator:golden-test"
+        image: "ghcr.io/maverickd650-labs/rss2discord:golden-test"
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:

@@ -19,7 +19,7 @@ package controller
 import (
 	"time"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
 
 // feedCheck is the last check of one feed, as FeedStatus records it: whether it

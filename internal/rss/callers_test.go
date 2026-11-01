@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	rssImportPath  = "github.com/maverickd650/rss2discord-operator/internal/rss"
+	rssImportPath  = "github.com/maverickd650-labs/rss2discord/internal/rss"
 	httpImportPath = "net/http"
 	rssPackage     = "rss"
 	rssDir         = "internal/rss/"
