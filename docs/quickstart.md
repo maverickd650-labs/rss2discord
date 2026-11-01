@@ -1,6 +1,6 @@
 # Quick Start
 
-See [README.md](README.md) for full documentation. This is just the fastest path to a running feed.
+See [README.md](../README.md) for full documentation. This is just the fastest path to a running feed.
 
 ## 1. Deploy the operator
 
@@ -70,4 +70,4 @@ kubectl describe feedgroup tech-news -n default
 - Tweak `format` to change how messages look in Discord.
 - Add a `filter` (regex or keywords) to a feed to cut down on noise.
 - Set `embed.enabled: true` (with a `color`) to render entries as Discord embeds instead of plain text, or `forumThreadName` on a feed to post into a forum channel.
-- See the [Configuration reference](README.md#configuration-reference) and [Troubleshooting](README.md#troubleshooting) sections in the README for everything else.
+- See the [Configuration reference](../README.md#configuration-reference) and [Troubleshooting](../README.md#troubleshooting) sections in the README for everything else.
