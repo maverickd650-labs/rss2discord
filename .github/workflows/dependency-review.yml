@@ -2,9 +2,8 @@ name: Dependency Review
 
 on:
   pull_request:
-  # Required checks must report on merge-queue entries too. The action only
-  # works on pull requests, so the job is skipped there (a skipped job
-  # satisfies a required check).
+  # Required checks must report on merge-queue entries too; the action reads
+  # merge_group.base_sha/head_sha, so it scans the queue's merge commit.
   merge_group:
 
 permissions: {}
@@ -12,7 +11,6 @@ permissions: {}
 jobs:
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
