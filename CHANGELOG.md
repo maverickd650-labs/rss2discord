@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.14.0...v0.15.0) (2026-11-01)
+
+
+### Features
+
+* **controller:** back off permanent send failures immediately and retry them when the webhook Secret changes ([#316](https://github.com/maverickd650-labs/rss2discord/issues/316)) ([283eb4d](https://github.com/maverickd650-labs/rss2discord/commit/283eb4d4f497d213437ddc62d17a970c06e6f3db))
+
+
+### Bug Fixes
+
+* **container:** update image gcr.io/distroless/static (18f4cc2 → 25ac8f0) ([#352](https://github.com/maverickd650-labs/rss2discord/issues/352)) ([0889404](https://github.com/maverickd650-labs/rss2discord/commit/08894040292189866535b6effb448403765d5be1))
+* **controller:** keep fetch and delivery failures in separate retry runs; don't skip on filtered-entry evidence ([#337](https://github.com/maverickd650-labs/rss2discord/issues/337)) ([b129d55](https://github.com/maverickd650-labs/rss2discord/commit/b129d557dea394600b9096681d3495ca4a5fa084))
+* **controller:** never record a stripped LastSent key a sibling shares during identity migrations ([#330](https://github.com/maverickd650-labs/rss2discord/issues/330)) ([a018bb9](https://github.com/maverickd650-labs/rss2discord/commit/a018bb943679309a078ece139a4a0c4f87f26040))
+* **controller:** persist a reconcile's progress when a feed panics mid-delivery ([#343](https://github.com/maverickd650-labs/rss2discord/issues/343)) ([1fbd29f](https://github.com/maverickd650-labs/rss2discord/commit/1fbd29fb7ba57d4d4d0e643d9075aaf51deb2ed8))
+* **rss:** typed fetch errors; oversized bodies and invalid URLs back off as permanent ([#327](https://github.com/maverickd650-labs/rss2discord/issues/327)) ([cac0105](https://github.com/maverickd650-labs/rss2discord/commit/cac01056dd13f74f70fd9e44fc4898e25c44f313))
+* update refs ([#348](https://github.com/maverickd650-labs/rss2discord/issues/348)) ([46706eb](https://github.com/maverickd650-labs/rss2discord/commit/46706ebdd6403cb710ba68611644d86161e17afc))
+
 ## [0.14.0](https://github.com/maverickd650/rss2discord-operator/compare/v0.13.1...v0.14.0) (2026-10-29)
 
 
