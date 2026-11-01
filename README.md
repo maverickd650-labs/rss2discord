@@ -337,7 +337,7 @@ kubectl get feedgroups -A -o json | jq -r '
   | "\($g.metadata.namespace)/\($g.metadata.name)  \(.rssUrl)"'
 ```
 
-A feed that does appear there would resend entries whose stored keys no longer match.
+A feed that does appear there still holds delivery state in the old format, which this release no longer migrates, so it would resend entries whose stored keys no longer match. The check is conservative: a feed that has never settled a sync since upgrading to 0.14 or later (for example, one whose fetch keeps failing) also keeps `stateVersion` 0 and is listed. Let it complete a successful sync on 0.15.x, or confirm it holds no delivery state, before upgrading.
 
 A release before 0.14 drops `stateVersion` on its status writes, so after rolling back that far, upgrade through 0.15.x again before this release.
 
