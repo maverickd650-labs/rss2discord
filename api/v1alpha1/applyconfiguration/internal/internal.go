@@ -38,7 +38,7 @@ func Parser() *typed.Parser {
 var parserOnce sync.Once
 var parser *typed.Parser
 var schemaYAML = typed.YAMLObject(`types:
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.EmbedSpec
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.EmbedSpec
   map:
     fields:
     - name: authorName
@@ -60,7 +60,7 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: imageStyle
       type:
         scalar: string
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroup
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedGroup
   map:
     fields:
     - name: apiVersion
@@ -74,11 +74,11 @@ var schemaYAML = typed.YAMLObject(`types:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
     - name: spec
       type:
-        namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroupSpec
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedGroupSpec
     - name: status
       type:
-        namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroupStatus
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroupSpec
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedGroupStatus
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedGroupSpec
   map:
     fields:
     - name: avatarURL
@@ -93,12 +93,12 @@ var schemaYAML = typed.YAMLObject(`types:
         namedType: io.k8s.api.core.v1.SecretKeySelector
     - name: embed
       type:
-        namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.EmbedSpec
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.EmbedSpec
     - name: feeds
       type:
         list:
           elementType:
-            namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedSpec
+            namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedSpec
           elementRelationship: atomic
     - name: format
       type:
@@ -122,7 +122,7 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: username
       type:
         scalar: string
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroupStatus
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedGroupStatus
   map:
     fields:
     - name: conditions
@@ -137,7 +137,7 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         list:
           elementType:
-            namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedStatus
+            namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedStatus
           elementRelationship: associative
           keys:
           - rssUrl
@@ -147,15 +147,15 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: webhookSecretResourceVersion
       type:
         scalar: string
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedSpec
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedSpec
   map:
     fields:
     - name: embed
       type:
-        namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.EmbedSpec
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.EmbedSpec
     - name: filter
       type:
-        namedType: com.github.maverickd650.rss2discord-operator.api.v1alpha1.Filter
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1alpha1.Filter
     - name: format
       type:
         scalar: string
@@ -172,7 +172,7 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: rssUrl
       type:
         scalar: string
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedStatus
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedStatus
   map:
     fields:
     - name: backoffUntil
@@ -218,7 +218,7 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: stateVersion
       type:
         scalar: numeric
-- name: com.github.maverickd650.rss2discord-operator.api.v1alpha1.Filter
+- name: com.github.maverickd650-labs.rss2discord.api.v1alpha1.Filter
   map:
     fields:
     - name: keywords
