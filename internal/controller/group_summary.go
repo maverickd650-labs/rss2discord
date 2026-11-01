@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -37,15 +38,15 @@ import (
 // compared, so an unrelated spec edit doesn't repeat it. Only the
 // InvalidInterval reason produces one: warning is that condition's message and
 // emit is true exactly on the transition into it (or a change of its message).
-// webhookErr outranks the interval problem on Ready, so while it is set no
+// groupErr outranks the interval problem on Ready, so while it is set no
 // Event is emitted here.
-func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, webhookErr error) (warning string, emit bool) {
+func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) (warning string, emit bool) {
 	prevReason, prevMessage := "", ""
 	if prev := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); prev != nil {
 		prevReason, prevMessage = prev.Reason, prev.Message
 	}
 
-	setReadyCondition(feedGroup, webhookErr, cad.err)
+	setReadyCondition(feedGroup, groupErr, cad.err)
 	setFeedReachableCondition(feedGroup)
 
 	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
@@ -58,26 +59,35 @@ func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, webhookErr error
 
 // setReadyCondition summarizes the outcome of a reconciliation into a single
 // "Ready" condition, leaving Status.Feeds (LastError, Conditions, etc.) as
-// the detailed source of truth for *which* feed and *why*. webhookErr, if
-// set, means the webhook Secret itself couldn't be resolved -- a
-// group-level failure that preempts any per-feed status, since no feed was
-// even attempted.
+// the detailed source of truth for *which* feed and *why*. groupErr, if
+// set, is a group-level failure that preempts any per-feed status: the
+// webhook Secret couldn't be resolved, so no feed was even attempted
+// (WebhookUnresolved), or a feed panicked, so the pass stopped there
+// (ReconcilePanicked, a *feedPanic; the message omits the stack).
 //
 // intervalErr, if set, means spec.interval or spec.retryInterval can't be
 // parsed (see cadence.err) and the controller is polling on its
-// default cadence instead. It ranks below webhookErr -- with no feed
+// default cadence instead. It ranks below groupErr -- with no feed
 // processed, the webhook failure is the more fundamental problem and its
 // retry cadence is the one that matters -- but above the per-feed summary:
 // the spec is wrong no matter how the feeds fared, and until it's fixed the
 // group is not running on the schedule the user asked for. The InvalidInterval
 // condition clears on its own the reconcile after the spec is corrected.
-func setReadyCondition(feedGroup *v1alpha1.FeedGroup, webhookErr, intervalErr error) {
-	if webhookErr != nil {
+func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr error) {
+	if groupErr != nil {
+		// A pass a feed panicked in did not get through the group, whatever
+		// the feeds' own statuses say (one restored after the panic carries
+		// no failure); a webhook that can't be resolved stops it before it
+		// starts.
+		reason, message := reasonWebhookUnresolved, groupErr.Error()
+		if fp, ok := errors.AsType[*feedPanic](groupErr); ok {
+			reason, message = reasonReconcilePanicked, fp.summary()
+		}
 		apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             reasonWebhookUnresolved,
-			Message:            clampText(webhookErr.Error(), maxConditionMessageBytes),
+			Reason:             reason,
+			Message:            clampText(message, maxConditionMessageBytes),
 			ObservedGeneration: feedGroup.Generation,
 		})
 		return

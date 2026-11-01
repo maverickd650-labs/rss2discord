@@ -25,6 +25,9 @@ package controller
 // Group-level Ready and FeedReachable condition reasons.
 const (
 	reasonWebhookUnresolved = "WebhookUnresolved"
+	// reasonReconcilePanicked is the Ready reason for a reconcile a feed
+	// panicked in (see processFeed): the feeds after it were not processed.
+	reasonReconcilePanicked = "ReconcilePanicked"
 	reasonReconciled        = "Reconciled"
 	reasonFeedErrors        = "FeedErrors"
 	reasonAllFeedsReachable = "AllFeedsReachable"

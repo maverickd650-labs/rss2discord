@@ -30,9 +30,10 @@ import (
 // requeueDecision). The
 // status write (applyStatus) is skipped when the status hasn't actually
 // changed from original, avoiding an API round trip for unchanged status.
-// webhookErr, if non-nil, means the reconcile never got far enough to
-// process any feed (the webhook Secret couldn't be resolved); it takes over
-// the Ready condition unconditionally, since per-feed status is stale/empty
+// groupErr, if non-nil, means the reconcile did not get through the group:
+// the webhook Secret couldn't be resolved, so no feed was processed, or a feed
+// panicked (a *feedPanic), so the ones after it weren't. It takes over the
+// Ready condition unconditionally, since per-feed status is stale or partial
 // and would otherwise misreport as healthy.
 //
 // An Interval/RetryInterval that time.ParseDuration rejects (the CRD Pattern
@@ -49,13 +50,23 @@ import (
 // externally-dictated wait -- currently only Discord's rate-limit Retry-After -- since that
 // duration is already the exact minimum wait Discord demands, not a
 // self-chosen periodicity that benefits from desynchronization.
-func (r *FeedGroupReconciler) settleGroup(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, cad cadence, decision requeueDecision, webhookErr error) (ctrl.Result, error) {
+func (r *FeedGroupReconciler) settleGroup(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, cad cadence, decision requeueDecision, groupErr error) (ctrl.Result, error) {
+	return r.settle(ctx, feedGroup, original, cad, decision, groupErr, true)
+}
+
+// settle is settleGroup, with observed false for a pass that did not get
+// through the group (a feed panicked): ObservedGeneration is then left as it
+// was, so the next reconcile still sees a changed spec and forces every feed
+// due.
+func (r *FeedGroupReconciler) settle(ctx context.Context, feedGroup *v1alpha1.FeedGroup, original *v1alpha1.FeedGroupStatus, cad cadence, decision requeueDecision, groupErr error, observed bool) (ctrl.Result, error) {
 	// A parse error in the cadence already fell back to the default; it is
 	// reported via cad.err below, for both fields at once.
 	duration := decision.wait()
 
-	feedGroup.Status.ObservedGeneration = feedGroup.Generation
-	if warning, emit := summarizeGroup(feedGroup, cad, webhookErr); emit && r.Recorder != nil {
+	if observed {
+		feedGroup.Status.ObservedGeneration = feedGroup.Generation
+	}
+	if warning, emit := summarizeGroup(feedGroup, cad, groupErr); emit && r.Recorder != nil {
 		r.Recorder.Eventf(feedGroup, nil, corev1.EventTypeWarning, reasonInvalidInterval, eventActionInvalidConfig, "%s", warning)
 	}
 

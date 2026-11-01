@@ -18,6 +18,7 @@ package controller
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -256,6 +257,17 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 	setReadyCondition(both, webhookErr, intervalErr)
 	if got := readyReason(both); got != "WebhookUnresolved" {
 		t.Fatalf("with a webhook failure and a bad interval: reason = %q, want WebhookUnresolved", got)
+	}
+
+	// A feed that panicked before handling anything was restored without a
+	// failure, so the feeds alone would read healthy: the panic decides Ready.
+	panicked := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u"}}}}
+	setReadyCondition(panicked, &feedPanic{url: "u", value: testBoom, stack: []byte("goroutine 1")}, intervalErr)
+	if got := readyReason(panicked); got != reasonReconcilePanicked {
+		t.Fatalf("after a feed panicked: reason = %q, want %q", got, reasonReconcilePanicked)
+	}
+	if msg := apimeta.FindStatusCondition(panicked.Status.Conditions, v1alpha1.ConditionTypeReady).Message; strings.Contains(msg, testBoom) || strings.Contains(msg, "goroutine") {
+		t.Fatalf("Ready message %q carries the panic value or stack", msg)
 	}
 
 	// Correcting the interval clears the condition on the next reconcile.

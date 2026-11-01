@@ -1359,6 +1359,73 @@ var _ = Describe("FeedGroup Controller", func() {
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 
+		It("should persist what a reconcile sent before a feed panicked, and not send it again", func() {
+			const feedGroupName = "test-feedgroup-panic"
+
+			By("Creating a FeedGroup whose feed has two new entries")
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-panic", createRSSFeed(
+				testEntry{
+					title:       "Panic Older Article",
+					description: "Sent before the panic",
+					link:        "https://example.com/panic-older-article",
+					pubDate:     time.Now().Add(-2 * time.Hour).Format(time.RFC1123Z),
+					guid:        "panic-older-article",
+				},
+				testEntry{
+					title:       "Panic Newer Article",
+					description: "Its send panics the first time",
+					link:        "https://example.com/panic-newer-article",
+					pubDate:     time.Now().Add(-time.Hour).Format(time.RFC1123Z),
+					guid:        "panic-newer-article",
+				},
+			))
+			realBuilder := reconciler.DiscordClientBuilder
+			reconciler.DiscordClientBuilder = func(webhookURL string) MessageSender {
+				return &panicAfterSender{inner: realBuilder(webhookURL), after: 1}
+			}
+
+			By("Reconciling with a sender that panics on the second send")
+			_, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).To(MatchError(ContainSubstring("panic while processing feed")))
+			Expect(discordServer.MessageCount()).To(Equal(1))
+
+			By("Verifying the sent entry was persisted despite the panic")
+			updated := &rss2discordv1alpha1.FeedGroup{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
+			fs := feedStatusFor(updated, rssServer.URL())
+			Expect(fs.LastSeenEntry).To(Equal("panic-older-article"))
+			Expect(fs.LastSent).To(HaveLen(1))
+			Expect(fs.ETag).To(BeEmpty())
+			Expect(fs.LastError).To(ContainSubstring(errDeliveryPanicked.Error()))
+			By("Verifying the incomplete pass did not advance ObservedGeneration")
+			Expect(updated.Status.ObservedGeneration).To(BeZero())
+			By("Verifying the group is not reported Ready while a feed panics")
+			ready := apimeta.FindStatusCondition(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal(reasonReconcilePanicked))
+			Expect(ready.Message).To(ContainSubstring(rssServer.URL()))
+			By("Verifying the panic value and stack are kept out of every persisted field")
+			Expect(ready.Message).NotTo(ContainSubstring(sendExplodedPanic))
+			Expect(ready.Message).NotTo(ContainSubstring("goroutine"))
+			Expect(fs.LastError).NotTo(ContainSubstring(sendExplodedPanic))
+			for _, c := range fs.Conditions {
+				Expect(c.Message).NotTo(ContainSubstring(sendExplodedPanic))
+			}
+
+			By("Reconciling again at once, with a working sender")
+			reconciler.DiscordClientBuilder = realBuilder
+			_, err = reconcileFeedGroupNow(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying only the unsent entry was delivered, not the one sent before the panic")
+			Expect(discordServer.MessageCount()).To(Equal(2))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
+			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
+			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(BeEmpty())
+			Expect(apimeta.IsStatusConditionTrue(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)).To(BeTrue())
+		})
+
 		It("should persist status and send once when the interval cannot be parsed", func() {
 			const feedGroupName = "test-feedgroup-invalid-interval"
 
@@ -2439,4 +2506,33 @@ var _ = Describe("Reconcile API error paths", func() {
 
 		Expect(err).To(MatchError(boom))
 	})
+
+	It("should report both a feed's panic and the failed status write that followed it", func() {
+		const feedGroupName = "test-feedgroup-panic-apply-error"
+		_, _, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-panic-apply-error", createRSSFeed(
+			testEntry{title: "Panic Apply Error", link: "https://example.com/panic-apply-error", guid: "panic-apply-error", pubDate: time.Now().Format(time.RFC1123Z)},
+		))
+		boom := errors.New("status apply rejected")
+		reconciler.Client = &failingClient{Client: k8sClient, statusApplyErr: boom}
+		reconciler.DiscordClientBuilder = func(string) MessageSender { return &panicAfterSender{} }
+
+		_, err := reconcileFeedGroupNow(ctx, reconciler, feedGroupName)
+
+		Expect(err).To(MatchError(boom))
+		Expect(err).To(MatchError(ContainSubstring("panic while processing feed")))
+	})
 })
+
+// panicAfterSender forwards the first after sends to inner, then panics.
+type panicAfterSender struct {
+	inner       MessageSender
+	after, sent int
+}
+
+func (p *panicAfterSender) SendMessage(ctx context.Context, msg discord.Message) error {
+	if p.sent >= p.after {
+		panic(sendExplodedPanic)
+	}
+	p.sent++
+	return p.inner.SendMessage(ctx, msg)
+}

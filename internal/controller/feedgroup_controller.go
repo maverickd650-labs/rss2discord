@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -132,7 +135,18 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// An unparsable Interval is reported by settleGroup below; the pass only
 	// uses the cadence's default for the due check.
-	verdict, plan := reconcilePass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, cad, time.Now().UTC(), prep.specChanged)
+	verdict, plan, panicked := containedPass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, cad, time.Now().UTC(), prep.specChanged)
+	if panicked != nil {
+		// Write what the pass got done, then fail the reconcile as the panic
+		// would have: controller-runtime logs it and requeues with backoff.
+		// The pass stopped at the panicking feed, so the feeds after it are
+		// not observed at this generation: ObservedGeneration stays put, and
+		// a spec change still forces them due on the retry.
+		if _, err := r.settle(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), panicked, false); err != nil {
+			return ctrl.Result{}, errors.Join(panicked, err)
+		}
+		return ctrl.Result{}, panicked
+	}
 
 	decision := plan.requeue(cad, verdict.retry, verdict.retryAfter)
 	return r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, decision, nil)
@@ -246,10 +260,98 @@ type feedRun struct {
 // feedSync.apply. The returned verdict says whether the reconcile should retry
 // sooner than the normal interval and, if Discord rate limited the webhook, how
 // long to wait before the next attempt.
+//
+// A panic while the sync is applied is not settled normally, but it is not
+// left to discard the feed's progress either: entries already posted to
+// Discord would be posted again on the next reconcile, and again on every
+// retry if the panic is deterministic. processFeed secures the feed's status
+// (feedSync.secureAfterPanic: restored to how it was when nothing was handled
+// yet, settled as pending once something was) and re-raises the panic as a
+// *feedPanic, which Reconcile recovers to write the group's status before
+// failing the reconcile.
 func processFeed(ctx context.Context, run feedRun) attemptVerdict {
 	fs := feedStatusFor(run.group, run.feed.RSSUrl)
+	before := fs.DeepCopy()
 	syncer := openFeedSync(fs, run.fetched.result, feedSyncSpecFor(run.group, run.now))
-	return syncer.apply(ctx, run, run.newAttempt(fs))
+	attempt := run.newAttempt(fs)
+	defer func() {
+		if p := recover(); p != nil {
+			syncer.secureAfterPanic(before, attempt, errDeliveryPanicked)
+			panic(&feedPanic{url: run.feed.RSSUrl, value: p, stack: debug.Stack()})
+		}
+	}()
+	return syncer.apply(ctx, run, attempt)
+}
+
+// errDeliveryPanicked is the failure recorded for a feed whose delivery a
+// panic interrupted after it had handled an entry (see
+// feedSync.secureAfterPanic), so the feed reads as failing and is retried on
+// the reconcile's error backoff rather than its next poll. It is recorded as
+// is, never wrapping the panic value: LastError, the Delivered condition and
+// Events are persisted and widely readable, and a panic value is arbitrary
+// (it may quote a payload, a URL or a dependency's internals). The value and
+// stack go only to the reconcile error, which is logged (feedPanic.Error).
+var errDeliveryPanicked = errors.New("delivery interrupted by a panic")
+
+// feedPanic is a panic raised while processFeed applied one feed's fetch,
+// re-raised once that feed's status was secured (see processFeed). It is the
+// only panic Reconcile recovers: any other one may have left the status
+// half-written, so it propagates unchanged and nothing is written.
+type feedPanic struct {
+	url   string
+	value any
+	stack []byte
+}
+
+// Error is the diagnostic for the reconcile error, which controller-runtime
+// logs: the panic's detail and its stack. It is never persisted; see summary.
+func (p *feedPanic) Error() string {
+	return fmt.Sprintf("panic while processing feed %s: %s\n%s", p.url, p.detail(), p.stack)
+}
+
+// detail describes the panic value for the log without its content, unless
+// the Go runtime wrote it. A runtime error's message (an out-of-range index,
+// a nil dereference, a failed type assertion) comes from the runtime and names
+// only types and indices. Any other value is arbitrary -- a panic(err) can
+// carry a webhook URL with its token, which the Discord client otherwise
+// never lets into an error (redactURLError) -- so only its type is logged.
+// The stack, which says where the panic happened, holds no string contents.
+func (p *feedPanic) detail() string {
+	if rerr, ok := p.value.(goruntime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("a %T value (withheld)", p.value)
+}
+
+// summary is the stable description persisted in the Ready condition: the
+// feed and the panic's class (a Go runtime error or any other panic), never
+// the panic value, which is arbitrary and may carry data that must not land in
+// a status every reader of the FeedGroup can see.
+func (p *feedPanic) summary() string {
+	class := "a panic"
+	if _, ok := p.value.(goruntime.Error); ok {
+		class = "a runtime error"
+	}
+	return fmt.Sprintf("%s interrupted processing feed %s; see the controller log for the details", class, p.url)
+}
+
+// containedPass is reconcilePass with a *feedPanic recovered and returned
+// rather than propagated, so Reconcile can still write the group's status
+// (the feeds processed before it, and the panicking feed as secured).
+func containedPass(ctx context.Context, feedGroup *v1alpha1.FeedGroup, fetcher FeedFetcher, sender MessageSender,
+	recorder events.EventRecorder, cad cadence, now time.Time, force bool,
+) (verdict attemptVerdict, plan feedPlan, panicked *feedPanic) {
+	defer func() {
+		if p := recover(); p != nil {
+			fp, ok := p.(*feedPanic)
+			if !ok {
+				panic(p)
+			}
+			panicked = fp
+		}
+	}()
+	verdict, plan = reconcilePass(ctx, feedGroup, fetcher, sender, recorder, cad, now, force)
+	return verdict, plan, nil
 }
 
 // webhook returns the group's Discord webhook URL, read uncached from its
