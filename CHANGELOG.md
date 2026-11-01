@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.15.0...v0.16.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* statuses with stateVersion 0 are no longer migrated. Upgrade through 0.14.x or 0.15.x first and confirm no feed is still on the old format (see the README upgrade section).
+
+### Features
+
+* remove support for pre-stateVersion-1 feed statuses ([#356](https://github.com/maverickd650-labs/rss2discord/issues/356)) ([d4c6982](https://github.com/maverickd650-labs/rss2discord/commit/d4c6982ece00c6b3ea003b284ce4fad90788a31f))
+
 ## [0.15.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.14.0...v0.15.0) (2026-11-01)
 
 
