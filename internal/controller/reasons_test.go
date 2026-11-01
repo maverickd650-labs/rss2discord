@@ -444,6 +444,13 @@ func (f *reasonFlow) traceCallResult(call *ssa.Call, i int, follow func(ssa.Valu
 		for _, arg := range call.Call.Args {
 			follow(arg)
 		}
+		// Whatever a call out of the package does to its arguments, a string it
+		// returns is not a named constant, even when every argument is.
+		if results := call.Call.Signature().Results(); i >= 0 && i < results.Len() {
+			if basic, ok := results.At(i).Type().Underlying().(*types.Basic); ok && basic.Info()&types.IsString != 0 {
+				f.problems[fmt.Sprintf("%s: the string result of an unresolved call reaches %s", f.fset.Position(call.Pos()), f.where)] = true
+			}
+		}
 		return
 	}
 	for _, callee := range callees {
@@ -697,6 +704,29 @@ func buildSSA(fset *token.FileSet, pkg *types.Package, files []*ast.File, info *
 	return ssaPkg
 }
 
+// TestCheckReasons_UnresolvedStringResults pins what a call out of the package
+// does to a reason: its string result is not a named constant, whatever its
+// arguments were, while a result of another type is not a reason at all.
+func TestCheckReasons_UnresolvedStringResults(t *testing.T) {
+	for _, tc := range []struct {
+		name, src string
+		flagged   bool
+	}{
+		{name: "transformed constant", src: `func f() { a.warn(ext.Upper(reasonReconciled), action, "f") }`, flagged: true},
+		{name: "string element of a tuple", src: `func f() { r, _ := ext.Split(reasonOther); a.warn(r, action, "f") }`, flagged: true},
+		{name: "non-string element of a tuple", src: `func f() { _, n := ext.Split(reasonOther); a.warn(reasonOther, action, string(rune(n))) }`},
+		{name: "non-string result off the reason path", src: `func f() { n := ext.Count(reasonOther); a.warn(reasonOther, action, string(rune(n))) }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			problems := checkSnippet(t, tc.src)
+			got := slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "string result of an unresolved call") })
+			if got != tc.flagged {
+				t.Fatalf("problems %v, flagged=%v want %v for:\n%s", problems, got, tc.flagged, tc.src)
+			}
+		})
+	}
+}
+
 // TestCheckReasonSpellingRejectsDuplicateConstSpellings ensures that even
 // the designated reason files contain only one literal declaration per value.
 func TestCheckReasonSpellingRejectsDuplicateConstSpellings(t *testing.T) {
@@ -840,7 +870,7 @@ const snippetHeader = "package controller\n\nimport (\n\t\"ext\"\n\tmetav1 \"met
 // function of another package.
 var fakeImports = map[string]string{
 	"meta": "package meta\ntype Condition struct {\n\tType, Status, Reason, Message string\n\tObservedGeneration int64\n}\n",
-	"ext":  "package ext\nfunc Upper(s string) string { return s }\n",
+	"ext":  "package ext\nfunc Upper(s string) string { return s }\nfunc Split(s string) (string, int) { return s, 0 }\nfunc Count(s string) int { return len(s) }\n",
 }
 
 type fakeImporter map[string]*types.Package
