@@ -60,7 +60,7 @@ func FeedGroup(name, namespace string) *FeedGroupApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 func ExtractFeedGroupFrom(feedGroup *apiv1alpha1.FeedGroup, fieldManager string, subresource string) (*FeedGroupApplyConfiguration, error) {
 	b := &FeedGroupApplyConfiguration{}
-	err := managedfields.ExtractInto(feedGroup, internal.Parser().Type("com.github.maverickd650.rss2discord-operator.api.v1alpha1.FeedGroup"), fieldManager, b, subresource)
+	err := managedfields.ExtractInto(feedGroup, internal.Parser().Type("com.github.maverickd650-labs.rss2discord.api.v1alpha1.FeedGroup"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
