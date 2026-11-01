@@ -15,9 +15,7 @@ jobs:
     environment:
       name: bot
       deployment: false
-    permissions:
-      contents: write # to create release commits/tags
-      pull-requests: write # to open/update the release PR
+    permissions: {}
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
