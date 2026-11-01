@@ -1,6 +1,6 @@
 # Quick Start
 
-See [README.md](README.md) for full documentation. This is just the fastest path to a running feed.
+See [README.md](../README.md) for full documentation. This is just the fastest path to a running feed.
 
 ## 1. Deploy the operator
 

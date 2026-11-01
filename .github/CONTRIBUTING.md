@@ -15,7 +15,7 @@ mise install
 mise run test
 ```
 
-See `.mise/config.toml` for the full task list, and the [CLAUDE.md](CLAUDE.md) "Commands" section
+See `../.mise/config.toml` for the full task list, and the [CLAUDE.md](../CLAUDE.md) "Commands" section
 for the most commonly used ones. Don't invoke `go test`/`golangci-lint` directly — the `mise`
 tasks wire up codegen, envtest assets, and a custom lint binary first.
 
@@ -28,7 +28,7 @@ tasks wire up codegen, envtest assets, and a custom lint binary first.
 4. `mise run test-e2e` runs against a throwaway Kind cluster it creates and deletes automatically
    — never point it at a real cluster.
 
-See [AGENTS.md](AGENTS.md) for kubebuilder scaffolding workflows (new APIs/webhooks/controllers)
+See [AGENTS.md](../AGENTS.md) for kubebuilder scaffolding workflows (new APIs/webhooks/controllers)
 and the architectural rationale behind the SSRF guards, status model, and metrics conventions.
 
 ## Security-sensitive paths
@@ -48,7 +48,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 generate `CHANGELOG.md` automatically, so this isn't just a style preference.
 
 Branch protection on `main` requires PRs to pass Lint, Test, and E2E Tests before merging — see
-the [PR template](.github/PULL_REQUEST_TEMPLATE.md) checklist for what to run locally first.
+the [PR template](PULL_REQUEST_TEMPLATE.md) checklist for what to run locally first.
 
 **Never write a bare `owner/repo#123` reference** (e.g. `kubernetes-sigs/kubebuilder#4809`) in a
 commit message, PR title/body, or comment — even just to cite an upstream issue for context.
@@ -58,4 +58,4 @@ external issue, use the full URL or phrase it as `owner/repo issue 123` instead.
 
 ## Code of Conduct
 
-This project follows the [Contributor Covenant](.github/CODE_OF_CONDUCT.md).
+This project follows the [Contributor Covenant](https://github.com/maverickd650-labs/.github/blob/main/CODE_OF_CONDUCT.md).
