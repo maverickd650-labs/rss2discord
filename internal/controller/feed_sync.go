@@ -29,17 +29,21 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+// currentStateVersion is the FeedStatus.StateVersion this controller writes: the
+// format of the stored LastSeenEntry and LastSent identities.
+const currentStateVersion = 1
+
 // A feedSync applies one fetch of one feed to that feed's FeedStatus. It is the
 // single owner of two things:
 //
-//   - the ORDER in which a fetch is applied: legacy state is read before
-//     anything changes; entries are stamped and sorted; the delivery ledger is
+//   - the ORDER in which a fetch is applied: entries are stamped and sorted;
+//     the delivery ledger is
 //     built once, over the whole sorted fetch and before the catch-up trim, so
 //     an entry's stripped identity is only unique if it is across the feed;
-//     both identity migrations run through it; the watermark lookup and
+//     the identity migration runs through it; the watermark lookup and
 //     planDelivery follow, then the catch-up limit and the backlog skip.
 //   - SETTLEMENT: whether the fetch is accounted for, which is the only thing
-//     that decides FeedStatus.Initialized, the legacy stateVersion, whether the
+//     that decides FeedStatus.Initialized, the stateVersion, whether the
 //     response's validators are stored, whether a failure is cleared, and
 //     LastSent pruning (see close).
 //
@@ -57,9 +61,6 @@ type feedSync struct {
 	fetch rss.FetchResult
 	spec  feedSyncSpec
 
-	// legacy is what fs, as it was before this sync, still needs from the
-	// legacy reading; see legacyState.
-	legacy legacyState
 	// wasInitialized is fs.Initialized before this sync.
 	wasInitialized bool
 
@@ -71,10 +72,6 @@ type feedSync struct {
 	// plan is what planDelivery decided; set by begin. Its window is read
 	// through entries and renderEvidence.
 	plan deliveryPlan
-	// cappedAmbiguousLegacy says the catch-up was capped at
-	// defaultCatchUpLimit because fs is an ambiguous legacy status; set by
-	// begin, and logged by logLegacyCatchUpCap (legacy.go).
-	cappedAmbiguousLegacy bool
 	// skippedBacklog is how many existing entries the begin step skipped over, for a
 	// first sync with catchUpLimit 0 (see skipBacklog); 0 otherwise. apply
 	// records the BacklogSkipped outcome.
@@ -143,7 +140,6 @@ func openFeedSync(fs *v1alpha1.FeedStatus, fetch rss.FetchResult, spec feedSyncS
 		fs:             fs,
 		fetch:          fetch,
 		spec:           spec,
-		legacy:         readLegacyState(fs),
 		wasInitialized: fs.Initialized,
 	}
 }
@@ -205,7 +201,6 @@ func (s *feedSync) apply(ctx context.Context, run feedRun, attempt feedAttempt) 
 	}
 
 	s.begin()
-	s.logLegacyCatchUpCap(ctx, feed.RSSUrl)
 	if s.skippedBacklog > 0 {
 		attempt.record(attemptOutcome{kind: attemptBacklogSkipped, count: s.skippedBacklog}, nil)
 	}
@@ -270,15 +265,13 @@ func (s *feedSync) begin() {
 	// before the migrations (which only change fs) and any catch-up trim below,
 	// so an entry's stripped identity is only unique if it is across the feed.
 	s.ledger = newDeliveryLedger(s.fs, entries)
-	migrateIdentities(s.ledger, &s.legacy, s.spec.catchUpLimit)
+	migratePreviousIdentities(s.ledger)
 	s.plan = planDelivery(deliveryInputs{
 		entries:        entries,
 		watermark:      s.ledger.resume(),
 		catchUpLimit:   s.spec.catchUpLimit,
-		legacy:         s.legacy,
 		wasInitialized: s.wasInitialized,
 	})
-	s.cappedAmbiguousLegacy = s.plan.cappedAmbiguousLegacy
 	if s.plan.skipBacklog {
 		s.skipBacklog(entries)
 	}
@@ -352,16 +345,9 @@ func (s *feedSync) skipBacklog(entries []rss.Entry) {
 // that decides these, and apply runs it exactly once, last.
 //
 //   - Initialized: set once the feed's configuration is known to be usable and,
-//     for an ambiguous legacy status, only once the document is accounted for.
-//     Marking it earlier would let a config error on a non-empty first fetch
-//     leave Initialized true with no watermark, so a fixed config would deliver
-//     the whole backlog despite catchUpLimit 0.
-//   - Legacy settlement: an ambiguous legacy status is capped in memory only
-//     (see planDelivery), so it is settled once the fetch is accounted for, not
-//     before: settling it earlier would let a failed first send leave a
-//     current, watermark-less status that no longer gets the cap, and the next
-//     attempt would deliver the whole backlog. A 304 repeats a fetch an
-//     ambiguous legacy status can't account for, so it settles nothing.
+//     for a config error, never: marking it earlier would let a config error
+//     on a non-empty first fetch leave Initialized true with no watermark, so
+//     a fixed config would deliver the whole backlog despite catchUpLimit 0.
 //   - Validators: stored only when nothing is pending. If a send fails, storing
 //     the new ETag would make the next conditional GET return 304 before the
 //     unsent entry is retried, silently dropping it. pending (not "should
@@ -372,31 +358,26 @@ func (s *feedSync) skipBacklog(entries []rss.Entry) {
 //     nothing new to send doesn't keep reading as failing.
 //   - LastSent: pruned after a sync that sent or looked at entries.
 //
-// The legacy stateVersion is advanced last, and only when nothing in fs still
-// needs the legacy reading (see legacyState.settleOnClose).
+// The stateVersion is stamped last, on every verdict that settles anything.
 func (s *feedSync) close(verdict syncVerdict) {
 	s.closing = true
 	switch verdict {
 	case syncFetchFailed, syncConfigError:
-		// Nothing was accounted for.
+		// Nothing was accounted for, and the status stays untouched.
+		return
 	case syncNotModified:
 		// A 304 confirms the feed has no new entries, just as much a
 		// successful check as one that found something to send.
-		if !s.legacy.blocksInitialize() {
-			s.fs.Initialized = true
-		}
+		s.fs.Initialized = true
 		s.persistValidators()
 		clearFailure(s.fs)
 	case syncEmpty:
-		// Nothing to send, so it's always safe to persist. An empty feed
-		// also settles an ambiguous legacy status: anything after it is new.
+		// Nothing to send, so it's always safe to persist.
 		s.fs.Initialized = true
 		s.persistValidators()
 		clearFailure(s.fs)
 	case syncPending:
-		if !s.legacy.blocksInitialize() {
-			s.fs.Initialized = true
-		}
+		s.fs.Initialized = true
 		s.prune()
 	case syncAccountedFor:
 		s.fs.Initialized = true
@@ -407,7 +388,7 @@ func (s *feedSync) close(verdict syncVerdict) {
 		panic(fmt.Sprintf("feedSync: closed with invalid verdict %v", verdict))
 	}
 
-	s.legacy.settleOnClose(s.fs, verdict)
+	s.fs.StateVersion = currentStateVersion
 }
 
 // persistValidators stores the response's cache validators.

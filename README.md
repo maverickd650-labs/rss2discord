@@ -328,21 +328,24 @@ helm uninstall rss2discord-operator -n rss2discord-operator-system
 
 ### Upgrades and rollbacks
 
-Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. A release that adds the field migrates an older feed status in place on that feed's next fetch with entries:
+Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. This release no longer reads feed statuses written before `stateVersion` 1 (releases before 0.14), so upgrade through 0.14.x or 0.15.x first. Before upgrading past that point, confirm that no feed is still on the old format; an empty output with exit status 0 means the cluster is safe to upgrade:
 
-- **Feeds whose entries have GUIDs** keep identical state, so nothing is resent or skipped. A feed that never recorded a watermark follows the `catchUpLimit` row above.
-- **Feeds without GUIDs** have their old watermark and sent-entry keys resolved against that fetch:
-  - If the old watermark is in the fetch, delivery resumes right after it. An entry after it that the old state can't account for is replayed rather than skipped, so expect at most an occasional duplicate. That includes an entry missing from that fetch that later comes back after the watermark.
-  - If the old watermark has already scrolled out of the feed, the upgrade behaves as older releases did: only the newest `catchUpLimit` entries are sent (5 when it is 0), and older ones the old state can't account for are skipped.
-  - Older releases wrongly merged entries whose links differed only by fragment or `ref`, or that had no GUID, link or title, and delivered at most one entry of each such group. The upgrade replays only the newest `catchUpLimit` of a group, and the rest stay skipped, as they would have without the upgrade. The cap never skips past an undelivered entry outside such a group, because that entry is new, so merged entries dated after it are delivered too, even beyond `catchUpLimit`.
+```bash
+set -o pipefail
+kubectl get feedgroups -A -o json | jq -r '
+  .items[] | . as $g | .status.feeds[]? | select((.stateVersion // 0) < 1)
+  | "\($g.metadata.namespace)/\($g.metadata.name)  \(.rssUrl)"'
+```
 
-Rolling back to a release without `stateVersion` is safe, but feeds without GUIDs may post a few duplicates:
+A feed that does appear there would resend entries whose stored keys no longer match.
+
+A release before 0.14 drops `stateVersion` on its status writes, so after rolling back that far, upgrade through 0.15.x again before this release.
+
+Rolling back to a release that migrates `stateVersion` 0 statuses (0.14.x or 0.15.x) is safe, but feeds without GUIDs may post a few duplicates:
 
 - **Entries with a GUID** are identified the same way by every release, so they are not resent.
 - **Entries without a GUID whose link has a `#fragment` or `?ref=` parameter** are identified by the older release without them. It doesn't recognise the newer watermark or keys for these entries, so on its first fetch it resends up to `catchUpLimit` of the newest ones (5 when `catchUpLimit` is 0, as older releases treat it). It also goes back to treating links that differ only by fragment or `ref` as one entry.
 - **Entries with no GUID, link or title** all look the same to an older release, so at most one of them is resent.
-
-Every status write by the older release drops `stateVersion`, so upgrading again migrates the status a second time. Older releases write status with the same server-side-apply field owner, which releases the field, and the older CRD schema no longer has it. Keys written by either release stay valid, so upgrading again doesn't resend entries that either release already delivered, beyond the bounded replays described above. Only the elected leader reconciles, so during a rolling update the two releases hand over rather than writing status concurrently.
 
 ## Observability
 

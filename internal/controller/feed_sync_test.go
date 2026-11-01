@@ -44,10 +44,8 @@ var syncTestNow = time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 const (
 	syncTestModified = "Thu, 01 Jan 2026 00:00:00 GMT"
 	syncTestOldMod   = "Wed, 31 Dec 2025 00:00:00 GMT"
-	// syncTestTitle is the feed title of every fetch; syncTestLegacyChecked is
-	// when a legacy status was last checked.
-	syncTestTitle         = "Sync Feed"
-	syncTestLegacyChecked = "2025-12-29T00:00:00Z"
+	// syncTestTitle is the feed title of every fetch.
+	syncTestTitle = "Sync Feed"
 	// scrolledOutWatermark is a LastSeenEntry that no longer appears in the feed.
 	scrolledOutWatermark = "scrolled-out"
 )
@@ -99,17 +97,6 @@ func currentStatus() *v1alpha1.FeedStatus {
 	}
 }
 
-// ambiguousLegacyStatus is a status written before stateVersion 1 that was
-// checked but has no watermark and was never marked initialized: it can't say
-// whether the feed was empty when last checked (see legacyState.ambiguous).
-func ambiguousLegacyStatus() *v1alpha1.FeedStatus {
-	return &v1alpha1.FeedStatus{
-		RSSUrl:      exampleFeedURL,
-		LastChecked: syncTestLegacyChecked,
-		LastSent:    map[string]string{},
-	}
-}
-
 // failing marks fs as stuck on a failure that a settled sync would clear.
 func failing(fs *v1alpha1.FeedStatus) *v1alpha1.FeedStatus {
 	fs.LastError, fs.RetryCount, fs.BackoffUntil = testBoom, 3, "2031-02-03T04:05:06Z"
@@ -142,56 +129,9 @@ func expectPanic(t *testing.T, what string, fn func()) {
 	fn()
 }
 
-// An ambiguous legacy status under catchUpLimit 0 is capped at
-// defaultCatchUpLimit in memory only. A first send that fails (close with
-// syncPending) must leave it ambiguous, so the retry is capped the same way
-// instead of delivering the whole backlog; the cap only settles once the fetch
-// is accounted for.
-func TestFeedSync_FailedFirstSendKeepsTheAmbiguousLegacyCap(t *testing.T) {
-	entries := syncEntries(2 * defaultCatchUpLimit)
-	want := syncIDs(entries[len(entries)-defaultCatchUpLimit:])
-	fs := ambiguousLegacyStatus()
-
-	first := openFeedSync(fs, syncFetch(entries...), syncSpec(0))
-	first.begin()
-	if !first.cappedAmbiguousLegacy {
-		t.Fatal("an ambiguous legacy status under catchUpLimit 0 should be capped")
-	}
-	if got := syncIDs(first.entries()); !slices.Equal(got, want) {
-		t.Fatalf("first attempt considers %q, want the capped %q", got, want)
-	}
-	first.close(syncPending) // the send failed
-
-	if fs.Initialized || fs.StateVersion != 0 {
-		t.Fatalf("after the failed send: initialized=%t stateVersion=%d, want a still-ambiguous status", fs.Initialized, fs.StateVersion)
-	}
-	assertValidators(t, fs, "", "")
-
-	retry := openFeedSync(fs, syncFetch(entries...), syncSpec(0))
-	retry.begin()
-	if got := syncIDs(retry.entries()); !slices.Equal(got, want) {
-		t.Fatalf("retry considers %q, want the same capped %q", got, want)
-	}
-	for _, entry := range retry.entries() {
-		if retry.sent(entry) {
-			t.Fatalf("%s reads as sent before being handled", entry.ID)
-		}
-		retry.markHandled(entry)
-	}
-	retry.close(syncAccountedFor)
-
-	if !fs.Initialized || fs.StateVersion != currentStateVersion {
-		t.Fatalf("after the retry: initialized=%t stateVersion=%d, want a settled status", fs.Initialized, fs.StateVersion)
-	}
-	assertValidators(t, fs, validatorsNext, syncTestModified)
-	if fs.LastSeenEntry != entries[len(entries)-1].ID {
-		t.Fatalf("LastSeenEntry = %q, want the newest entry", fs.LastSeenEntry)
-	}
-}
-
-// A status that is not ambiguous is initialized and settled even when
-// something is pending: it keeps no cap that a failed send could lose.
-func TestFeedSync_PendingStillInitializesAStatusThatIsNotAmbiguous(t *testing.T) {
+// A pending sync still initializes the status and stamps its stateVersion; it
+// only withholds the validators.
+func TestFeedSync_PendingStillInitializesTheStatus(t *testing.T) {
 	fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}} // never checked
 	s := openFeedSync(fs, syncFetch(syncEntries(3)...), syncSpec(defaultCatchUpLimit))
 	s.begin()
@@ -249,20 +189,11 @@ func TestFeedSync_NotModified(t *testing.T) {
 		assertFailureCleared(t, fs, true)
 	})
 
-	t.Run("settles nothing for an ambiguous legacy status", func(t *testing.T) {
-		fs := ambiguousLegacyStatus()
-		s := openFeedSync(fs, rss.FetchResult{NotModified: true, ETag: validatorsNext}, syncSpec(0))
-		s.close(syncNotModified)
-		if fs.Initialized || fs.StateVersion != 0 {
-			t.Fatalf("initialized=%t stateVersion=%d, want the ambiguity kept", fs.Initialized, fs.StateVersion)
-		}
-		assertValidators(t, fs, validatorsNext, "")
-	})
 }
 
 func TestFeedSync_Empty(t *testing.T) {
-	t.Run("settles even an ambiguous legacy status", func(t *testing.T) {
-		fs := failing(ambiguousLegacyStatus())
+	t.Run("settles the status", func(t *testing.T) {
+		fs := failing(currentStatus())
 		s := openFeedSync(fs, rss.FetchResult{ETag: validatorsNext, LastModified: syncTestModified}, syncSpec(0))
 		verdict, ok := s.withoutEntries()
 		if !ok || verdict != syncEmpty {
@@ -270,7 +201,7 @@ func TestFeedSync_Empty(t *testing.T) {
 		}
 		s.close(verdict)
 		if !fs.Initialized || fs.StateVersion != currentStateVersion {
-			t.Fatalf("initialized=%t stateVersion=%d, want an empty feed to settle it: anything after is new", fs.Initialized, fs.StateVersion)
+			t.Fatalf("initialized=%t stateVersion=%d, want an empty feed settled", fs.Initialized, fs.StateVersion)
 		}
 		assertValidators(t, fs, validatorsNext, syncTestModified)
 		assertFailureCleared(t, fs, true)
@@ -285,17 +216,17 @@ func TestFeedSync_Empty(t *testing.T) {
 }
 
 // A fetch failure or a configuration error accounts for nothing: no
-// initialization, no validators, no cleared failure -- and a legacy status that
-// still needs its identities migrated keeps its old stateVersion.
+// initialization, no validators, no cleared failure, and the stored identities
+// are left as they were.
 func TestFeedSync_FailedAndMisconfiguredFetchesSettleNothing(t *testing.T) {
 	for _, verdict := range []syncVerdict{syncFetchFailed, syncConfigError} {
 		t.Run(fmt.Sprint(verdict), func(t *testing.T) {
 			fs := failing(&v1alpha1.FeedStatus{
 				RSSUrl:        exampleFeedURL,
-				LastChecked:   syncTestLegacyChecked,
-				LastSeenEntry: "legacy-watermark",
+				LastChecked:   "2025-12-29T00:00:00Z",
+				LastSeenEntry: "watermark",
 				ETag:          validatorsOld,
-				LastSent:      map[string]string{"legacy-key": legacySentAt},
+				LastSent:      map[string]string{"key": "2025-12-30T00:00:00Z"},
 			})
 			before := *fs.DeepCopy()
 			openFeedSync(fs, syncFetch(syncEntries(2)...), syncSpec(defaultCatchUpLimit)).close(verdict)
@@ -397,8 +328,8 @@ func TestFeedSync_BacklogSkipOnAFirstSync(t *testing.T) {
 // whole fetch, before the catch-up trim: with a limit of 1 only the newer
 // sibling is scanned, yet handling it must not make the older one read as sent.
 func TestFeedSync_LedgerIsBuiltOverTheUntrimmedFetch(t *testing.T) {
-	siblingA := linkEntry(legacyURLPrefix+"sync/post?ref=a", 0)
-	siblingB := linkEntry(legacyURLPrefix+"sync/post?ref=b", 1)
+	siblingA := linkEntry(identityURLPrefix+"sync/post?ref=a", 0)
+	siblingB := linkEntry(identityURLPrefix+"sync/post?ref=b", 1)
 	s := openFeedSync(currentStatus(), syncFetch(siblingA, siblingB), syncSpec(1))
 	s.begin()
 
@@ -438,34 +369,6 @@ func TestFeedSync_PreviousIdentitiesAreMigratedBeforeThePlan(t *testing.T) {
 	}
 	if got, want := syncIDs(s.entries()), []string{fresh.ID}; !slices.Equal(got, want) {
 		t.Fatalf("entries() = %q, want only the entry past the migrated watermark", got)
-	}
-}
-
-// A legacy status's identities are translated as part of begin, and its
-// stateVersion advances only when the fetch is accounted for as well.
-func TestFeedSync_LegacyIdentitiesAreMigratedByBegin(t *testing.T) {
-	link := linkEntry(legacyURLPrefix+"sync/legacy?ref=x", 0)
-	fresh := linkEntry(legacyURLPrefix+"sync/fresh?ref=x", 1)
-	fs := &v1alpha1.FeedStatus{
-		RSSUrl:        exampleFeedURL,
-		Initialized:   true,
-		LastChecked:   syncTestLegacyChecked,
-		LastSeenEntry: legacyEntryIdentity(link),
-		LastSent:      map[string]string{legacyKey(link): legacySentAt},
-	}
-
-	s := openFeedSync(fs, syncFetch(link, fresh), syncSpec(defaultCatchUpLimit))
-	s.begin()
-	if fs.LastSeenEntry != entryIdentity(link) {
-		t.Fatalf("LastSeenEntry = %q, want the current identity %q", fs.LastSeenEntry, entryIdentity(link))
-	}
-	if got, want := syncIDs(s.entries()), []string{fresh.ID}; !slices.Equal(got, want) {
-		t.Fatalf("entries() = %q, want %q", got, want)
-	}
-	s.markHandled(fresh)
-	s.close(syncAccountedFor)
-	if fs.StateVersion != currentStateVersion {
-		t.Fatalf("StateVersion = %d, want %d once migrated and accounted for", fs.StateVersion, currentStateVersion)
 	}
 }
 

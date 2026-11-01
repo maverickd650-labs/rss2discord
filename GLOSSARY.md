@@ -8,14 +8,14 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   (record the fetch outcome, the config check that must precede `begin`, `begin`, the
   send loop), derives the `syncVerdict` from how far it got and closes exactly once as its
   last act. It owns the order in which a fetch is applied (title stamping, sort, delivery
-  ledger over the untrimmed fetch, identity migrations, watermark lookup, delivery plan,
+  ledger over the untrimmed fetch, identity migration, watermark lookup, delivery plan,
   catch-up limit, backlog skip) and is the only place that settles the status. It hands
   the send loop the entries to consider (`entries`), the render-failure evidence window
   (`renderEvidence`) and two ledger operations (`sent`, `markHandled`).
 
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
-  legacy `StateVersion`, the stored ETag/Last-Modified validators, a cleared failure
+  `StateVersion`, the stored ETag/Last-Modified validators, a cleared failure
   (`LastError`, `RetryCount`, the feed backoff) and `LastSent` pruning. A fetch is
   *accounted for* when every entry from it was sent, filtered out, already sent or
   skipped; only then are validators stored, because a conditional GET that comes back 304
@@ -50,22 +50,16 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   fetch, the stripped key (`strippedKey`). Delivery uses `sent`/`markHandled`; the migrations
   use entry-index methods (`carriesOver`, `ownsPrevious`, `rekeySent`, `moveWatermark`,
   `setWatermark`) and the record's `unique`, so every "is this identity unique" rule is decided
-  in `ledger.go`. Nothing in `ledger.go` is legacy-only: the legacy pass composes the same
-  key-level primitives (`sentAtKey`, `recordKey`, `moveSent`) that `sent`, `markHandled` and
-  `rekeySent` use.
+  in `ledger.go`.
 
-**Identity migration** (`migrateIdentities`, `identity_migration.go`)
+**Identity migration** (`migratePreviousIdentities`, `identity_migration.go`)
 : Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
-  entries are identified now, on every fetch, from `feedSync.begin`. It is the one entry point
-  for two passes, run in this order: the legacy pass (`migrateLegacyIdentities`, in `legacy.go`, only for a
-  status written before `stateVersion` 1) and the previous-identity pass
-  (`migratePreviousIdentities`, for entries whose `rss.Entry.PreviousID` differs from their ID).
-  Both take the fetch's delivery ledger and write only through it. Before writing a stripped
-  key they ask it: the legacy pass hands it the recovered identities (`forgetIdentity`, `recordSentAt`,
-  which writes a stripped key only when it is the entry's own and unique in the fetch), the previous-identity pass asks `carriesOver` (full identities: may the stored entry
-  key move?) and, inside `rekeySent`, `ownsPrevious` (stripped identities: can an old stripped
-  key only have been this one moved entry's?). The two rules differ on purpose and both live in
-  the ledger. A stripped key a sibling shares is never recorded, or the sibling, alone under it
+  entries are identified now, on every fetch, from `feedSync.begin`, for entries whose
+  `rss.Entry.PreviousID` differs from their ID. It takes the fetch's delivery ledger and writes
+  only through it. Before writing a stripped key it asks the ledger `carriesOver` (full
+  identities: may the stored entry key move?) and, inside `rekeySent`, `ownsPrevious`
+  (stripped identities: can an old stripped key only have been this one moved entry's?). The
+  two rules differ on purpose and both live in the ledger. A stripped key a sibling shares is never recorded, or the sibling, alone under it
   later, would be taken as sent.
 
 **Watermark** (`FeedStatus.LastSeenEntry`)
@@ -77,12 +71,6 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   identity or by unique stripped identity) or `watermarkLost` (stored, but no entry of the
   fetch it stands for). `planDelivery` decides from it: found resumes past the entry; lost
   falls through to the catch-up cap, unlike none, which may skip the backlog.
-
-**Ambiguous legacy status** (`legacyState.ambiguous`, `legacy.go`)
-: A `FeedStatus` written before `stateVersion` 1, checked but with no watermark, that can't
-  say whether the feed was empty when last checked. Under `catchUpLimit: 0` it is capped
-  at `defaultCatchUpLimit` in memory only, so it stays ambiguous until a sync accounts for
-  the fetch.
 
 **Reconcile pass** (`reconcilePass`, `feedgroup_controller.go`)
 : The pure middle of a reconcile, once the webhook is resolved: plan the due feeds, fetch them

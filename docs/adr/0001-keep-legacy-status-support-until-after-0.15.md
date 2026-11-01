@@ -4,7 +4,7 @@ Date: 2026-10-31
 
 ## Status
 
-Accepted
+Accepted; carried out by the change that removed `internal/controller/legacy.go`.
 
 ## Context
 

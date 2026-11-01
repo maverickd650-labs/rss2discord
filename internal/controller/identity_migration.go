@@ -28,21 +28,6 @@ func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
 	return entry, true
 }
 
-// migrateIdentities is the one entry point that brings a feed's stored
-// identities (the LastSeenEntry watermark and the LastSent keys) in line with
-// how entries, sorted oldest-to-newest, are identified now. It runs the two
-// migrations in order -- first legacy's stateVersion 0 translation (a no-op for
-// a current status; see migrateLegacyIdentities for replayLimit), then the move
-// off PreviousID identities (migratePreviousIdentities) -- through the one
-// deliveryLedger of the fetch, so neither writes a stripped LastSent key a
-// sibling entry shares. The legacy pass has to go first: it reads the previous
-// ID as the legacy identity and writes under the current one, which is where
-// the second pass then finds it. Both are idempotent and run on every fetch.
-func migrateIdentities(ledger *deliveryLedger, legacy *legacyState, replayLimit int) {
-	legacy.migrate(ledger, replayLimit)
-	migratePreviousIdentities(ledger)
-}
-
 // migratePreviousIdentities carries a feed's stored identities over for the
 // Atom entries whose ID the parser now picks differently from earlier releases
 // (rss.Entry.PreviousID): the watermark and the dedup keys, which are keyed by

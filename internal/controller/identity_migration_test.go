@@ -40,7 +40,7 @@ func indexOfEntry(entries []rss.Entry, entry rss.Entry) int {
 	return slices.IndexFunc(entries, func(e rss.Entry) bool { return refOf(e) == refOf(entry) })
 }
 
-// TestStrippedOwnership_OwnStripped covers the question the legacy migration
+// TestStrippedOwnership_OwnStripped covers the question the previous-identity migration
 // asks through recordSentAt: may this stripped identity be recorded for this
 // entry? The entry key is always written; the stripped key only when want is set.
 func TestStrippedOwnership_OwnStripped(t *testing.T) {
@@ -109,98 +109,23 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 	}
 }
 
-// The legacy pass records a stripped LastSent key only for an entry's own
-// unique stripped identity, and the previous-identity pass only moves one onto
-// a unique one. Run together through migrateIdentities over one fetch, a
-// sibling alone under the identity both of them left must not read as sent.
-func TestMigrateIdentities_SiblingNeverInheritsAStrippedKey(t *testing.T) {
-	moved := changedID(ownLinkBase, rss.IDFromLink, sharedLinkBase+"#p", rss.IDFromLink)
-	sibling := changedID(sharedLinkBase+"#b", rss.IDFromLink, prevIDOld, rss.IDFromGUID)
-	entries := []rss.Entry{moved, sibling}
-	legacy := legacyEntryIdentity(moved)
+// The previous-identity pass only moves a stripped LastSent key onto a unique
+// stripped identity, so a sibling alone under the identity the moved entry
+// left must not read as sent.
+func TestMigratePreviousIdentities_SiblingNeverInheritsAStrippedKey(t *testing.T) {
+	// The sibling now shares the moved entry's new stripped identity, and the
+	// full key was pruned, leaving only the old stripped key.
+	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	sibling := ownershipLink(prevLinkNew + "#b")
+	fs := currentStatus()
+	fs.LastSent = map[string]string{strippedKey(prevLinkOld): prevSentAt}
+	s := openFeedSync(fs, syncFetch(moved, sibling), syncSpec(defaultCatchUpLimit))
+	s.begin()
 
-	t.Run("legacy status", func(t *testing.T) {
-		fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{hashIdentity(legacy): prevSentAt}}
-		s := openFeedSync(fs, syncFetch(entries...), syncSpec(defaultCatchUpLimit))
-		s.begin()
-
-		if got := fs.LastSent[computeEntryKey(moved)]; got != prevSentAt {
-			t.Errorf("moved entry's key = %q, want the carried-over %q; LastSent = %v", got, prevSentAt, fs.LastSent)
-		}
-		if _, ok := fs.LastSent[strippedKey(legacy)]; ok {
-			t.Errorf("stripped key %q recorded for an identity that is not the entry's own", legacy)
-		}
-		if !s.sent(moved) || s.sent(sibling) {
-			t.Errorf("sent(moved), sent(sibling) = %v, %v; want true, false", s.sent(moved), s.sent(sibling))
-		}
-	})
-
-	t.Run("current status", func(t *testing.T) {
-		// The sibling now shares the moved entry's new stripped identity, and the
-		// full key was pruned, leaving only the old stripped key.
-		moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
-		sibling := ownershipLink(prevLinkNew + "#b")
-		fs := currentStatus()
-		fs.LastSent = map[string]string{strippedKey(prevLinkOld): prevSentAt}
-		s := openFeedSync(fs, syncFetch(moved, sibling), syncSpec(defaultCatchUpLimit))
-		s.begin()
-
-		if _, ok := fs.LastSent[strippedKey(normalizeIdentity(prevLinkNew))]; ok {
-			t.Errorf("shared stripped key recorded; LastSent = %v", fs.LastSent)
-		}
-		if !s.sent(moved) || s.sent(sibling) {
-			t.Errorf("sent(moved), sent(sibling) = %v, %v; want true, false", s.sent(moved), s.sent(sibling))
-		}
-	})
-}
-
-// migrateIdentities translates a legacy status first: the legacy identity it
-// finds under a stateVersion 0 key is the entry's previous ID's stripped form,
-// which the previous-identity pass could not match, and it is idempotent.
-func TestMigrateIdentities_LegacyThenPrevious(t *testing.T) {
-	moved := changedID(prevIDNew, rss.IDFromGUID, prevLinkOld+"#frag", rss.IDFromLink)
-	legacy := legacyEntryIdentity(moved)
-	if legacy != normalizeIdentity(prevLinkOld) {
-		t.Fatalf("legacy identity = %q, test assumption broken", legacy)
+	if _, ok := fs.LastSent[strippedKey(normalizeIdentity(prevLinkNew))]; ok {
+		t.Errorf("shared stripped key recorded; LastSent = %v", fs.LastSent)
 	}
-	fs := &v1alpha1.FeedStatus{
-		LastSeenEntry: legacy,
-		LastSent:      map[string]string{hashIdentity(legacy): prevSentAt, strippedKey(legacy): prevSentAt},
-	}
-	state := readLegacyState(fs)
-	for range 2 {
-		migrateIdentities(newDeliveryLedger(fs, []rss.Entry{moved}), &state, defaultCatchUpLimit)
-	}
-
-	if !state.migrated {
-		t.Error("the legacy pass did not run for a stateVersion 0 status")
-	}
-	if fs.LastSeenEntry != prevIDNew {
-		t.Errorf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, prevIDNew)
-	}
-	if got := fs.LastSent[hashIdentity(prevIDNew)]; got != prevSentAt {
-		t.Errorf("new key = %q, want %q; LastSent = %v", got, prevSentAt, fs.LastSent)
-	}
-	if _, ok := fs.LastSent[hashIdentity(legacy)]; ok {
-		t.Errorf("legacy key kept; LastSent = %v", fs.LastSent)
-	}
-}
-
-// For a current status migrateIdentities runs only the previous-identity pass.
-func TestMigrateIdentities_CurrentStatusSkipsTheLegacyPass(t *testing.T) {
-	moved := changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)
-	fs := &v1alpha1.FeedStatus{
-		StateVersion:  currentStateVersion,
-		LastSeenEntry: prevIDOld,
-		LastSent:      map[string]string{hashIdentity(prevIDOld): prevSentAt},
-	}
-	state := readLegacyState(fs)
-	migrateIdentities(newDeliveryLedger(fs, []rss.Entry{moved}), &state, defaultCatchUpLimit)
-
-	if state.migrated {
-		t.Error("the legacy pass ran for a current status")
-	}
-	if fs.LastSeenEntry != prevIDNew || fs.LastSent[hashIdentity(prevIDNew)] != prevSentAt || len(fs.LastSent) != 1 {
-		t.Errorf("LastSeenEntry = %q, LastSent = %v; want the previous-identity move", fs.LastSeenEntry, fs.LastSent)
+	if !s.sent(moved) || s.sent(sibling) {
+		t.Errorf("sent(moved), sent(sibling) = %v, %v; want true, false", s.sent(moved), s.sent(sibling))
 	}
 }

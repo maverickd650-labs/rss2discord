@@ -64,9 +64,6 @@ type deliveryInputs struct {
 	watermark watermarkLookup
 	// catchUpLimit is the effective spec limit (the default when unset).
 	catchUpLimit int
-	// legacy is the feed's legacy state; its catch-up cap applies to an
-	// ambiguous status (see legacyState.capCatchUp).
-	legacy legacyState
 	// wasInitialized is fs.Initialized before this reconcile.
 	wasInitialized bool
 }
@@ -79,9 +76,6 @@ type deliveryPlan struct {
 	// skipBacklog says to record the newest of the whole fetch as the
 	// watermark instead of sending anything (scan is then nil).
 	skipBacklog bool
-	// cappedAmbiguousLegacy says the catch-up was capped at
-	// defaultCatchUpLimit because the status is an ambiguous legacy one.
-	cappedAmbiguousLegacy bool
 }
 
 // entries returns the entries the send loop should consider, oldest-to-newest:
@@ -107,16 +101,12 @@ func (p deliveryPlan) renderEvidence() []rss.Entry {
 // falls through to the catch-up cap rather than silently dropping new entries.
 // With no watermark at all and catchUpLimit 0, a true first sync (not yet
 // initialized) skips the backlog; a feed already fetched while empty delivers
-// everything, since all of it was published after that first sync; an ambiguous
-// legacy status is capped at defaultCatchUpLimit (see legacyState).
+// everything, since all of it was published after that first sync.
 func planDelivery(in deliveryInputs) deliveryPlan {
 	if in.watermark.state == watermarkFound {
 		return deliveryPlan{scan: in.entries, resumeAt: in.watermark.index + 1}
 	}
 	if in.catchUpLimit == 0 && in.watermark.state == watermarkNone {
-		if scan, capped := in.legacy.capCatchUp(in.entries); capped {
-			return deliveryPlan{scan: scan, cappedAmbiguousLegacy: true}
-		}
 		if !in.wasInitialized {
 			return deliveryPlan{skipBacklog: true}
 		}

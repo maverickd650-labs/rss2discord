@@ -295,12 +295,8 @@ type FeedStatus struct {
 	Initialized bool `json:"initialized,omitempty"`
 
 	// stateVersion is the format of this feed's lastSeenEntry and lastSent
-	// identities. It is absent (0) on statuses written by older controllers,
-	// whose identities dropped a link's fragment and ref query parameter and
-	// were empty for entries with no GUID, link or title; the controller
-	// translates those on the next fetch that returns entries and then sets
-	// it to 1. It also tells a status from before initialized existed apart
-	// from one whose first fetch hit a configuration error.
+	// identities. The controller sets it to 1; a status without it (0) was
+	// written before releases that understood it, and is no longer migrated.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	StateVersion int32 `json:"stateVersion,omitempty"`

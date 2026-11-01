@@ -174,20 +174,11 @@ func TestMigratePreviousIdentities_LongWatermark(t *testing.T) {
 	}
 }
 
-// A status written before stateVersion 1 holds identities from the old parser's
-// pick, so its legacy identity must be derived from the previous ID.
-func TestLegacyEntryIdentity_UsesThePreviousID(t *testing.T) {
-	entry := changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)
-	if got := legacyEntryIdentity(entry); got != prevIDOld {
-		t.Fatalf("legacyEntryIdentity = %q, want %q", got, prevIDOld)
-	}
-}
-
 // End to end through processFeed: a feed whose stored watermark and dedup keys
 // name the old identity does not resend the entry whose ID the parser now
 // picks differently, and carries on from there.
 func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
-	fg, feed := newMetricsFeedGroup(legacyStateNS, "previous-identity", "{{.Title}}")
+	fg, feed := newMetricsFeedGroup(identityStateNS, "previous-identity", "{{.Title}}")
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	fs := feedStatusFor(fg, feed.RSSUrl)
 	fs.LastChecked, fs.Initialized, fs.StateVersion = "2025-12-29T00:00:00Z", true, currentStateVersion
@@ -222,35 +213,6 @@ func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T)
 	// stripped identity.
 	if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
 		t.Fatalf("sibling taken as sent; LastSent = %v", fs.LastSent)
-	}
-}
-
-// The legacy migration records a link's legacy (stripped) identity only when it
-// is the entry's own unique stripped identity: an entry whose legacy identity
-// came from its previous ID must not leave a key a sibling would later match.
-func TestMigrateLegacyIdentities_StrippedKeyOnlyForOwnUniqueIdentity(t *testing.T) {
-	const (
-		ownLink    = "https://previous-identity.example.test/own"
-		sharedLink = "https://previous-identity.example.test/shared"
-	)
-	moved := changedID(ownLink, rss.IDFromLink, sharedLink+"#p", rss.IDFromLink)
-	sibling := changedID(sharedLink+"#b", rss.IDFromLink, "urn:previous-identity:sibling", rss.IDFromGUID)
-	entries := []rss.Entry{moved, sibling}
-	legacy := legacyEntryIdentity(moved)
-	if legacy != normalizeIdentity(sharedLink+"#p") {
-		t.Fatalf("legacy identity = %q, test assumption broken", legacy)
-	}
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{hashIdentity(legacy): prevSentAt}}
-	migrateLegacyIdentities(newDeliveryLedger(fs, slices.Clone(entries)), false, defaultCatchUpLimit)
-
-	if _, ok := fs.LastSent[computeEntryKey(moved)]; !ok {
-		t.Errorf("moved entry's key not carried over; LastSent = %v", fs.LastSent)
-	}
-	if _, ok := fs.LastSent[strippedKey(legacy)]; ok {
-		t.Errorf("stripped key %q recorded for a legacy identity that is not the entry's own", legacy)
-	}
-	if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
-		t.Errorf("sibling taken as sent; LastSent = %v", fs.LastSent)
 	}
 }
 
