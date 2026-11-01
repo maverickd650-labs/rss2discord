@@ -714,8 +714,12 @@ func TestCheckReasons_UnresolvedStringResults(t *testing.T) {
 	}{
 		{name: "transformed constant", src: `func f() { a.warn(ext.Upper(reasonReconciled), action, "f") }`, flagged: true},
 		{name: "string element of a tuple", src: `func f() { r, _ := ext.Split(reasonOther); a.warn(r, action, "f") }`, flagged: true},
-		{name: "non-string element of a tuple", src: `func f() { _, n := ext.Split(reasonOther); a.warn(reasonOther, action, string(rune(n))) }`},
-		{name: "non-string result off the reason path", src: `func f() { n := ext.Count(reasonOther); a.warn(reasonOther, action, string(rune(n))) }`},
+		// The non-string results below reach the reason itself, so only the type
+		// check keeps them from being reported.
+		{name: "non-string element of a tuple", src: `func f() { _, n := ext.Split(reasonOther); a.warn(string(rune(n)), action, "f") }`},
+		{name: "non-string result", src: `func f() { n := ext.Count(reasonOther); a.warn(string(rune(n)), action, "f") }`},
+		// And a string result that only reaches the message is not a reason.
+		{name: "string result off the reason path", src: `func f() { s := ext.Upper(reasonOther); a.warn(reasonOther, action, s) }`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			problems := checkSnippet(t, tc.src)
