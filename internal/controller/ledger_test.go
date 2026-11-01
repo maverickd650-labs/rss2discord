@@ -65,11 +65,11 @@ func TestDeliveryLedger_Resume(t *testing.T) {
 const ledgerTestNow = "2026-01-02T03:04:05Z"
 
 func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
-	unique := linkEntry(legacyURLPrefix+"index/post?ref=a", 0)
-	rotated := linkEntry(legacyURLPrefix+"index/post?ref=b", 1)
-	siblingA := linkEntry(legacyURLPrefix+"index/post?ref=c", 2)
-	siblingB := linkEntry(legacyURLPrefix+"index/post?ref=d", 3)
-	other := linkEntry(legacyURLPrefix+"index/other", 4)
+	unique := linkEntry(identityURLPrefix+"index/post?ref=a", 0)
+	rotated := linkEntry(identityURLPrefix+"index/post?ref=b", 1)
+	siblingA := linkEntry(identityURLPrefix+"index/post?ref=c", 2)
+	siblingB := linkEntry(identityURLPrefix+"index/post?ref=d", 3)
+	other := linkEntry(identityURLPrefix+"index/other", 4)
 	guid := rss.Entry{ID: "guid-1"}
 
 	for _, tc := range []struct {
@@ -148,8 +148,8 @@ func TestDeliveryLedger_MarkNewest(t *testing.T) {
 // scanned later, so trimming the scan for catch-up does not make a shared
 // stripped identity look unique.
 func TestDeliveryLedger_CountsCoverWholeFetch(t *testing.T) {
-	siblingA := linkEntry(legacyURLPrefix+"index/post?ref=c", 0)
-	siblingB := linkEntry(legacyURLPrefix+"index/post?ref=d", 1)
+	siblingA := linkEntry(identityURLPrefix+"index/post?ref=c", 0)
+	siblingB := linkEntry(identityURLPrefix+"index/post?ref=d", 1)
 	fetch := []rss.Entry{siblingA, siblingB}
 	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
 	ledger := newDeliveryLedger(fs, fetch)

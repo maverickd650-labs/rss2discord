@@ -51,9 +51,9 @@ func TestPlanDelivery(t *testing.T) {
 			want: deliveryPlan{scan: all, resumeAt: 5},
 		},
 		{
-			name: "watermark found ignores catchUpLimit 0, ambiguity and initialization",
+			name: "watermark found ignores catchUpLimit 0 and initialization",
 			in: deliveryInputs{entries: few, watermark: watermarkLookup{watermarkFound, 0},
-				catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
+				catchUpLimit: 0},
 			want: deliveryPlan{scan: few, resumeAt: 1},
 		},
 		{
@@ -82,18 +82,13 @@ func TestPlanDelivery(t *testing.T) {
 			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit)},
 		},
 		{
-			name: "watermark not found, limit 0, ambiguous legacy is not capped as legacy",
-			in:   deliveryInputs{entries: all, watermark: lostWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
-			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit)},
-		},
-		{
 			name: "no watermark, limit above zero caps catch-up",
 			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3},
 			want: deliveryPlan{scan: tail(all, 3)},
 		},
 		{
-			name: "no watermark, limit above zero ignores ambiguity and initialization",
-			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3, legacy: legacyState{ambiguous: true}, wasInitialized: true},
+			name: "no watermark, limit above zero ignores initialization",
+			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 3, wasInitialized: true},
 			want: deliveryPlan{scan: tail(all, 3)},
 		},
 		{
@@ -107,21 +102,6 @@ func TestPlanDelivery(t *testing.T) {
 			want: deliveryPlan{scan: all},
 		},
 		{
-			name: "no watermark, limit 0, ambiguous legacy is capped at the default",
-			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
-			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit), cappedAmbiguousLegacy: true},
-		},
-		{
-			name: "no watermark, limit 0, ambiguous legacy wins over initialized",
-			in:   deliveryInputs{entries: all, watermark: noWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}, wasInitialized: true},
-			want: deliveryPlan{scan: tail(all, defaultCatchUpLimit), cappedAmbiguousLegacy: true},
-		},
-		{
-			name: "no watermark, limit 0, ambiguous legacy, small feed keeps all but still signals",
-			in:   deliveryInputs{entries: few, watermark: noWatermark, catchUpLimit: 0, legacy: legacyState{ambiguous: true}},
-			want: deliveryPlan{scan: few, cappedAmbiguousLegacy: true},
-		},
-		{
 			name: "no entries, limit 0, first sync still plans a skip",
 			in:   deliveryInputs{watermark: noWatermark, catchUpLimit: 0},
 			want: deliveryPlan{skipBacklog: true},
@@ -130,7 +110,6 @@ func TestPlanDelivery(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := planDelivery(tc.in)
 			if got.resumeAt != tc.want.resumeAt || got.skipBacklog != tc.want.skipBacklog ||
-				got.cappedAmbiguousLegacy != tc.want.cappedAmbiguousLegacy ||
 				!slices.EqualFunc(got.scan, tc.want.scan, func(a, b rss.Entry) bool { return a.ID == b.ID }) {
 				t.Fatalf("planDelivery = %+v, want %+v", got, tc.want)
 			}

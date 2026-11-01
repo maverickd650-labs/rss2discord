@@ -18,9 +18,7 @@ package controller
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"slices"
 	"testing"
 	"time"
 
@@ -30,8 +28,8 @@ import (
 )
 
 // Delivery settlement: a fetched document is accounted for only when nothing
-// from it is still pending, and only then may its validators be persisted and
-// an ambiguous legacy status be initialized and settled. These tests drive
+// from it is still pending, and only then may its validators be persisted.
+// These tests drive
 // processFeed through whole transition sequences, reloading the status from
 // its serialized form between passes as a new reconcile (or a restarted
 // controller) would.
@@ -57,47 +55,6 @@ func reloadStatus(t *testing.T, fg *v1alpha1.FeedGroup) *v1alpha1.FeedStatus {
 	fg.Status = reloaded
 	ensureFeedStatuses(fg)
 	return feedStatusFor(fg, exampleFeedURL)
-}
-
-// An ambiguous legacy status under catchUpLimit 0 is capped at
-// defaultCatchUpLimit in memory only. A first send that fails must leave the
-// status ambiguous, so the retry (here after a reload) is capped the same way
-// instead of delivering the whole backlog.
-func TestProcessFeed_AmbiguousCapSurvivesFailedFirstSend(t *testing.T) {
-	entries := make([]rss.Entry, 0, 2*defaultCatchUpLimit)
-	for i := range 2 * defaultCatchUpLimit {
-		entries = append(entries, guidEntry(fmt.Sprintf("ambiguous-failed-%d", i), i))
-	}
-	fg, feed, _ := newLegacyFeedGroup(t, "ambiguous-failed-first-send", "{{.Title}}")
-	fg.Spec.CatchUpLimit = new(int32(0))
-	server := NewMockDiscordServer(t)
-	defer server.Close()
-	client := server.DiscordClientBuilder()(server.URL())
-	server.FailNextRequests(1, http.StatusInternalServerError)
-	fetch := func() rss.FetchResult { return rss.FetchResult{Entries: slices.Clone(entries), ETag: validatorsOld} }
-
-	processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client))
-	fs := reloadStatus(t, fg)
-	if fs.Initialized || fs.StateVersion != 0 || fs.ETag != "" || server.MessageCount() != 0 {
-		t.Fatalf("after the failed send: initialized=%t stateVersion=%d etag=%q sent=%d, want a still-ambiguous status",
-			fs.Initialized, fs.StateVersion, fs.ETag, server.MessageCount())
-	}
-
-	processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client))
-	fs = reloadStatus(t, fg)
-	processFeed(t.Context(), testRun(t, fg, feed, fetch(), nil, client))
-
-	want := make([]string, 0, defaultCatchUpLimit)
-	for _, entry := range entries[len(entries)-defaultCatchUpLimit:] {
-		want = append(want, entry.Title)
-	}
-	if got := sentContents(t, server); !slices.Equal(got, want) {
-		t.Fatalf("sent %q, want only the capped %q", got, want)
-	}
-	if !fs.Initialized || fs.StateVersion != currentStateVersion || fs.ETag != validatorsOld ||
-		fs.LastSeenEntry != entries[len(entries)-1].ID {
-		t.Fatalf("settled status = %+v", fs)
-	}
 }
 
 // pendingCase is one way an entry stays unresolved after a fetch whose
