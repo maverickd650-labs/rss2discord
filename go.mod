@@ -1,4 +1,4 @@
-module github.com/maverickd650/rss2discord-operator
+module github.com/maverickd650-labs/rss2discord
 
 go 1.27.3
 

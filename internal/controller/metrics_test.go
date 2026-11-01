@@ -28,9 +28,9 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // Failure messages shared by the helpers that read a histogram series back.

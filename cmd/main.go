@@ -40,11 +40,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	rss2discordv1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	"github.com/maverickd650/rss2discord-operator/internal/controller"
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
-	"github.com/maverickd650/rss2discord-operator/internal/telemetry"
+	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/internal/controller"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/internal/telemetry"
 	// +kubebuilder:scaffold:imports
 )
 

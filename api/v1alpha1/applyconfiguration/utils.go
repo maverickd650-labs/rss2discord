@@ -18,9 +18,9 @@ limitations under the License.
 package applyconfiguration
 
 import (
-	v1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	apiv1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1/applyconfiguration/api/v1alpha1"
-	internal "github.com/maverickd650/rss2discord-operator/api/v1alpha1/applyconfiguration/internal"
+	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	apiv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1/applyconfiguration/api/v1alpha1"
+	internal "github.com/maverickd650-labs/rss2discord/api/v1alpha1/applyconfiguration/internal"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	managedfields "k8s.io/apimachinery/pkg/util/managedfields"

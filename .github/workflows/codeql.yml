@@ -3,6 +3,7 @@ name: CodeQL
 on:
   push:
     branches: [main]
+  merge_group:
   pull_request:
   schedule:
     # Weekly scan to catch advisories published after the last code change.
@@ -46,3 +47,7 @@ jobs:
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: "/language:go"
+          # The queue's gh-readonly-queue ref is ephemeral and its results add
+          # nothing to the PR and main runs, so analyze without uploading there
+          # (the check still fails if the analysis itself fails).
+          upload: ${{ github.event_name == 'merge_group' && 'never' || 'always' }}

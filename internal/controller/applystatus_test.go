@@ -26,8 +26,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	acv1alpha1 "github.com/maverickd650/rss2discord-operator/api/v1alpha1/applyconfiguration/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	acv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1/applyconfiguration/api/v1alpha1"
 )
 
 // TestStatusApplyConfigurationRoundTrip checks that converting a status into

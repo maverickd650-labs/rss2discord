@@ -23,7 +23,7 @@ import (
 
 	"unicode/utf8"
 
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
 
 // FuzzControllerSanitizers exercises the two pure text-sanitizing helpers

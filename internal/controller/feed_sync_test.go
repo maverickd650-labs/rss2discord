@@ -28,9 +28,9 @@ import (
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 
-	"github.com/maverickd650/rss2discord-operator/api/v1alpha1"
-	"github.com/maverickd650/rss2discord-operator/internal/discord"
-	"github.com/maverickd650/rss2discord-operator/internal/rss"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
+	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 // These tests drive a feedSync -- open, begin, close -- with in-memory entries.
