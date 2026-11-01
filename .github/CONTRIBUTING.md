@@ -58,4 +58,4 @@ external issue, use the full URL or phrase it as `owner/repo issue 123` instead.
 
 ## Code of Conduct
 
-This project follows the [Contributor Covenant](https://github.com/maverickd650-labs/.github/blob/main/CODE_OF_CONDUCT.md).
+This project follows the [Contributor Covenant](https://github.com/maverickd650-labs/.github/blob/main/.github/CODE_OF_CONDUCT.md).
