@@ -23,6 +23,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -563,6 +564,25 @@ func containsNonEmptyStringLiteral(expr ast.Expr) bool {
 	return found
 }
 
+// effectiveInitializers maps each spec of a const declaration to the
+// initializer it evaluates: its own, or for an implicit repeat the previous
+// explicit one in the group.
+func effectiveInitializers(decl *ast.GenDecl) map[*ast.ValueSpec][]ast.Expr {
+	effective := map[*ast.ValueSpec][]ast.Expr{}
+	var inherited []ast.Expr
+	for _, spec := range decl.Specs {
+		values, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		if len(values.Values) > 0 {
+			inherited = values.Values
+		}
+		effective[values] = inherited
+	}
+	return effective
+}
+
 // checkReasonSpelling reports a reason spelling outside its one canonical
 // const declaration. It evaluates typed constant expressions as well as
 // individual literals, so concatenated fragments cannot spell a reason
@@ -590,11 +610,13 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 					// Count each declared constant by its evaluated value. This also
 					// catches aliases and split-literal initialisers, even when the
 					// reason spelling does not appear as one BasicLit.
+					effective := effectiveInitializers(n)
 					for _, spec := range n.Specs {
 						values, ok := spec.(*ast.ValueSpec)
 						if !ok {
 							continue
 						}
+						initializers := effective[values]
 						for _, name := range values.Names {
 							declared, ok := info.Defs[name].(*types.Const)
 							if !ok || declared.Val() == nil || declared.Val().Kind() != constant.String {
@@ -605,7 +627,7 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 								continue
 							}
 							canonical := packageConsts[n] && reasonFiles[filename]
-							if !canonical && !slices.ContainsFunc(values.Values, containsNonEmptyStringLiteral) {
+							if !canonical && !slices.ContainsFunc(initializers, containsNonEmptyStringLiteral) {
 								// A local alias of a named constant (const reason =
 								// reasonOops) adds no new spelling of the value.
 								continue
@@ -699,6 +721,50 @@ const (
 	checkReasonSpelling(fset, []*ast.File{file}, info, map[string]bool{"Reconciled": true}, problems)
 	if len(problems) == 0 {
 		t.Fatal("duplicate reason spelling was not reported")
+	}
+}
+
+// TestCheckReasonSpellingConstAliases pins which constant declarations outside
+// the canonical one count as a spelling: a literal does, an alias of a named
+// reason does not, and an implicit repeat counts as whatever the group's last
+// explicit initializer is.
+func TestCheckReasonSpellingConstAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []string // constant names that must be reported
+	}{
+		{name: "alias of a named constant", src: "const reasonOops = \"Oops\"\nfunc f() { const x = reasonOops; _ = x }"},
+		{name: "implicit repeat of an alias", src: "const reasonOops = \"Oops\"\nfunc f() { const (\nx = reasonOops\ny\n); _, _ = x, y }"},
+		{name: "implicit repeat of a literal", src: "const reasonOops = \"Oops\"\nfunc f() { const (\nx = \"Oops\"\ny\n); _, _ = x, y }", want: []string{"constant x ", "constant y "}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "other.go", "package controller\n"+tc.src, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}}
+			if _, err := (&types.Config{}).Check("controller", fset, []*ast.File{file}, info); err != nil {
+				t.Fatal(err)
+			}
+			problems := map[string]bool{}
+			checkReasonSpelling(fset, []*ast.File{file}, info, map[string]bool{"Oops": true}, problems)
+			// reasonOops itself sits in a non-reason file here, so it is reported
+			// too; only the local constants are under test.
+			for _, name := range tc.want {
+				if !slices.ContainsFunc(slices.Collect(maps.Keys(problems)), func(p string) bool { return strings.Contains(p, name) }) {
+					t.Fatalf("%q not reported in %v", name, problems)
+				}
+			}
+			if len(tc.want) == 0 {
+				for p := range problems {
+					if strings.Contains(p, "constant x ") || strings.Contains(p, "constant y ") {
+						t.Fatalf("alias reported: %s", p)
+					}
+				}
+			}
+		})
 	}
 }
 
