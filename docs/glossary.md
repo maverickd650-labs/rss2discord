@@ -153,15 +153,15 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   Event announces that.
 
 **Feed backoff** (`retryState.extend`, `backoff.go`)
-: A feed's permanent-failure backoff, part of its retry state (a view over its `FeedStatus`,
-  `retryStateOf(fs)`). `extend(base, now)` sets it to `base * 2^RetryCount`
+: A feed's permanent-failure backoff, part of its phase-independent retry state (a view over
+  its `FeedStatus`, `retryStateOf(fs)`). `extend(base, now)` sets it to `base * 2^RetryCount`
   capped at `maxPermanentBackoff` (6h) and reports `firstCapped`, true only for the failure
   whose backoff first reaches the cap (the caller fires the `BackoffCapped` Event once);
   `active(now)` is what `planFeeds` skips on (a malformed value is not a backoff);
   `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom.
-  `sendCaused()` is the phase-sensitive predicate on a short-lived `retryRun`: it says the
-  backoff came from a send failure (so a changed webhook Secret clears it), inferred from the
-  captured `Reachable` phase.
+  `sendCaused()` is phase-sensitive: it uses the phase captured by `runOf(fs)` and does not
+  re-read `Reachable` to decide whether the backoff came from a send failure (so a changed
+  webhook Secret clears it).
 
 **Display entry** (`displayEntry`, `displayOf`, `display.go`)
 : An `rss.Entry` as Discord shows it: title, description, feed title, link, image,
