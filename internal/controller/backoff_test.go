@@ -269,8 +269,8 @@ func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
 	if delivering.RetryCount != 1 || delivering.BackoffUntil != "" {
 		t.Errorf("delivery run not replaced from its captured phase: %+v", delivering)
 	}
-	if !runOf(&v1alpha1.FeedStatus{BackoffUntil: until}).sendCaused() {
-		t.Error("unknown phase with a backoff: want sendCaused")
+	if !run.sendCaused() {
+		t.Error("delivery backoff reclassified after Reachable flipped to False")
 	}
 
 	unknown := &v1alpha1.FeedStatus{RetryCount: 2, BackoffUntil: until}
@@ -278,6 +278,13 @@ func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
 	if unknown.RetryCount != 3 || unknown.BackoffUntil != until {
 		t.Errorf("fail over an unknown phase must only count: %+v", unknown)
 	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("fail with zero failurePhase did not panic")
+		}
+	}()
+	runOf(unknown).fail(0)
 }
 
 // TestRetryRun_FetchSuccessEndsFetchPhaseRun asserts a fetch success ends a run
