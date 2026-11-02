@@ -31,84 +31,91 @@ import (
 // price for a feed that recovers on its own without a spec edit.
 const maxPermanentBackoff = 6 * time.Hour
 
-// retryRun is the retry run of one feed: the consecutive failures of one phase
-// of its sync, counted by FeedStatus.RetryCount and, for permanent failures,
-// paced by FeedStatus.BackoffUntil. It is the one place that reads, writes or
-// clears those two fields, does the backoff math, and encodes which phase a run
-// belongs to. It is a view over the status, not a copy, so changes land on the
-// FeedStatus. feedAttempt.record is its only production caller on the failure
-// path; it keeps the metric, condition, Event and verdict.
-//
-// A run belongs to one phase: fetching (Reachable False) or delivery -- renders
-// and sends (Reachable True, Delivered False). A successful fetch ends a
-// fetch-phase run (fetchSucceeded), resetting RetryCount and clearing the
-// backoff, so the first render or send failure after a recovered outage is the
-// first of its own run: it is not already past the retry limit (which would
-// skip the entry without retries of its own and skip the exhaustion Event,
-// fired only at ==) and a permanent send failure backs off from 1, not from
-// the fetch failures' count. A successful fetch leaves a delivery-phase run
-// alone: every retry of a failing entry is preceded by a successful fetch, so
-// resetting there would stop the run ever exhausting. The reverse holds too: a
-// fetch failure while Reachable is True (the run in progress is a delivery one)
-// clears that run first and starts a fetch run at 1 (fail), so delivery
-// failures don't exhaust a fetch run's retries or inflate its backoff.
-//
-// The phase is not stored: it is read from the Reachable condition, which the
-// status already persists. That makes the order of calls matter. fetchSucceeded
-// and fail(phaseFetch) must run before the caller sets Reachable (True and
-// False respectively), because the condition they read is the old run's; record
-// calls them first, ahead of its setCondition. Every other reader of the phase
-// (sendCaused) lives here too, so the rule has one home. The backoff is driven
-// by RetryCount, which the failure being recorded has already incremented.
-type retryRun struct {
+// retryState is the phase-independent view of a feed's retry count and
+// permanent backoff. It is the one place that reads, writes or clears
+// FeedStatus.RetryCount and FeedStatus.BackoffUntil and performs the retry-limit
+// and backoff calculations. It is a view over the status, not a copy, so
+// changes land directly on FeedStatus. Its operations never inspect Reachable.
+type retryState struct {
 	fs *v1alpha1.FeedStatus
 }
 
-// runOf returns the retry run of fs.
-func runOf(fs *v1alpha1.FeedStatus) retryRun { return retryRun{fs: fs} }
+// retryStateOf returns the phase-independent retry state for fs.
+func retryStateOf(fs *v1alpha1.FeedStatus) retryState { return retryState{fs: fs} }
 
-// retryPhase is the part of a feed's sync a failure belongs to.
-type retryPhase int
+// retryRun is a short-lived, phase-aware view for one transition. Its phase is
+// captured from Reachable by runOf and is deliberately not refreshed if that
+// condition changes. Construct it when a phase-sensitive transition begins;
+// do not retain it across independent operations or reconciles. Use
+// retryStateOf for operations that do not need the phase.
+type retryRun struct {
+	retryState
+	phase retryPhase
+}
+
+// runOf returns the retry run of fs, capturing the phase represented by its
+// current Reachable condition. The returned value must not outlive the single
+// phase-sensitive transition for which it was created.
+func runOf(fs *v1alpha1.FeedStatus) retryRun {
+	phase := phaseUnknown
+	switch {
+	case apimeta.IsStatusConditionFalse(fs.Conditions, v1alpha1.FeedConditionTypeReachable):
+		phase = phaseFetch
+	case apimeta.IsStatusConditionTrue(fs.Conditions, v1alpha1.FeedConditionTypeReachable):
+		phase = phaseDelivery
+	}
+	return retryRun{retryState: retryStateOf(fs), phase: phase}
+}
+
+// retryPhase is the phase represented by an existing run. Unknown is possible
+// only when the feed's Reachable condition has not yet been recorded.
+type retryPhase uint8
 
 const (
+	phaseUnknown retryPhase = iota
 	// phaseFetch is fetching and parsing the feed (the Reachable condition).
-	phaseFetch retryPhase = iota
+	phaseFetch
 	// phaseDelivery is rendering and sending an entry (the Delivered condition).
 	phaseDelivery
 )
 
+// failurePhase is the phase of a failure being recorded. Unlike retryPhase,
+// it has no unknown value, so phaseUnknown cannot be passed to retryRun.fail.
+type failurePhase bool
+
+const (
+	failureDelivery failurePhase = false
+	failureFetch    failurePhase = true
+)
+
 // set reports whether a backoff is recorded at all, expired or not: an
 // expired backoff still belongs to the run of failures that set it.
-func (r retryRun) set() bool { return r.fs.BackoffUntil != "" }
+func (r retryState) set() bool { return r.fs.BackoffUntil != "" }
 
 // inProgress reports whether a run has left any state: a counted failure or a
 // recorded backoff.
-func (r retryRun) inProgress() bool { return r.fs.RetryCount > 0 || r.set() }
+func (r retryState) inProgress() bool { return r.fs.RetryCount > 0 || r.set() }
 
 // outstanding reports whether failures of the current run are still counted.
 // It is narrower than inProgress (a backoff alone does not count) and is what
 // the scheduler's failedOrRetrying reads.
-func (r retryRun) outstanding() bool { return r.fs.RetryCount > 0 }
+func (r retryState) outstanding() bool { return r.fs.RetryCount > 0 }
 
-// fetchSucceeded ends the run if it is a fetch-phase one (Reachable False with
-// state left over). Call it before setting Reachable True, which would erase
-// the evidence of the phase. A delivery-phase run is left alone.
+// fetchSucceeded ends the run if the phase captured by runOf was fetching.
+// A delivery-phase or unknown run is left alone.
 func (r retryRun) fetchSucceeded() {
-	if apimeta.IsStatusConditionFalse(r.fs.Conditions, v1alpha1.FeedConditionTypeReachable) && r.inProgress() {
+	if r.phase == phaseFetch && r.inProgress() {
 		r.clear()
 	}
 }
 
-// fail counts one failure of phase in the run, first ending the run in
-// progress when it belongs to the other phase: a fetch failure while Reachable
-// is True means the run is a delivery one. Call it before setting the
-// condition for this failure. Apart from ending the other phase's run (which
-// clears that run's backoff), it does not set BackoffUntil; permanent failures
-// follow it with extend.
-func (r retryRun) fail(phase retryPhase) {
-	if phase == phaseFetch &&
-		apimeta.IsStatusConditionTrue(r.fs.Conditions, v1alpha1.FeedConditionTypeReachable) &&
-		r.inProgress() {
+// fail counts one failure of phase in the run, first ending an in-progress run
+// when the captured phase is the other one. A fetch failure ends a delivery
+// run; a delivery failure never ends a fetch run. Apart from ending the other
+// phase's run (which clears that run's backoff), it does not set BackoffUntil;
+// permanent failures follow it with extend.
+func (r retryRun) fail(failure failurePhase) {
+	if failure == failureFetch && r.phase == phaseDelivery && r.inProgress() {
 		r.clear()
 	}
 	r.fs.RetryCount++
@@ -116,20 +123,20 @@ func (r retryRun) fail(phase retryPhase) {
 
 // belowLimit reports whether the run still has retries left: RetryCount is
 // under max.
-func (r retryRun) belowLimit(max int32) bool { return r.fs.RetryCount < max }
+func (r retryState) belowLimit(max int32) bool { return r.fs.RetryCount < max }
 
 // exhaustedNow reports whether the failure just counted is the one that
 // reaches max (== rather than >=, so an ongoing failure announces it once).
-func (r retryRun) exhaustedNow(max int32) bool { return r.fs.RetryCount == max }
+func (r retryState) exhaustedNow(max int32) bool { return r.fs.RetryCount == max }
 
 // pastLimit reports whether RetryCount went past max, not just up to it: the
 // retries were already exhausted a full reconcile ago.
-func (r retryRun) pastLimit(max int32) bool { return r.fs.RetryCount > max }
+func (r retryState) pastLimit(max int32) bool { return r.fs.RetryCount > max }
 
 // active reports whether the backoff is still in the future as of now. A
 // malformed or empty BackoffUntil is treated as "not in backoff" so a bad value
 // can never permanently wedge a feed without a spec change.
-func (r retryRun) active(now time.Time) bool {
+func (r retryState) active(now time.Time) bool {
 	if r.fs.BackoffUntil == "" {
 		return false
 	}
@@ -147,7 +154,7 @@ func (r retryRun) active(now time.Time) bool {
 // RetryCount-1, was still below it). That is true once per run of failures, so
 // the caller can fire its Event exactly once rather than on every capped
 // retry. RetryCount returns to 0 when the run is cleared, which re-arms it.
-func (r retryRun) extend(base time.Duration, now time.Time) (firstCapped bool) {
+func (r retryState) extend(base time.Duration, now time.Time) (firstCapped bool) {
 	count := int(r.fs.RetryCount)
 	backoff := permanentBackoffDuration(count, base)
 	if backoff >= maxPermanentBackoff {
@@ -162,23 +169,16 @@ func (r retryRun) extend(base time.Duration, now time.Time) (firstCapped bool) {
 // Leaving RetryCount at its old value would make the next extend compute
 // base*2^oldRetryCount, which jumps straight back to maxPermanentBackoff on the
 // first retry. LastError is not touched (see clearFailure).
-func (r retryRun) clear() {
+func (r retryState) clear() {
 	r.fs.BackoffUntil = ""
 	r.fs.RetryCount = 0
 }
 
-// sendCaused reports whether the feed is backed off because delivery to its
-// webhook failed, as opposed to its own URL failing to fetch. It is inferred
-// from the Reachable condition: a fetch failure sets Reachable False, whereas a
-// send or render failure leaves it True (the fetch succeeded), and a later
-// successful fetch sets it True again (ending a fetch-phase run and its
-// backoff, see fetchSucceeded). So a backoff with Reachable not False is a
-// send backoff, which replacing the webhook may fix. This must stay in step
-// with where extend is called (feedAttempt.failed): the fetch path sets
-// Reachable, the send path sets Delivered.
+// sendCaused reports whether the backoff represented by this retryRun came
+// from a delivery failure. It uses the same phase snapshot as fail and
+// fetchSucceeded, so a later Reachable update cannot reclassify the backoff.
 func (r retryRun) sendCaused() bool {
-	return r.set() &&
-		!apimeta.IsStatusConditionFalse(r.fs.Conditions, v1alpha1.FeedConditionTypeReachable)
+	return r.set() && r.phase != phaseFetch
 }
 
 // nextBackoffUntil formats the RFC3339 timestamp for a feed's next permanent
@@ -210,11 +210,11 @@ func permanentBackoffDuration(retryCount int, base time.Duration) time.Duration 
 }
 
 // clearPermanentBackoffs clears the backoff (and RetryCount, see
-// retryRun.clear) of every feed in the group. Called when the FeedGroup spec
+// retryState.clear) of every feed in the group. Called when the FeedGroup spec
 // generation advances, so an edit gives feeds in backoff an immediate fresh
 // attempt.
 func clearPermanentBackoffs(feedGroup *v1alpha1.FeedGroup) {
 	for i := range feedGroup.Status.Feeds {
-		runOf(&feedGroup.Status.Feeds[i]).clear()
+		retryStateOf(&feedGroup.Status.Feeds[i]).clear()
 	}
 }

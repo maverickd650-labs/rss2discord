@@ -67,10 +67,11 @@ func noteWebhookSecretVersion(feedGroup *v1alpha1.FeedGroup, resourceVersion str
 	clearSendBackoffs(feedGroup)
 }
 
-// clearSendBackoffs clears the backoff (see retryRun.clear) of feeds whose
-// backoff came from a send failure (retryRun.sendCaused). A feed backed off
-// because its own URL fails to fetch keeps its backoff: a new webhook can't
-// fix that.
+// clearSendBackoffs clears the backoff (see retryState.clear) of feeds whose
+// backoff came from a send failure (retryRun.sendCaused). Each retryRun is
+// created, checked and cleared within this one transition; do not retain its
+// Reachable snapshot. A fetch-failure backoff survives because a new webhook
+// cannot fix the feed's own URL.
 func clearSendBackoffs(feedGroup *v1alpha1.FeedGroup) {
 	for i := range feedGroup.Status.Feeds {
 		if b := runOf(&feedGroup.Status.Feeds[i]); b.sendCaused() {

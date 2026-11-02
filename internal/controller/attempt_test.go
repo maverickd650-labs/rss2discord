@@ -707,10 +707,9 @@ func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
 	assertBackoffUntil(t, fs.BackoffUntil, recorded, 10*time.Minute)
 }
 
-// TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun asserts what a successful
-// fetch does to the retry run in progress: a fetch-phase run (Reachable False)
-// ends, with RetryCount and the backoff reset but LastError kept; a delivery
-// run (Reachable True) and a feed never fetched are left alone.
+// TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun asserts record snapshots
+// the previous Reachable phase before marking the fetch successful: a fetch
+// run ends, while a delivery run and a feed never fetched are left alone.
 func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
 	const backoffUntil = "2026-01-01T01:00:00Z"
 	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
@@ -752,11 +751,10 @@ func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
 	}
 }
 
-// TestFeedAttempt_FetchFailureEndsADeliveryRun asserts the reverse transition:
-// a fetch failure while Reachable is True ends the delivery run in progress, so
-// the fetch run starts at 1 (transient: still retried; permanent: backed off
-// from 1), whereas a fetch failure inside a fetch run counts on and a feed never
-// fetched keeps its count.
+// TestFeedAttempt_FetchFailureEndsADeliveryRun asserts record snapshots the
+// previous Reachable phase before marking a fetch failed: a prior delivery run
+// is replaced with a fetch run at 1, while an existing fetch run counts on and
+// a feed never fetched keeps its count.
 func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 	const staleBackoff = "2026-01-01T01:00:00Z"
 	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
