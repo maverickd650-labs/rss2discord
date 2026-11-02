@@ -371,7 +371,7 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 		t.Fatalf("unexpected repeat Event: %s", ev)
 	default:
 	}
-	capped := runOf(feedStatusFor(fg, feed.RSSUrl))
+	capped := retryStateOf(feedStatusFor(fg, feed.RSSUrl))
 	if !capped.active(testReconcileInstant.Add(maxPermanentBackoff - time.Minute)) {
 		t.Error("feed should stay in backoff until the cap elapses")
 	}

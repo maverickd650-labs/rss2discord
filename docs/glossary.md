@@ -120,7 +120,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   values, so the existing-run `phaseUnknown` cannot be passed to `fail`.
 
 **Feed check** (`feedCheck`, `check.go`)
-: A view over a `FeedStatus` of its last check, in the style of `retryRun`: `failed` (an error is
+: A view over a `FeedStatus` of its last check, in the style of `retryState`: `failed` (an error is
   in status; what Ready's `FeedErrors` count and the `feed_healthy` gauge mean), `failedOrRetrying`
   (the scheduler's wider notion, which also counts a retry run still in progress), and the parsed
   `lastChecked` / `untilDue` that `feedDue` and `planFeeds` share.

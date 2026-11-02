@@ -198,7 +198,7 @@ func TestFeedBackoffActive(t *testing.T) {
 }
 
 // TestNextBackoffUntil verifies the RFC3339 formatting of a computed backoff
-// expiry, and that the result round-trips through retryRun.active as expected.
+// expiry, and that the result round-trips through retryState.active as expected.
 func TestNextBackoffUntil(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	got := nextBackoffUntil(now, 10*time.Minute)
@@ -246,6 +246,45 @@ func reachableIs(status metav1.ConditionStatus, retryCount int32, backoffUntil s
 		BackoffUntil: backoffUntil,
 		Conditions:   []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}},
 	}
+}
+
+// TestRetryRun_UsesPhaseCapturedByRunOf asserts a retryRun keeps the phase it
+// captured when runOf built it, even if Reachable changes afterwards, and that
+// a failure over a feed with no Reachable condition (unknown phase) just counts.
+func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
+	const until = "2026-01-01T18:00:00Z"
+
+	fetching := reachableIs(metav1.ConditionFalse, 4, until)
+	run := runOf(fetching)
+	fetching.Conditions[0].Status = metav1.ConditionTrue
+	run.fetchSucceeded()
+	if fetching.RetryCount != 0 || fetching.BackoffUntil != "" {
+		t.Errorf("fetch run not ended from its captured phase: %+v", fetching)
+	}
+
+	delivering := reachableIs(metav1.ConditionTrue, 4, until)
+	run = runOf(delivering)
+	delivering.Conditions[0].Status = metav1.ConditionFalse
+	if !run.sendCaused() {
+		t.Error("delivery backoff reclassified after Reachable flipped to False")
+	}
+	run.fail(failureFetch)
+	if delivering.RetryCount != 1 || delivering.BackoffUntil != "" {
+		t.Errorf("delivery run not replaced from its captured phase: %+v", delivering)
+	}
+
+	unknown := &v1alpha1.FeedStatus{RetryCount: 2, BackoffUntil: until}
+	runOf(unknown).fail(failureFetch)
+	if unknown.RetryCount != 3 || unknown.BackoffUntil != until {
+		t.Errorf("fail over an unknown phase must only count: %+v", unknown)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("fail with zero failurePhase did not panic")
+		}
+	}()
+	runOf(unknown).fail(0)
 }
 
 // TestRetryRun_FetchSuccessEndsFetchPhaseRun asserts a fetch success ends a run

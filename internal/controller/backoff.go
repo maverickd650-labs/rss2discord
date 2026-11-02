@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
@@ -43,6 +44,22 @@ type retryState struct {
 // retryStateOf returns the phase-independent retry state for fs.
 func retryStateOf(fs *v1alpha1.FeedStatus) retryState { return retryState{fs: fs} }
 
+// A retry run is the consecutive failures of one phase of a feed's sync:
+// fetching (Reachable False) or delivery -- renders and sends (Reachable True,
+// Delivered False). A successful fetch ends a fetch-phase run (fetchSucceeded),
+// resetting RetryCount and clearing the backoff, so the first render or send
+// failure after a recovered outage is the first of its own run: it is not
+// already past the retry limit (which would skip the entry without retries of
+// its own and skip the exhaustion Event, fired only at ==) and a permanent send
+// failure backs off from 1, not from the fetch failures' count. A successful
+// fetch leaves a delivery-phase run alone: every retry of a failing entry is
+// preceded by a successful fetch, so resetting there would stop the run ever
+// exhausting. The reverse holds too: a fetch failure while Reachable is True
+// (the run in progress is a delivery one) clears that run first and starts a
+// fetch run at 1 (fail), so delivery failures don't exhaust a fetch run's
+// retries or inflate its backoff. The backoff is driven by RetryCount, which
+// the failure being recorded has already incremented.
+//
 // retryRun is a short-lived, phase-aware view for one transition. Its phase is
 // captured from Reachable by runOf and is deliberately not refreshed if that
 // condition changes. Construct it when a phase-sensitive transition begins;
@@ -80,12 +97,13 @@ const (
 )
 
 // failurePhase is the phase of a failure being recorded. Unlike retryPhase,
-// it has no unknown value, so phaseUnknown cannot be passed to retryRun.fail.
-type failurePhase bool
+// it has no unknown value, so phaseUnknown cannot be passed to retryRun.fail,
+// and its zero value is invalid rather than silently meaning delivery.
+type failurePhase uint8
 
 const (
-	failureDelivery failurePhase = false
-	failureFetch    failurePhase = true
+	failureFetch failurePhase = iota + 1
+	failureDelivery
 )
 
 // set reports whether a backoff is recorded at all, expired or not: an
@@ -115,8 +133,14 @@ func (r retryRun) fetchSucceeded() {
 // phase's run (which clears that run's backoff), it does not set BackoffUntil;
 // permanent failures follow it with extend.
 func (r retryRun) fail(failure failurePhase) {
-	if failure == failureFetch && r.phase == phaseDelivery && r.inProgress() {
-		r.clear()
+	switch failure {
+	case failureFetch:
+		if r.phase == phaseDelivery && r.inProgress() {
+			r.clear()
+		}
+	case failureDelivery:
+	default:
+		panic(fmt.Sprintf("retryRun: unknown failure phase %d", failure))
 	}
 	r.fs.RetryCount++
 }
