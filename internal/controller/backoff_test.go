@@ -265,12 +265,12 @@ func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
 	delivering := reachableIs(metav1.ConditionTrue, 4, until)
 	run = runOf(delivering)
 	delivering.Conditions[0].Status = metav1.ConditionFalse
+	if !run.sendCaused() {
+		t.Error("delivery backoff reclassified after Reachable flipped to False")
+	}
 	run.fail(failureFetch)
 	if delivering.RetryCount != 1 || delivering.BackoffUntil != "" {
 		t.Errorf("delivery run not replaced from its captured phase: %+v", delivering)
-	}
-	if !run.sendCaused() {
-		t.Error("delivery backoff reclassified after Reachable flipped to False")
 	}
 
 	unknown := &v1alpha1.FeedStatus{RetryCount: 2, BackoffUntil: until}
