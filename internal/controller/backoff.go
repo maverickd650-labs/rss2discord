@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
@@ -132,8 +133,14 @@ func (r retryRun) fetchSucceeded() {
 // phase's run (which clears that run's backoff), it does not set BackoffUntil;
 // permanent failures follow it with extend.
 func (r retryRun) fail(failure failurePhase) {
-	if failure == failureFetch && r.phase == phaseDelivery && r.inProgress() {
-		r.clear()
+	switch failure {
+	case failureFetch:
+		if r.phase == phaseDelivery && r.inProgress() {
+			r.clear()
+		}
+	case failureDelivery:
+	default:
+		panic(fmt.Sprintf("retryRun: unknown failure phase %d", failure))
 	}
 	r.fs.RetryCount++
 }
