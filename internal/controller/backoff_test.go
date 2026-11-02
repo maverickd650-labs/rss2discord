@@ -248,6 +248,38 @@ func reachableIs(status metav1.ConditionStatus, retryCount int32, backoffUntil s
 	}
 }
 
+// TestRetryRun_UsesPhaseCapturedByRunOf asserts a retryRun keeps the phase it
+// captured when runOf built it, even if Reachable changes afterwards, and that
+// a failure over a feed with no Reachable condition (unknown phase) just counts.
+func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
+	const until = "2026-01-01T18:00:00Z"
+
+	fetching := reachableIs(metav1.ConditionFalse, 4, until)
+	run := runOf(fetching)
+	fetching.Conditions[0].Status = metav1.ConditionTrue
+	run.fetchSucceeded()
+	if fetching.RetryCount != 0 || fetching.BackoffUntil != "" {
+		t.Errorf("fetch run not ended from its captured phase: %+v", fetching)
+	}
+
+	delivering := reachableIs(metav1.ConditionTrue, 4, until)
+	run = runOf(delivering)
+	delivering.Conditions[0].Status = metav1.ConditionFalse
+	run.fail(failureFetch)
+	if delivering.RetryCount != 1 || delivering.BackoffUntil != "" {
+		t.Errorf("delivery run not replaced from its captured phase: %+v", delivering)
+	}
+	if !runOf(&v1alpha1.FeedStatus{BackoffUntil: until}).sendCaused() {
+		t.Error("unknown phase with a backoff: want sendCaused")
+	}
+
+	unknown := &v1alpha1.FeedStatus{RetryCount: 2, BackoffUntil: until}
+	runOf(unknown).fail(failureFetch)
+	if unknown.RetryCount != 3 || unknown.BackoffUntil != until {
+		t.Errorf("fail over an unknown phase must only count: %+v", unknown)
+	}
+}
+
 // TestRetryRun_FetchSuccessEndsFetchPhaseRun asserts a fetch success ends a run
 // whose Reachable condition is False, whether it left a count, a backoff or
 // both, and does nothing to an idle feed.

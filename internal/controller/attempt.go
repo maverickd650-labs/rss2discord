@@ -213,8 +213,9 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 //
 // Retry counters and backoff (RetryCount and BackoffUntil) are owned by
 // retryState; retryRun adds a short-lived Reachable-phase snapshot for the
-// phase-sensitive part of a transition. record uses that snapshot before it
-// changes Reachable and does not retain it across independent operations.
+// phase-sensitive part of a transition. runOf must run before the Reachable
+// condition is set (it captures the phase from it), and is not retained across
+// independent operations.
 // LastError is kept when a fetch-phase run ends: it is cleared only where a
 // fetch is settled as accounted for or an entry is sent or skipped
 // (clearFailure), and until then it keeps a feed that recovered but has not yet
@@ -235,7 +236,7 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 
 	switch o.kind {
 	case attemptFetchSucceeded:
-		runOf(a.fs).fetchSucceeded()
+		runOf(a.fs).fetchSucceeded() // before Reachable flips: runOf captures the phase from it
 		a.fs.LastChecked = a.now.Format(time.RFC3339)
 		metricsFor(a.group).checkSucceeded(a.recordedAt())
 		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
@@ -310,7 +311,7 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 // Events.
 func (a feedAttempt) failed(phase failurePhase, class failureClass, eventReason string, err error) attemptVerdict {
 	a.fs.LastError = errText(err)
-	runOf(a.fs).fail(phase)
+	runOf(a.fs).fail(phase) // before the condition: runOf captures the old Reachable
 	condType := v1alpha1.FeedConditionTypeDelivered
 	if phase == failureFetch {
 		condType = v1alpha1.FeedConditionTypeReachable
