@@ -32,11 +32,11 @@ func TestFeedBackoffExtend_CapCrossingFiresOnce(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	base := 5 * time.Minute // 5m * 2^6 = 320m < 6h; 5m * 2^7 = 640m >= 6h
 	fs := &v1alpha1.FeedStatus{}
-	b := runOf(fs)
+	state := retryStateOf(fs)
 
 	var firstCappedAt []int32
 	for fs.RetryCount = 1; fs.RetryCount <= 12; fs.RetryCount++ {
-		if b.extend(base, now) {
+		if state.extend(base, now) {
 			firstCappedAt = append(firstCappedAt, fs.RetryCount)
 		}
 		want := min(permanentBackoffDuration(int(fs.RetryCount), base), maxPermanentBackoff)
@@ -54,11 +54,11 @@ func TestFeedBackoffExtend_CappedFromTheStart(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, base := range []time.Duration{0, -time.Minute, 4 * time.Hour} {
 		fs := &v1alpha1.FeedStatus{RetryCount: 1}
-		if !runOf(fs).extend(base, now) {
+		if !retryStateOf(fs).extend(base, now) {
 			t.Errorf("base %v, RetryCount 1: want firstCapped", base)
 		}
 		fs.RetryCount = 2
-		if runOf(fs).extend(base, now) {
+		if retryStateOf(fs).extend(base, now) {
 			t.Errorf("base %v, RetryCount 2: want no second firstCapped", base)
 		}
 		assertBackoffUntil(t, fs.BackoffUntil, now, maxPermanentBackoff)
@@ -71,7 +71,7 @@ func TestFeedBackoffExtend_OverflowGuard(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, count := range []int32{62, 63, 64, 1 << 30} {
 		fs := &v1alpha1.FeedStatus{RetryCount: count}
-		if runOf(fs).extend(5*time.Minute, now) {
+		if retryStateOf(fs).extend(5*time.Minute, now) {
 			t.Errorf("RetryCount %d: want no firstCapped, the cap was crossed long ago", count)
 		}
 		assertBackoffUntil(t, fs.BackoffUntil, now, maxPermanentBackoff)
@@ -84,14 +84,14 @@ func TestFeedBackoffExtend_OverflowGuard(t *testing.T) {
 func TestFeedBackoffClear_ReArmsCapEvent(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fs := &v1alpha1.FeedStatus{RetryCount: 7, LastError: "boom"}
-	if !runOf(fs).extend(5*time.Minute, now) {
+	if !retryStateOf(fs).extend(5*time.Minute, now) {
 		t.Fatal("setup: RetryCount 7 should be the first capped failure")
 	}
-	runOf(fs).clear()
+	retryStateOf(fs).clear()
 	if fs.BackoffUntil != "" || fs.RetryCount != 0 || fs.LastError != "boom" {
 		t.Fatalf("after clear: %+v, want BackoffUntil and RetryCount reset, LastError kept", fs)
 	}
-	if runOf(fs).active(now) {
+	if retryStateOf(fs).active(now) {
 		t.Error("a cleared backoff must not be active")
 	}
 }
@@ -190,7 +190,7 @@ func TestFeedBackoffActive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := runOf(&v1alpha1.FeedStatus{BackoffUntil: tc.backoffUntil}).active(now); got != tc.want {
+			if got := retryStateOf(&v1alpha1.FeedStatus{BackoffUntil: tc.backoffUntil}).active(now); got != tc.want {
 				t.Errorf("active(%q, %v) = %v, want %v", tc.backoffUntil, now, got, tc.want)
 			}
 		})
@@ -206,10 +206,10 @@ func TestNextBackoffUntil(t *testing.T) {
 	if got != want {
 		t.Fatalf("nextBackoffUntil() = %q, want %q", got, want)
 	}
-	if !runOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now) {
+	if !retryStateOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now) {
 		t.Fatalf("active(%q, %v) = false, want true (still in the future)", got, now)
 	}
-	if runOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now.Add(10 * time.Minute)) {
+	if retryStateOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now.Add(10 * time.Minute)) {
 		t.Fatalf("active(%q, %v) = true, want false (backoff expired)", got, now.Add(10*time.Minute))
 	}
 }
@@ -249,8 +249,8 @@ func reachableIs(status metav1.ConditionStatus, retryCount int32, backoffUntil s
 }
 
 // TestRetryRun_FetchSuccessEndsFetchPhaseRun asserts a fetch success ends a run
-// whose phase is fetching (Reachable False), whether it left a count, a backoff
-// or both, and does nothing to an idle feed.
+// whose Reachable condition is False, whether it left a count, a backoff or
+// both, and does nothing to an idle feed.
 func TestRetryRun_FetchSuccessEndsFetchPhaseRun(t *testing.T) {
 	for name, fs := range map[string]*v1alpha1.FeedStatus{
 		"count only":   reachableIs(metav1.ConditionFalse, 3, ""),
@@ -285,24 +285,26 @@ func TestRetryRun_FetchSuccessKeepsDeliveryPhaseRun(t *testing.T) {
 }
 
 // TestRetryRun_FailCountsWithinAPhase asserts consecutive failures of one phase
-// accumulate, and that the limit predicates track the count.
+// accumulate, while count predicates belong to phase-independent retry state.
 func TestRetryRun_FailCountsWithinAPhase(t *testing.T) {
 	fs := reachableIs(metav1.ConditionFalse, 0, "")
-	r := runOf(fs)
-	r.fail(phaseFetch)
-	r.fail(phaseFetch)
-	if fs.RetryCount != 2 || !r.outstanding() {
+	runOf(fs).fail(failureFetch)
+	runOf(fs).fail(failureFetch)
+	state := retryStateOf(fs)
+	if fs.RetryCount != 2 || !state.outstanding() {
 		t.Fatalf("RetryCount = %d, want 2 and outstanding", fs.RetryCount)
 	}
-	if !r.belowLimit(3) || r.exhaustedNow(3) || r.pastLimit(3) {
+	if !state.belowLimit(3) || state.exhaustedNow(3) || state.pastLimit(3) {
 		t.Error("count 2 of 3: want below the limit only")
 	}
-	r.fail(phaseFetch)
-	if r.belowLimit(3) || !r.exhaustedNow(3) || r.pastLimit(3) {
+	runOf(fs).fail(failureFetch)
+	state = retryStateOf(fs)
+	if state.belowLimit(3) || !state.exhaustedNow(3) || state.pastLimit(3) {
 		t.Error("count 3 of 3: want exhaustedNow only")
 	}
-	r.fail(phaseFetch)
-	if r.belowLimit(3) || r.exhaustedNow(3) || !r.pastLimit(3) {
+	runOf(fs).fail(failureFetch)
+	state = retryStateOf(fs)
+	if state.belowLimit(3) || state.exhaustedNow(3) || !state.pastLimit(3) {
 		t.Error("count 4 of 3: want pastLimit only")
 	}
 }
@@ -313,17 +315,17 @@ func TestRetryRun_FailCountsWithinAPhase(t *testing.T) {
 // Reachable is False continues its own run.
 func TestRetryRun_FetchFailureRestartsDeliveryRun(t *testing.T) {
 	fs := reachableIs(metav1.ConditionTrue, 4, "2026-01-01T18:00:00Z")
-	runOf(fs).fail(phaseDelivery)
+	runOf(fs).fail(failureDelivery)
 	if fs.RetryCount != 5 {
 		t.Fatalf("delivery failure: RetryCount = %d, want 5", fs.RetryCount)
 	}
-	runOf(fs).fail(phaseFetch)
+	runOf(fs).fail(failureFetch)
 	if fs.RetryCount != 1 || fs.BackoffUntil != "" {
 		t.Errorf("fetch failure over a delivery run: %+v, want count 1 and no backoff", fs)
 	}
 
 	fetching := reachableIs(metav1.ConditionFalse, 4, "2026-01-01T18:00:00Z")
-	runOf(fetching).fail(phaseFetch)
+	runOf(fetching).fail(failureFetch)
 	if fetching.RetryCount != 5 || fetching.BackoffUntil == "" {
 		t.Errorf("fetch failure over a fetch run: %+v, want count 5 and the backoff kept", fetching)
 	}
@@ -334,18 +336,17 @@ func TestRetryRun_FetchFailureRestartsDeliveryRun(t *testing.T) {
 func TestRetryRun_ClearReArmsFirstCapped(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fs := reachableIs(metav1.ConditionFalse, 0, "")
-	r := runOf(fs)
 	for round := 1; round <= 2; round++ {
 		var capped []int32
 		for range 10 {
-			r.fail(phaseFetch)
-			if r.extend(5*time.Minute, now) {
+			runOf(fs).fail(failureFetch)
+			if retryStateOf(fs).extend(5*time.Minute, now) {
 				capped = append(capped, fs.RetryCount)
 			}
 		}
 		if len(capped) != 1 || capped[0] != 7 {
 			t.Fatalf("round %d: firstCapped at %v, want [7]", round, capped)
 		}
-		r.clear()
+		retryStateOf(fs).clear()
 	}
 }

@@ -47,7 +47,7 @@ func (c feedCheck) failed() bool {
 // always due (see feedDue). It is wider than failed, which a feed mid-retry
 // with a cleared LastError does not satisfy.
 func (c feedCheck) failedOrRetrying() bool {
-	return c.failed() || runOf(c.fs).outstanding()
+	return c.failed() || retryStateOf(c.fs).outstanding()
 }
 
 // lastChecked is the time of the last successful check, and false when the feed

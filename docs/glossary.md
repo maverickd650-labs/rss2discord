@@ -107,9 +107,17 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
   delivery, meaning render and send (`Reachable` True, `Delivered` False). A run belongs to
   its phase: a successful fetch ends a fetch-phase run (`RetryCount` and the backoff reset)
-  but not a delivery run, and a fetch failure ends a delivery run before starting its own. The type is `retryRun` (`runOf(fs)`, `backoff.go`),
-  the only code that touches `RetryCount` and `BackoffUntil` and the only place the phase rule (read
-  from `Reachable`, never stored) is written; `feedAttempt.record` drives it.
+  but not a delivery run, and a fetch failure ends a delivery run before starting its own.
+  `retryState` and `retryRun` (both in `backoff.go`) are the only code that touches
+  `RetryCount` and `BackoffUntil`. `retryStateOf(fs)` provides the phase-independent view
+  for counting, scheduling, backoff and clearing. `runOf(fs)` embeds that state and captures
+  the current phase from `Reachable` for phase-sensitive transitions. One `retryPhase` type
+  represents fetch, delivery or unknown; an absent `Reachable` condition stays unknown.
+  `fetchSucceeded`, `fail` and `sendCaused` use the phase captured by the same `retryRun`
+  rather than re-reading the mutable condition. A `retryRun` is short-lived: create it for
+  one phase-sensitive transition and do not retain it across independent calls or reconciles.
+  The phase of a failure is a separate `failurePhase` type with only fetch and delivery
+  values, so the existing-run `phaseUnknown` cannot be passed to `fail`.
 
 **Feed check** (`feedCheck`, `check.go`)
 : A view over a `FeedStatus` of its last check, in the style of `retryRun`: `failed` (an error is
@@ -144,15 +152,16 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   transient failure instead retries until `RetryCount` reaches the retry limit, and one
   Event announces that.
 
-**Feed backoff** (`retryRun.extend`, `backoff.go`)
-: A feed's permanent-failure backoff, part of its retry run (a view over its `FeedStatus`,
-  `runOf(fs)`). `extend(base, now)` sets it to `base * 2^RetryCount`
+**Feed backoff** (`retryState.extend`, `backoff.go`)
+: A feed's permanent-failure backoff, part of its phase-independent retry state (a view over
+  its `FeedStatus`, `retryStateOf(fs)`). `extend(base, now)` sets it to `base * 2^RetryCount`
   capped at `maxPermanentBackoff` (6h) and reports `firstCapped`, true only for the failure
   whose backoff first reaches the cap (the caller fires the `BackoffCapped` Event once);
   `active(now)` is what `planFeeds` skips on (a malformed value is not a backoff);
-  `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom; and
-  `sendCaused()` says the backoff came from a send failure (so a changed webhook Secret
-  clears it), inferred from the feed's `Reachable` condition not being False.
+  `clear()` ends it and zeroes `RetryCount` so the next backoff starts from the bottom.
+  `sendCaused()` is phase-sensitive: it uses the phase captured by `runOf(fs)` and does not
+  re-read `Reachable` to decide whether the backoff came from a send failure (so a changed
+  webhook Secret clears it).
 
 **Display entry** (`displayEntry`, `displayOf`, `display.go`)
 : An `rss.Entry` as Discord shows it: title, description, feed title, link, image,
