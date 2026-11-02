@@ -198,7 +198,7 @@ func TestFeedBackoffActive(t *testing.T) {
 }
 
 // TestNextBackoffUntil verifies the RFC3339 formatting of a computed backoff
-// expiry, and that the result round-trips through retryRun.active as expected.
+// expiry, and that the result round-trips through retryState.active as expected.
 func TestNextBackoffUntil(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	got := nextBackoffUntil(now, 10*time.Minute)
