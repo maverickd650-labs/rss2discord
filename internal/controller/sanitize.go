@@ -104,7 +104,7 @@ func stripHTML(input string) string {
 			switch {
 			case skipUntil != "":
 				// Count nested start tags of the same name so an inner
-				// element's end tag doesn\x27t expose the rest of the outer body.
+				// element's end tag doesn't expose the rest of the outer body.
 				if tag == skipUntil {
 					switch tokenType {
 					case html.StartTagToken:
