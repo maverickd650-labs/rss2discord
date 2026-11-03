@@ -8,7 +8,8 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   (record the fetch outcome, the config check that must precede `begin`, `begin`, the
   send loop), derives the `syncVerdict` from how far it got and closes exactly once as its
   last act. It owns the order in which a fetch is applied (title stamping, sort, delivery
-  ledger over the untrimmed fetch, delivery-ledger construction (including previous-identity migration), watermark lookup, delivery plan,
+  ledger construction over the untrimmed fetch (including previous-identity migration),
+  watermark lookup, delivery plan,
   catch-up limit, backlog skip) and is the only place that settles the status. It hands
   the send loop the entries to consider (`entries`), the render-failure evidence window
   (`renderEvidence`) and two ledger operations (`sent`, `markHandled`).
