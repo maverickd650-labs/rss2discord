@@ -3,6 +3,8 @@ package controller
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 const (
@@ -63,6 +65,46 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 	}
 }
 
+
+// isScriptOrStyleBodyTextAt reports whether markerIndex falls within a text
+// token emitted while the HTML tokenizer is in a script or style raw-text
+// element. Markup inside elements such as textarea is part of a text token
+// too, but must not be mistaken for script/style content.
+func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) bool {
+	z := html.NewTokenizer(strings.NewReader(input))
+	offset := 0
+	rawTextTag := ""
+
+	for {
+		tokenType := z.Next()
+		if tokenType == html.ErrorToken {
+			return false
+		}
+
+		raw := z.Raw()
+		tokenEnd := offset + len(raw)
+		switch tokenType {
+		case html.StartTagToken:
+			name, _ := z.TagName()
+			tag := string(name)
+			if rawTextTag == "" && (tag == "script" || tag == "style") {
+				rawTextTag = tag
+			}
+		case html.TextToken:
+			if (rawTextTag == "script" || rawTextTag == "style") &&
+				markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
+				return true
+			}
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			if string(name) == rawTextTag {
+				rawTextTag = ""
+			}
+		}
+		offset = tokenEnd
+	}
+}
+
 // FuzzStripHTML checks structural invariants of the stripped output for
 // arbitrary input: it must be trimmed, never leave a run of 3+ newlines, and
 // never contain script/style element bodies.
@@ -77,6 +119,8 @@ func FuzzStripHTML(f *testing.F) {
 		"<script>alert(1)</script>",
 		"<script><script/>" + scriptHiddenMarker + "</script>kept",
 		"<script><script/>" + scriptHiddenMarker + "</script>" + scriptHiddenMarker,
+		"<textarea><x:script><x:script/>" + scriptHiddenMarker + "</x:script></textarea>",
+		"<textarea><x:style><x:style/>" + styleHiddenMarker + "</x:style></textarea>",
 		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
 		"<style>p{}</style>",
 		"<style><style/>" + styleHiddenMarker + "</style>kept",
@@ -110,8 +154,9 @@ func FuzzStripHTML(f *testing.F) {
 		} {
 			hiddenBlock := tc.nested + tc.marker + tc.closing
 			hiddenIndex := strings.Index(input, hiddenBlock)
+			markerIndex := hiddenIndex + len(tc.nested)
 			visibleMarker := hiddenIndex >= 0 && strings.Contains(input[hiddenIndex+len(hiddenBlock):], tc.marker)
-			if hiddenIndex >= 0 && !visibleMarker && strings.Contains(got, tc.marker) {
+			if hiddenIndex >= 0 && isScriptOrStyleBodyTextAt(input, markerIndex, tc.marker) && !visibleMarker && strings.Contains(got, tc.marker) {
 				t.Fatalf("stripHTML(%q) leaked hidden script/style text %q", input, tc.marker)
 			}
 		}
