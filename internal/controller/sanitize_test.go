@@ -32,6 +32,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "comment dropped", input: `a<!-- hidden -->b`, want: "ab"},
 		{name: "bare lt in prose", input: "1 < 2 and 3 > 2", want: "1 < 2 and 3 > 2"},
 		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: beforeAfterText},
+		{name: "decoded script comparison preserves trailing visible text", input: "<script>if(a<b){x++}</script>visible", want: visibleText},
+		{name: "escaped script entities remain literal text", input: "&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible", want: "<script>if(a<b){x++}</script>visible"},
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
@@ -98,9 +100,6 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 			if _, local, ok := strings.Cut(tag, ":"); ok {
 				tag = local
 			}
-			if tokenType == html.StartTagToken && (tag == scriptTagName || tag == styleTagName) {
-				z.NextIsNotRawText()
-			}
 			switch tokenType {
 			case html.StartTagToken:
 				if rawTextTag == "" && (tag == scriptTagName || tag == styleTagName) {
@@ -139,6 +138,8 @@ func FuzzStripHTML(f *testing.F) {
 		"a<!-- c > d -->b",
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
+		"<script>if(a<b){x++}</script>visible",
+		"&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible",
 		"<script><script/>" + scriptHiddenMarker + "</script>kept",
 		"<script><script>" + scriptHiddenMarker + "</script></script>kept",
 		"<script><script/>" + scriptHiddenMarker + "</script>" + scriptHiddenMarker,
