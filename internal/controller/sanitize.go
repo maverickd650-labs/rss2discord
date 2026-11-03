@@ -106,11 +106,10 @@ func stripHTML(input string) string {
 			switch {
 			case skipUntil != "":
 				// A prefixed script/style is not a native raw-text tag to
-				// the tokenizer. If it contains an exact, unprefixed <script>
-				// or <style>, undo that nested tag's raw-text mode so the
-				// qualified outer end tag remains visible to this loop.
-				if skipPrefixed && tokenType == html.StartTagToken &&
-					(tag == "script" || tag == "style") {
+				// the tokenizer. Any nested start tag can switch it into
+				// raw-text/RCDATA mode (e.g. textarea or plaintext), hiding
+				// the qualified outer end tag from this loop.
+				if skipPrefixed && tokenType == html.StartTagToken {
 					z.NextIsNotRawText()
 				}
 				// Match the qualified name: </script> must not close <x:script>.
