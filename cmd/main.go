@@ -42,7 +42,6 @@ import (
 
 	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 	"github.com/maverickd650-labs/rss2discord/internal/controller"
-	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 	"github.com/maverickd650-labs/rss2discord/internal/telemetry"
 	// +kubebuilder:scaffold:imports
@@ -243,16 +242,12 @@ func main() {
 	// the limit independently.
 	rssClient := rss.NewClientWithTransportWrap(transportWrap)
 	discordHTTPClient := discord.NewHTTPClientWithTransportWrap(transportWrap)
-	discordRateLimiter := discord.NewRateLimiter()
 
 	err = (&controller.FeedGroupReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		RSSClient: rssClient,
-		DiscordClientBuilder: func(webhookURL string) controller.MessageSender {
-			return discord.NewClient(webhookURL,
-				discord.WithHTTPClient(discordHTTPClient), discord.WithRateLimiter(discordRateLimiter))
-		},
+		DiscordClientBuilder: controller.NewDiscordClientBuilder(discordHTTPClient),
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
 		WatchWebhookSecrets:     watchWebhookSecrets,
 	}).SetupWithManager(mgr)
