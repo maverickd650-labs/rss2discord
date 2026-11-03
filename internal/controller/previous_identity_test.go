@@ -29,7 +29,6 @@ func changedID(id string, source rss.IDSource, previous string, previousSource r
 	return rss.Entry{ID: id, IDSource: source, PreviousID: previous, PreviousIDSource: previousSource, Title: id}
 }
 
-
 // ownershipLink is a link-derived entry with id as both ID and title.
 func ownershipLink(id string) rss.Entry {
 	return rss.Entry{ID: id, IDSource: rss.IDFromLink, Title: id}
