@@ -18,11 +18,26 @@ package controller
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
+
+// NewDiscordClientBuilder returns a builder that shares one HTTP client and
+// one rate limiter across every Discord client it creates. A nil HTTP client
+// selects discord's default HTTP client.
+func NewDiscordClientBuilder(httpClient *http.Client) func(webhookURL string) MessageSender {
+	if httpClient == nil {
+		httpClient = discord.NewHTTPClient()
+	}
+	limiter := discord.NewRateLimiter()
+	return func(webhookURL string) MessageSender {
+		return discord.NewClient(webhookURL,
+			discord.WithHTTPClient(httpClient), discord.WithRateLimiter(limiter))
+	}
+}
 
 // FeedFetcher is the port through which the per-feed path fetches a feed. The
 // production implementation is *rss.Client, which carries the SSRF guards.
