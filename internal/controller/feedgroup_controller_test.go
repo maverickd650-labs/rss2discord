@@ -1480,6 +1480,13 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(ready.Message).To(ContainSubstring(overflowingInterval))
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("InvalidInterval")))
 
+			By("Making an unrelated valid spec edit so the generation advances while the invalid interval stays the same")
+			generationBefore := updated.Generation
+			updated.Spec.Retries++
+			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
+			Expect(updated.Generation).To(BeNumerically(">", generationBefore))
+
 			By("Reconciling again, with the feed due: nothing is re-sent and no second Event fires")
 			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
 			Expect(err).NotTo(HaveOccurred())
@@ -1489,6 +1496,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			ready = apimeta.FindStatusCondition(updated.Status.Conditions, rss2discordv1alpha1.ConditionTypeReady)
 			Expect(ready).NotTo(BeNil())
 			Expect(ready.Reason).To(Equal("InvalidInterval"))
+			Expect(ready.ObservedGeneration).To(Equal(updated.Generation))
 		})
 
 		It("should never let a later entry's success skip an earlier entry that failed to send", func() {
