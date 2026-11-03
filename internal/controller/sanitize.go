@@ -28,8 +28,9 @@ import (
 // schemeHTTP/schemeHTTPS are the only URL schemes normalizeIdentity and
 // httpURLOrEmpty treat as a URL rather than opaque text.
 const (
-	schemeHTTP  = "http"
-	schemeHTTPS = "https"
+	schemeHTTP     = "http"
+	schemeHTTPS    = "https"
+	plaintextTagName = plaintextTagName
 )
 
 // httpURLOrEmpty returns rawURL unchanged if it parses with an http or https
@@ -150,7 +151,7 @@ func stripHTML(input string) string {
 // token after a start tag as raw text or RCDATA.
 func isRawTextElement(tag string) bool {
 	switch tag {
-	case "iframe", "noembed", "noframes", "noscript", "plaintext",
+	case "iframe", "noembed", "noframes", "noscript", plaintextTagName,
 		"script", "style", "textarea", "title", "xmp":
 		return true
 	}
@@ -168,7 +169,7 @@ type rawTextEndTagLookahead struct {
 // hasEndTagAt reports whether input after offset contains a matching end tag
 // for tag according to the HTML tokenizer. Plaintext has no matching end tag.
 func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
-	if tag == "plaintext" {
+	if tag == plaintextTagName {
 		return false
 	}
 	if _, knownMissing := l.noEndTags[tag]; knownMissing {
@@ -188,7 +189,7 @@ func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
 // semantics. The synthetic opening tag and input suffix are streamed
 // separately, avoiding a copy of the remaining input.
 func hasRawTextEndTag(input io.Reader, tag string) bool {
-	if tag == "plaintext" {
+	if tag == plaintextTagName {
 		return false
 	}
 
