@@ -24,6 +24,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
+		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: "visible"},
+		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: "visible"},
 		{name: "style content dropped", input: `<style>p{color:red}</style>kept`, want: "kept"},
 		{name: "uppercase block tags", input: "<P>one</P><P>two</P>", want: "one\n\ntwo"},
 		{name: "prefixed XHTML paragraphs", input: "<x:div><x:p>First</x:p><x:p>Second</x:p></x:div>", want: "First\n\nSecond"},
@@ -64,8 +66,10 @@ func FuzzStripHTML(f *testing.F) {
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
 		"<script><script/>rss2discord-script-hidden</script>kept",
+		"<x:script><x:script/>rss2discord-script-hidden</x:script>kept",
 		"<style>p{}</style>",
 		"<style><style/>rss2discord-style-hidden</style>kept",
+		"<x:style><x:style/>rss2discord-style-hidden</x:style>kept",
 		"<p>x</p>\n\n\n\n<p>y</p>",
 		"&amp;&lt;&#0;&#x110000;",
 		"\x00\xff<p\x00>",
@@ -83,11 +87,20 @@ func FuzzStripHTML(f *testing.F) {
 		if strings.Contains(got, "\n\n\n") {
 			t.Fatalf("stripHTML(%q) = %q, contains 3+ consecutive newlines", input, got)
 		}
-		for _, tc := range []struct{ nested, marker string }{
-			{nested: "<script><script/>", marker: "rss2discord-script-hidden"},
-			{nested: "<style><style/>", marker: "rss2discord-style-hidden"},
+		for _, tc := range []struct {
+			nested  string
+			closing string
+			marker  string
+		}{
+			{nested: "<script><script/>", closing: "</script>", marker: "rss2discord-script-hidden"},
+			{nested: "<style><style/>", closing: "</style>", marker: "rss2discord-style-hidden"},
+			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: "rss2discord-script-hidden"},
+			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: "rss2discord-style-hidden"},
 		} {
-			if strings.Contains(input, tc.nested+tc.marker+"</") && strings.Contains(got, tc.marker) {
+			closingIndex := strings.Index(input, tc.closing)
+			visibleMarker := closingIndex >= 0 && strings.Contains(input[closingIndex+len(tc.closing):], tc.marker)
+			hiddenMarker := strings.Contains(input, tc.nested+tc.marker+tc.closing)
+			if hiddenMarker && !visibleMarker && strings.Contains(got, tc.marker) {
 				t.Fatalf("stripHTML(%q) leaked hidden script/style text %q", input, tc.marker)
 			}
 		}
