@@ -24,6 +24,11 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+// computeEntryKey is the test-facing form of the ledger's entry-key derivation.
+func computeEntryKey(entry rss.Entry) string {
+	return hashIdentity(entryIdentity(entry))
+}
+
 // ledgerResumes reports whether watermark, as stored in LastSeenEntry, stands
 // for any of entries.
 func ledgerResumes(entries []rss.Entry, watermark string) bool {
@@ -109,7 +114,13 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 					t.Fatalf("LastSent[%s] = %q, want %q", key, at, ledgerTestNow)
 				}
 			}
-			if want := clampWatermark(entryIdentity(tc.handled)); fs.LastSeenEntry != want {
+			if got, want := ledger.identity(tc.handled), entryIdentity(tc.handled); got != want {
+				t.Fatalf("identity(handled) = %q, want %q", got, want)
+			}
+			if got, want := ledger.identity(tc.probe), entryIdentity(tc.probe); got != want {
+				t.Fatalf("identity(probe) = %q, want %q", got, want)
+			}
+			if want := clampWatermark(ledger.identity(tc.handled)); fs.LastSeenEntry != want {
 				t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, want)
 			}
 			if found := ledger.resume().state == watermarkFound; found != tc.wantResume {

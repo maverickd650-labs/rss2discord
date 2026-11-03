@@ -40,7 +40,7 @@ const currentStateVersion = 1
 //     the delivery ledger is
 //     built once, over the whole sorted fetch and before the catch-up trim, so
 //     an entry's stripped identity is only unique if it is across the feed;
-//     the identity migration runs through it; the watermark lookup and
+//     ledger construction performs previous-identity migration; the watermark lookup and
 //     planDelivery follow, then the catch-up limit and the backlog skip.
 //   - SETTLEMENT: whether the fetch is accounted for, which is the only thing
 //     that decides FeedStatus.Initialized, the stateVersion, whether the
@@ -156,7 +156,7 @@ func openFeedSync(fs *v1alpha1.FeedStatus, fetch rss.FetchResult, spec feedSyncS
 //     config error on a non-empty first fetch leaves fs untouched and can't turn
 //     the next attempt into a "feed was empty" delivery of its whole backlog
 //     (syncConfigError);
-//   - begin, the capped-legacy log line, the backlog-skip outcome, then the
+//   - begin, the backlog-skip outcome, then the
 //     entryDelivery send loop, whose attemptVerdict decides syncPending or
 //     syncAccountedFor.
 //
@@ -231,7 +231,7 @@ func (s *feedSync) withoutEntries() (syncVerdict, bool) {
 
 // begin applies the fetch's entries to fs up to the point of sending: it
 // stamps the feed's title on each entry, sorts them, builds the ledger over the
-// whole fetch, runs both identity migrations through it, plans the delivery
+// whole fetch (which migrates previous identities), plans the delivery
 // (catch-up limit included) and, for a first sync with catchUpLimit 0, skips the
 // backlog. apply calls it once, and only after the feed's configuration is
 // known to be usable: a configuration error must leave fs as it was (see
@@ -262,10 +262,10 @@ func (s *feedSync) begin() {
 	})
 
 	// The one identity index of this fetch: built over the whole sorted fetch,
-	// before the migrations (which only change fs) and any catch-up trim below,
-	// so an entry's stripped identity is only unique if it is across the feed.
+	// before any catch-up trim below, so an entry's stripped identity is only
+	// unique if it is across the feed. Construction also migrates previous
+	// identities in the status before the watermark is looked up.
 	s.ledger = newDeliveryLedger(s.fs, entries)
-	migratePreviousIdentities(s.ledger)
 	s.plan = planDelivery(deliveryInputs{
 		entries:        entries,
 		watermark:      s.ledger.resume(),
@@ -293,6 +293,11 @@ func (s *feedSync) renderEvidence() []rss.Entry {
 // sent reports whether entry was already delivered; see deliveryLedger.sent.
 func (s *feedSync) sent(entry rss.Entry) bool {
 	return s.ledger.sent(entry)
+}
+
+// identity returns entry's resolved identity from the sync's cached ledger.
+func (s *feedSync) identity(entry rss.Entry) string {
+	return s.ledger.identity(entry)
 }
 
 // markHandled records entry as delivered (or given up on) at the sync's time
