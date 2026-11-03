@@ -8,18 +8,18 @@ import (
 )
 
 const (
-	scriptHiddenMarker           = "rss2discord-script-hidden"
-	styleHiddenMarker            = "rss2discord-style-hidden"
-	scriptTagName                = "script"
-	styleTagName                 = "style"
-	visibleText                  = "visible"
-	decodedScriptComparisonInput = "<script>if(a<b){x++}</script>visible"
-	prefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`
-	prefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`
-	prefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`
-	prefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`
-	beforeAfterText              = "beforeafter"
-	beforeOuterTailAfterText     = "beforeouter-tailafter"
+	scriptHiddenMarker                    = "rss2discord-script-hidden"
+	styleHiddenMarker                     = "rss2discord-style-hidden"
+	scriptTagName                         = "script"
+	styleTagName                          = "style"
+	visibleText                           = "visible"
+	decodedScriptComparisonInput          = "<script>if(a<b){x++}</script>visible"
+	prefixedScriptMismatchedEndTagInput   = `<x:script>hidden</script>still-hidden</x:script>visible`
+	prefixedStyleMismatchedEndTagInput    = `<x:style>hidden</style>still-hidden</x:style>visible`
+	prefixedScriptNestedRawTextInput      = `<x:script><script>hidden</x:script>visible`
+	prefixedStyleNestedRawTextInput       = `<x:style><style>hidden</x:style>visible`
+	beforeAfterText                       = "beforeafter"
+	beforeOuterTailAfterText              = "beforeouter-tailafter"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
@@ -84,15 +84,14 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 }
 
 // isScriptOrStyleBodyTextAt reports whether markerIndex falls within a text
-// token emitted while the HTML tokenizer is in a script or style raw-text
-// element. Markup inside elements such as textarea is part of a text token
-// too, but must not be mistaken for script/style content.
+// token emitted inside a script or style element. Markup inside elements such
+// as textarea is also emitted as text, but must not be mistaken for a body.
 func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) bool {
 	z := html.NewTokenizer(strings.NewReader(input))
 	offset := 0
-	rawTextTag := ""
-	rawTextDepth := 0
-	rawTextPrefixed := false
+	skipTag := ""
+	skipDepth := 0
+	skipPrefixed := false
 
 	for {
 		tokenType := z.Next()
@@ -113,30 +112,30 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 			if _, local, ok := strings.Cut(tag, ":"); ok {
 				localTag = local
 			}
-			if rawTextPrefixed && tokenType == html.StartTagToken &&
+			if skipPrefixed && tokenType == html.StartTagToken &&
 				(tag == scriptTagName || tag == styleTagName) {
 				z.NextIsNotRawText()
 			}
 			switch tokenType {
 			case html.StartTagToken:
-				if rawTextTag == "" && (localTag == scriptTagName || localTag == styleTagName) {
-					rawTextTag = tag
-					rawTextDepth = 1
-					rawTextPrefixed = tag != localTag
-				} else if tag == rawTextTag {
-					rawTextDepth++
+				if skipTag == "" && (localTag == scriptTagName || localTag == styleTagName) {
+					skipTag = tag
+					skipDepth = 1
+					skipPrefixed = tag != localTag
+				} else if tag == skipTag {
+					skipDepth++
 				}
 			case html.EndTagToken:
-				if tag == rawTextTag {
-					rawTextDepth--
-					if rawTextDepth == 0 {
-						rawTextTag = ""
-						rawTextPrefixed = false
+				if tag == skipTag {
+					skipDepth--
+					if skipDepth == 0 {
+						skipTag = ""
+						skipPrefixed = false
 					}
 				}
 			}
 		case html.TextToken:
-			if rawTextTag != "" && markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
+			if skipTag != "" && markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
 				return true
 			}
 		}
