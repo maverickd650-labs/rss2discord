@@ -124,7 +124,7 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 		// block every newer entry behind it forever. Drop it and carry
 		// on. If no entry renders, the templates themselves are broken
 		// and skipping would just drain the feed, so keep holding.
-		log.Error(err, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", entryIdentity(entry))
+		log.Error(err, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", d.syncer.identity(entry))
 		d.syncer.markHandled(entry)
 		d.attempt.record(attemptOutcome{kind: attemptEntrySkipped, entry: entry.Title}, err)
 		return attemptVerdict{}, true
@@ -141,8 +141,9 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 // never be delivered is no evidence the templates work for those that would.
 // skip is excluded by identity.
 func (d entryDelivery) otherEntryRenders(skip rss.Entry) bool {
+	skipID := d.syncer.identity(skip)
 	for _, other := range d.syncer.renderEvidence() {
-		if entryIdentity(other) == entryIdentity(skip) || !d.renderer.matches(other) {
+		if d.syncer.identity(other) == skipID || !d.renderer.matches(other) {
 			continue
 		}
 		if _, _, err := d.renderer.build(other); err == nil {
