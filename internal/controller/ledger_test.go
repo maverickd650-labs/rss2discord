@@ -24,6 +24,11 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+// computeEntryKey is the test-facing form of the ledger's entry-key derivation.
+func computeEntryKey(entry rss.Entry) string {
+	return hashIdentity(entryIdentity(entry))
+}
+
 // ledgerResumes reports whether watermark, as stored in LastSeenEntry, stands
 // for any of entries.
 func ledgerResumes(entries []rss.Entry, watermark string) bool {
