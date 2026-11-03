@@ -242,11 +242,11 @@ func main() {
 
 	err = (&controller.FeedGroupReconciler{
 		Client:                  mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		RSSClient:              rssClient,
-		DiscordClientBuilder:   controller.NewDiscordClientBuilder(discord.NewHTTPClientWithTransportWrap(transportWrap)),
+		Scheme:                  mgr.GetScheme(),
+		RSSClient:               rssClient,
+		DiscordClientBuilder:    controller.NewDiscordClientBuilder(discord.NewHTTPClientWithTransportWrap(transportWrap)),
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
-		WatchWebhookSecrets:    watchWebhookSecrets,
+		WatchWebhookSecrets:     watchWebhookSecrets,
 	}).SetupWithManager(mgr)
 	exitOnError(err, "Failed to create controller", "controller", "feedgroup")
 	// +kubebuilder:scaffold:builder
