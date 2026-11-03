@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"io"
 	neturl "net/url"
 	"regexp"
 	"strings"
@@ -112,7 +113,7 @@ func stripHTML(input string) string {
 				// normally when it has a matching end tag; for an unclosed
 				// element (or plaintext), keep the outer boundary visible.
 				if skipPrefixed && tokenType == html.StartTagToken &&
-					isRawTextElement(tag) && !hasRawTextEndTag(input[inputOffset:], tag) {
+					isRawTextElement(tag) && !hasRawTextEndTag(strings.NewReader(input[inputOffset:]), tag) {
 					z.NextIsNotRawText()
 				}
 				// Match the qualified name: </script> must not close <x:script>.
@@ -157,13 +158,15 @@ func isRawTextElement(tag string) bool {
 
 // hasRawTextEndTag reports whether input contains a matching end tag for tag
 // according to the HTML tokenizer. Plaintext has no matching end tag.
-func hasRawTextEndTag(input, tag string) bool {
+func hasRawTextEndTag(input io.Reader, tag string) bool {
 	if tag == "plaintext" {
 		return false
 	}
 
-	// tag comes from isRawTextElement, so the synthetic opening tag is valid.
-	z := html.NewTokenizer(strings.NewReader("<" + tag + ">" + input))
+	// Feed the synthetic opening tag and remaining input separately: joining
+	// them would copy the entire suffix for every nested raw-text element.
+	prefix := strings.NewReader("<" + tag + ">")
+	z := html.NewTokenizer(io.MultiReader(prefix, input))
 	z.Next()
 	for {
 		tokenType := z.Next()
