@@ -8,6 +8,7 @@ import (
 const (
 	scriptHiddenMarker = "rss2discord-script-hidden"
 	styleHiddenMarker  = "rss2discord-style-hidden"
+	visibleText        = "visible"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
@@ -29,9 +30,9 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
-		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: "visible"},
-		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: "visible"},
-		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: "visible"},
+		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: visibleText},
+		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
+		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: visibleText},
 		{name: "script body keeps marker after closing tag", input: `<script><script/>` + scriptHiddenMarker + `</script>` + scriptHiddenMarker, want: scriptHiddenMarker},
 		{name: "style content dropped", input: `<style>p{color:red}</style>kept`, want: "kept"},
 		{name: "uppercase block tags", input: "<P>one</P><P>two</P>", want: "one\n\ntwo"},
