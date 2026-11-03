@@ -119,6 +119,18 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   The phase of a failure is a separate `failurePhase` type with only fetch and delivery
   values, so the existing-run `phaseUnknown` cannot be passed to `fail`.
 
+**Webhook Secret resolution** (`FeedGroupReconciler.webhook`, `secret_watch.go`)
+: Reading the group's webhook Secret without caching its data, validating the configured key
+  and non-blank URL, and recording the Secret's resourceVersion. Keeping this beside
+  `feedGroupsForSecret`, `noteWebhookSecretVersion` and `clearSendBackoffs` puts Secret
+  resolution and change handling in one module.
+
+**Discord client builder** (`NewDiscordClientBuilder`, `ports.go`)
+: The shared constructor for Discord message senders. One builder owns one pooled HTTP client
+  and one rate limiter, and every sender it creates uses both. A nil HTTP client selects
+  `discord.NewHTTPClient()`; production supplies the transport-wrapped client from
+  `cmd/main.go`, while controller defaults and test harnesses use the same builder.
+
 **Feed check** (`feedCheck`, `check.go`)
 : A view over a `FeedStatus` of its last check, in the style of `retryState`: `failed` (an error is
   in status; what Ready's `FeedErrors` count and the `feed_healthy` gauge mean), `failedOrRetrying`
