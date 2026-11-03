@@ -28,9 +28,10 @@ import (
 // schemeHTTP/schemeHTTPS are the only URL schemes normalizeIdentity and
 // httpURLOrEmpty treat as a URL rather than opaque text.
 const (
-	schemeHTTP       = "http"
-	schemeHTTPS      = "https"
-	plaintextTagName = "plaintext"
+	schemeHTTP          = "http"
+	schemeHTTPS         = "https"
+	plaintextTagName    = "plaintext"
+	scriptRawTextTagName = "script"
 )
 
 // httpURLOrEmpty returns rawURL unchanged if it parses with an http or https
@@ -132,7 +133,7 @@ func stripHTML(input string) string {
 						}
 					}
 				}
-			case localTag == "script" || localTag == "style":
+			case localTag == scriptRawTextTagName || localTag == "style":
 				// Keep the full tag name so only its matching qualified end
 				// tag can terminate a prefixed Atom XHTML body.
 				if tokenType == html.StartTagToken {
@@ -152,15 +153,17 @@ func stripHTML(input string) string {
 func isRawTextElement(tag string) bool {
 	switch tag {
 	case "iframe", "noembed", "noframes", "noscript", plaintextTagName,
-		"script", "style", "textarea", "title", "xmp":
+		scriptRawTextTagName, "style", "textarea", "title", "xmp":
 		return true
 	}
 	return false
 }
 
 // rawTextEndTagLookahead caches suffixes that contain no matching end tag.
-// A miss is reusable for every later start of the same tag because those
-// suffixes are subsets of the one already checked.
+// This is safe for the ordinary raw-text/RCDATA scanners, which search for
+// their closing tag independently of prior content. Script data has escaped
+// and double-escaped states, so a later suffix can have a matching end tag
+// even when an earlier scan from the same input returned no match.
 type rawTextEndTagLookahead struct {
 	input     string
 	noEndTags map[string]struct{}
@@ -178,10 +181,12 @@ func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
 	if hasRawTextEndTag(strings.NewReader(l.input[offset:]), tag) {
 		return true
 	}
-	if l.noEndTags == nil {
-		l.noEndTags = make(map[string]struct{})
+	if tag != scriptRawTextTagName {
+		if l.noEndTags == nil {
+			l.noEndTags = make(map[string]struct{})
+		}
+		l.noEndTags[tag] = struct{}{}
 	}
-	l.noEndTags[tag] = struct{}{}
 	return false
 }
 
