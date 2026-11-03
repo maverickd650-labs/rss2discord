@@ -158,3 +158,20 @@ func TestEnsureFeedStatuses(t *testing.T) {
 		t.Fatalf("expected exactly one FeedStatus per spec feed, got %d", len(fg.Status.Feeds))
 	}
 }
+
+func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
+	fs := &v1alpha1.FeedStatus{}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "invalid filter", 1) {
+		t.Fatal("expected a newly added condition to count as changed")
+	}
+	if setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "invalid filter", 2) {
+		t.Fatal("ObservedGeneration-only change must not count as semantic change")
+	}
+	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if condition == nil || condition.ObservedGeneration != 2 {
+		t.Fatalf("condition = %+v, want ObservedGeneration 2", condition)
+	}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "different invalid filter", 2) {
+		t.Fatal("expected a message change to count as semantic change")
+	}
+}

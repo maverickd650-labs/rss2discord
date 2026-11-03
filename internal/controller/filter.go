@@ -19,26 +19,39 @@ package controller
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
-// entryFilter is a feed's filter compiled once per feed per reconcile: the
-// spec together with its compiled regex, so the two can't be mismatched and
-// the regex isn't recompiled for every entry. The zero value (and the result of
-// compiling a nil filter) matches every entry.
+// entryFilter is a feed's filter compiled once per feed per reconcile. Regexes
+// and keywords are normalized here rather than for every entry. hasKeywords
+// distinguishes an absent keyword restriction from a configured list whose
+// entries are all blank (which deliberately matches nothing). The zero value
+// matches every entry.
 type entryFilter struct {
-	spec  *v1alpha1.Filter
-	regex *regexp.Regexp
+	regex       *regexp.Regexp
+	keywords    []string
+	hasKeywords bool
 }
 
 // compileEntryFilter compiles filter. A nil filter or a blank regex compiles
 // to no regex; an invalid regex is an error.
 func compileEntryFilter(filter *v1alpha1.Filter) (entryFilter, error) {
-	f := entryFilter{spec: filter}
-	if filter == nil || strings.TrimSpace(filter.Regex) == "" {
+	if filter == nil {
+		return entryFilter{}, nil
+	}
+
+	f := entryFilter{hasKeywords: len(filter.Keywords) > 0}
+	for _, keyword := range filter.Keywords {
+		if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" {
+			f.keywords = append(f.keywords, keyword)
+		}
+	}
+
+	if strings.TrimSpace(filter.Regex) == "" {
 		return f, nil
 	}
 
@@ -55,28 +68,20 @@ func compileEntryFilter(filter *v1alpha1.Filter) (entryFilter, error) {
 // least one of them must appear (case-insensitively) in them. A nil filter
 // matches everything.
 func (f entryFilter) matches(entry rss.Entry) bool {
-	if f.spec == nil {
-		return true
-	}
-
-	if f.regex != nil && !f.regex.MatchString(entry.Title+"\n"+entry.Description) {
+	content := entry.Title + "\n" + entry.Description
+	if f.regex != nil && !f.regex.MatchString(content) {
 		return false
 	}
 
-	if len(f.spec.Keywords) == 0 {
+	if !f.hasKeywords {
 		return true
 	}
-
-	content := strings.ToLower(strings.TrimSpace(entry.Title + "\n" + entry.Description))
-	for _, keyword := range f.spec.Keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
-			continue
-		}
-		if strings.Contains(content, strings.ToLower(keyword)) {
-			return true
-		}
+	if len(f.keywords) == 0 {
+		return false
 	}
 
-	return false
+	content = strings.ToLower(strings.TrimSpace(content))
+	return slices.ContainsFunc(f.keywords, func(keyword string) bool {
+		return strings.Contains(content, keyword)
+	})
 }

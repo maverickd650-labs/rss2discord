@@ -128,8 +128,19 @@ func feedStatusFor(feedGroup *v1alpha1.FeedGroup, url string) *v1alpha1.FeedStat
 // so a caller with no RetryCount to gate on (e.g. a config error, which
 // isn't retried) can still fire a one-time Event on the transition into that
 // state instead of every reconcile it recurs.
+// setSemanticCondition updates a condition while reporting only semantic changes.
+// ObservedGeneration is still advanced by SetStatusCondition, but does not by
+// itself warrant a transition Event.
+func setSemanticCondition(conditions *[]metav1.Condition, condition metav1.Condition) bool {
+	previous := apimeta.FindStatusCondition(*conditions, condition.Type)
+	changed := previous == nil || previous.Status != condition.Status ||
+		previous.Reason != condition.Reason || previous.Message != condition.Message
+	apimeta.SetStatusCondition(conditions, condition)
+	return changed
+}
+
 func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64) bool {
-	return apimeta.SetStatusCondition(&fs.Conditions, metav1.Condition{
+	return setSemanticCondition(&fs.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,

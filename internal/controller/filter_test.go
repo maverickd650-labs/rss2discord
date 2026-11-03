@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
@@ -83,4 +84,29 @@ func TestEntryFilterMatches(t *testing.T) {
 			t.Fatal("expected all-blank keywords to match nothing")
 		}
 	})
+}
+
+func TestCompileEntryFilter_NormalizesKeywordsOnce(t *testing.T) {
+	f, err := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"  BREAKING ", " ", "News"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.hasKeywords {
+		t.Fatal("expected configured keywords to be recorded")
+	}
+	if want := []string{"breaking", "news"}; !slices.Equal(f.keywords, want) {
+		t.Fatalf("keywords = %q, want %q", f.keywords, want)
+	}
+}
+
+func TestEntryFilter_EmptyKeywordsDoNotRestrict(t *testing.T) {
+	for _, keywords := range [][]string{nil, {}} {
+		f, err := compileEntryFilter(&v1alpha1.Filter{Keywords: keywords})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.hasKeywords || !f.matches(rss.Entry{Title: "anything"}) {
+			t.Errorf("keywords %q unexpectedly restricted the entry", keywords)
+		}
+	}
 }

@@ -801,3 +801,35 @@ func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 		})
 	}
 }
+
+func TestFeedAttempt_ConfigErrorDoesNotRepeatOnGenerationChange(t *testing.T) {
+	fg := &v1alpha1.FeedGroup{}
+	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-config-generation", attemptGeneration
+	fs := &v1alpha1.FeedStatus{
+		RSSUrl: attemptURL,
+		Conditions: []metav1.Condition{{
+			Type: v1alpha1.FeedConditionTypeDelivered, Status: metav1.ConditionFalse,
+			Reason: reasonConfigError, Message: testBoom, ObservedGeneration: attemptGeneration - 1,
+		}},
+	}
+	recorder := events.NewFakeRecorder(10)
+	attempt := testAttempt(t, fg, fs, attemptURL, attemptInstant).withRecorder(recorder)
+
+	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New(testBoom))
+	if got := drainEvents(recorder); len(got) != 0 {
+		t.Fatalf("generation-only change emitted Warning Events: %v", got)
+	}
+	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if condition == nil || condition.ObservedGeneration != attemptGeneration {
+		t.Fatalf("condition = %+v, want ObservedGeneration %d", condition, attemptGeneration)
+	}
+
+	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New("different config error"))
+	if got := drainEvents(recorder); len(got) != 1 {
+		t.Fatalf("message change emitted %d Warning Events, want 1: %v", len(got), got)
+	}
+	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New("different config error"))
+	if got := drainEvents(recorder); len(got) != 0 {
+		t.Fatalf("unchanged config error emitted Warning Events: %v", got)
+	}
+}
