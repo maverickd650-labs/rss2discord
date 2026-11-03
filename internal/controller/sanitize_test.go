@@ -74,6 +74,7 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 	z := html.NewTokenizer(strings.NewReader(input))
 	offset := 0
 	rawTextTag := ""
+	rawTextDepth := 0
 
 	for {
 		tokenType := z.Next()
@@ -84,21 +85,32 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 		raw := z.Raw()
 		tokenEnd := offset + len(raw)
 		switch tokenType {
-		case html.StartTagToken:
+		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
 			name, _ := z.TagName()
 			tag := string(name)
-			if rawTextTag == "" && (tag == "script" || tag == "style") {
-				rawTextTag = tag
+			if _, local, ok := strings.Cut(tag, ":"); ok {
+				tag = local
+			}
+			switch tokenType {
+			case html.StartTagToken:
+				if rawTextTag == "" && (tag == "script" || tag == "style") {
+					rawTextTag = tag
+					rawTextDepth = 1
+				} else if tag == rawTextTag {
+					rawTextDepth++
+				}
+			case html.EndTagToken:
+				if tag == rawTextTag {
+					rawTextDepth--
+					if rawTextDepth == 0 {
+						rawTextTag = ""
+					}
+				}
 			}
 		case html.TextToken:
 			if (rawTextTag == "script" || rawTextTag == "style") &&
 				markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
 				return true
-			}
-		case html.EndTagToken:
-			name, _ := z.TagName()
-			if string(name) == rawTextTag {
-				rawTextTag = ""
 			}
 		}
 		offset = tokenEnd
