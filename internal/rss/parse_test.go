@@ -1460,7 +1460,7 @@ func TestParseFeed_RSSBoundsPerItemSlices(t *testing.T) {
 	for i := range want {
 		want[i] = fmt.Sprintf("c%d", i)
 	}
-	if !slicesEqual(entries[0].Categories, want) {
+	if !slices.Equal(entries[0].Categories, want) {
 		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
 	}
 }
@@ -1482,7 +1482,7 @@ func TestParseFeed_AtomBoundsCategories(t *testing.T) {
 	for i := range want {
 		want[i] = fmt.Sprintf("c%d", i)
 	}
-	if !slicesEqual(entries[0].Categories, want) {
+	if !slices.Equal(entries[0].Categories, want) {
 		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
 	}
 }
