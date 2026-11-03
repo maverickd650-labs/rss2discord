@@ -231,7 +231,7 @@ func (s *feedSync) withoutEntries() (syncVerdict, bool) {
 
 // begin applies the fetch's entries to fs up to the point of sending: it
 // stamps the feed's title on each entry, sorts them, builds the ledger over the
-// whole fetch, runs both identity migrations through it, plans the delivery
+// whole fetch (which migrates previous identities), plans the delivery
 // (catch-up limit included) and, for a first sync with catchUpLimit 0, skips the
 // backlog. apply calls it once, and only after the feed's configuration is
 // known to be usable: a configuration error must leave fs as it was (see
