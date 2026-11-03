@@ -92,20 +92,30 @@ func stripHTML(input string) string {
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
 			name, _ := z.TagName()
 			tag := string(name)
+			localTag := tag
+			// Atom XHTML may use prefixes inherited from the feed element.
+			if _, local, ok := strings.Cut(tag, ":"); ok {
+				localTag = local
+			}
 			// A self-closing <script/> or <style/> has no body, but the
 			// tokenizer still enters raw-text mode after it and would swallow
 			// the following markup (including an outer end tag) as text.
 			if tokenType == html.SelfClosingTagToken {
 				z.NextIsNotRawText()
 			}
-			// Atom XHTML may use prefixes inherited from the feed element.
-			if _, local, ok := strings.Cut(tag, ":"); ok {
-				tag = local
-			}
 			switch {
 			case skipUntil != "":
-				// Count nested start tags of the same name so an inner
-				// element's end tag doesn't expose the rest of the outer body.
+				// A prefixed script/style is not a native raw-text tag to
+				// the tokenizer. If it contains an exact, unprefixed <script>
+				// or <style>, undo that nested tag's raw-text mode so the
+				// qualified outer end tag remains visible to this loop.
+				if skipPrefixed && tokenType == html.StartTagToken &&
+					(tag == "script" || tag == "style") {
+					z.NextIsNotRawText()
+				}
+				// Match the qualified name: </script> must not close <x:script>.
+				// Count nested starts of the same name so an inner end tag
+				// doesn't expose the rest of the outer body.
 				if tag == skipUntil {
 					switch tokenType {
 					case html.StartTagToken:
@@ -113,16 +123,19 @@ func stripHTML(input string) string {
 					case html.EndTagToken:
 						if skipDepth--; skipDepth == 0 {
 							skipUntil = ""
+							skipPrefixed = false
 						}
 					}
 				}
-			case tag == "script" || tag == "style":
-				// A self-closing <script/> has no body to skip.
+			case localTag == "script" || localTag == "style":
+				// Keep the full tag name so only its matching qualified end
+				// tag can terminate a prefixed Atom XHTML body.
 				if tokenType == html.StartTagToken {
 					skipUntil = tag
 					skipDepth = 1
+					skipPrefixed = tag != localTag
 				}
-			case isBlockTag(tag):
+			case isBlockTag(localTag):
 				sb.WriteByte('\n')
 			}
 		}
