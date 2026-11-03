@@ -453,10 +453,12 @@ func (l *deliveryLedger) rekeySent(i int) {
 	l.moveSent(rec.previousKey, rec.key)
 	if rec.previousStrippedKey != "" {
 		target := ""
-		if rec.unique != "" {
-			target = strippedKey(rec.unique)
-		} else if l.ownsPrevious(i) {
-			target = rec.key
+		if l.ownsPrevious(i) {
+			if rec.unique != "" {
+				target = strippedKey(rec.unique)
+			} else {
+				target = rec.key
+			}
 		}
 		l.moveSent(rec.previousStrippedKey, target)
 	}
