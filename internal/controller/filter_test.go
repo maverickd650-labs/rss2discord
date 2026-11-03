@@ -100,7 +100,7 @@ func TestCompileEntryFilter_NormalizesKeywordsOnce(t *testing.T) {
 }
 
 func TestEntryFilter_EmptyKeywordsDoNotRestrict(t *testing.T) {
-	for _, keywords := range [][]string{nil, {}} {
+	for _, keywords := range [][]string{nil, []string{}} {
 		f, err := compileEntryFilter(&v1alpha1.Filter{Keywords: keywords})
 		if err != nil {
 			t.Fatal(err)

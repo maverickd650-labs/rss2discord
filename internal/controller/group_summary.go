@@ -67,6 +67,8 @@ func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) 
 // the spec is wrong no matter how the feeds fared, and until it's fixed the
 // group is not running on the schedule the user asked for. The InvalidInterval
 // condition clears on its own the reconcile after the spec is corrected.
+// It reports whether Status, Reason or Message changed, excluding an
+// ObservedGeneration-only update.
 func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr error) bool {
 	if groupErr != nil {
 		// A pass a feed panicked in did not get through the group, whatever
