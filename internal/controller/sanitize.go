@@ -101,6 +101,11 @@ func stripHTML(input string) string {
 			if _, local, ok := strings.Cut(tag, ":"); ok {
 				tag = local
 			}
+			// Expose nested script/style tags as tokens so skipDepth can
+			// distinguish an inner end tag from the outer element's end tag.
+			if tokenType == html.StartTagToken && (tag == "script" || tag == "style") {
+				z.NextIsNotRawText()
+			}
 			switch {
 			case skipUntil != "":
 				// Count nested start tags of the same name so an inner
