@@ -114,7 +114,7 @@ func TestDisplayOfShortValues(t *testing.T) {
 		}
 	})
 
-	t.Run("no categories stays nil", func(t *testing.T) {
+	t.Run("no categories stays empty", func(t *testing.T) {
 		if got := displayOf(rss.Entry{}).Categories; got != "" {
 			t.Fatalf("got %q, want empty string", got)
 		}
