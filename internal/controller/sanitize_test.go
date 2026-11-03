@@ -8,14 +8,14 @@ import (
 )
 
 const (
-	scriptHiddenMarker       = "rss2discord-script-hidden"
-	styleHiddenMarker        = "rss2discord-style-hidden"
-	scriptTagName            = "script"
-	styleTagName             = "style"
-	visibleText              = "visible"
+	scriptHiddenMarker           = "rss2discord-script-hidden"
+	styleHiddenMarker            = "rss2discord-style-hidden"
+	scriptTagName                = "script"
+	styleTagName                 = "style"
+	visibleText                  = "visible"
 	decodedScriptComparisonInput = "<script>if(a<b){x++}</script>visible"
-	beforeAfterText          = "beforeafter"
-	beforeOuterTailAfterText = "beforeouter-tailafter"
+	beforeAfterText              = "beforeafter"
+	beforeOuterTailAfterText     = "beforeouter-tailafter"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
