@@ -77,6 +77,7 @@ func stripHTML(input string) string {
 	sb.Grow(len(input))
 
 	var skipUntil string // non-empty while inside a <script>/<style> element
+	var skipDepth int    // open skipUntil elements; the body ends when it returns to 0
 	z := html.NewTokenizer(strings.NewReader(input))
 	for {
 		tokenType := z.Next()
@@ -96,13 +97,23 @@ func stripHTML(input string) string {
 			}
 			switch {
 			case skipUntil != "":
-				if tokenType == html.EndTagToken && tag == skipUntil {
-					skipUntil = ""
+				// Count nested start tags of the same name so an inner
+				// element\x27s end tag doesn\x27t expose the rest of the outer body.
+				if tag == skipUntil {
+					switch tokenType {
+					case html.StartTagToken:
+						skipDepth++
+					case html.EndTagToken:
+						if skipDepth--; skipDepth == 0 {
+							skipUntil = ""
+						}
+					}
 				}
 			case tag == "script" || tag == "style":
 				// A self-closing <script/> has no body to skip.
 				if tokenType == html.StartTagToken {
 					skipUntil = tag
+					skipDepth = 1
 				}
 			case isBlockTag(tag):
 				sb.WriteByte('\n')
