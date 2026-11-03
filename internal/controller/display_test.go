@@ -25,6 +25,39 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+// TestDisplayEntryTemplatePlaceholders keeps the exported displayEntry
+// surface in sync with the placeholders documented on FeedGroupSpec.Format.
+func TestDisplayEntryTemplatePlaceholders(t *testing.T) {
+	typ := reflect.TypeOf(displayEntry{})
+	want := map[string]struct{}{
+		"Title":         {},
+		"Description":   {},
+		"Link":          {},
+		"Image":         {},
+		"Published":     {},
+		"PublishedUnix": {},
+		"Author":        {},
+		"Categories":    {},
+		"FeedTitle":     {},
+		"Content":       {},
+	}
+
+	got := make(map[string]struct{}, typ.NumField()+typ.NumMethod())
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.IsExported() {
+			got[field.Name] = struct{}{}
+		}
+	}
+	for i := 0; i < typ.NumMethod(); i++ {
+		got[typ.Method(i).Name] = struct{}{}
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("displayEntry template placeholders = %v, want %v", got, want)
+	}
+}
+
 // TestDisplayOfSanitizesPerField pins which entry fields displayOf sanitizes,
 // so the answer is readable from one place. HTML markup is used as the probe:
 // a sanitized field loses it, a raw one keeps it.
