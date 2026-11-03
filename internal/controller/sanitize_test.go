@@ -65,7 +65,6 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 	}
 }
 
-
 // isScriptOrStyleBodyTextAt reports whether markerIndex falls within a text
 // token emitted while the HTML tokenizer is in a script or style raw-text
 // element. Markup inside elements such as textarea is part of a text token
@@ -173,7 +172,8 @@ func FuzzStripHTML(f *testing.F) {
 			}
 			visibleMarker := visibleIndex >= 0 &&
 				!isScriptOrStyleBodyTextAt(input, hiddenIndex+len(hiddenBlock)+visibleIndex, tc.marker)
-			if hiddenIndex >= 0 && isScriptOrStyleBodyTextAt(input, markerIndex, tc.marker) && !visibleMarker && strings.Contains(got, tc.marker) {
+			if hiddenIndex >= 0 && isScriptOrStyleBodyTextAt(input, markerIndex, tc.marker) &&
+				!visibleMarker && strings.Contains(got, tc.marker) {
 				t.Fatalf("stripHTML(%q) leaked hidden script/style text %q", input, tc.marker)
 			}
 		}
