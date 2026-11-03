@@ -80,6 +80,7 @@ func stripHTML(input string) string {
 	var skipUntil string  // qualified name; non-empty while inside a <script>/<style> element
 	var skipDepth int     // open skipUntil elements; the body ends when it returns to 0
 	var skipPrefixed bool // the outer script/style element has a namespace prefix
+	lookahead := rawTextEndTagLookahead{input: input}
 	z := html.NewTokenizer(strings.NewReader(input))
 	inputOffset := 0
 	for {
@@ -113,7 +114,7 @@ func stripHTML(input string) string {
 				// normally when it has a matching end tag; for an unclosed
 				// element (or plaintext), keep the outer boundary visible.
 				if skipPrefixed && tokenType == html.StartTagToken &&
-					isRawTextElement(tag) && !hasRawTextEndTag(strings.NewReader(input[inputOffset:]), tag) {
+					isRawTextElement(tag) && !lookahead.hasEndTagAt(inputOffset, tag) {
 					z.NextIsNotRawText()
 				}
 				// Match the qualified name: </script> must not close <x:script>.
@@ -156,15 +157,41 @@ func isRawTextElement(tag string) bool {
 	return false
 }
 
-// hasRawTextEndTag reports whether input contains a matching end tag for tag
-// according to the HTML tokenizer. Plaintext has no matching end tag.
+// rawTextEndTagLookahead caches suffixes that contain no matching end tag.
+// A miss is reusable for every later start of the same tag because those
+// suffixes are subsets of the one already checked.
+type rawTextEndTagLookahead struct {
+	input     string
+	noEndTags map[string]struct{}
+}
+
+// hasEndTagAt reports whether input after offset contains a matching end tag
+// for tag according to the HTML tokenizer. Plaintext has no matching end tag.
+func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
+	if tag == "plaintext" {
+		return false
+	}
+	if _, knownMissing := l.noEndTags[tag]; knownMissing {
+		return false
+	}
+	if hasRawTextEndTag(strings.NewReader(l.input[offset:]), tag) {
+		return true
+	}
+	if l.noEndTags == nil {
+		l.noEndTags = make(map[string]struct{})
+	}
+	l.noEndTags[tag] = struct{}{}
+	return false
+}
+
+// hasRawTextEndTag uses the HTML tokenizer to preserve its matching end-tag
+// semantics. The synthetic opening tag and input suffix are streamed
+// separately, avoiding a copy of the remaining input.
 func hasRawTextEndTag(input io.Reader, tag string) bool {
 	if tag == "plaintext" {
 		return false
 	}
 
-	// Feed the synthetic opening tag and remaining input separately: joining
-	// them would copy the entire suffix for every nested raw-text element.
 	prefix := strings.NewReader("<" + tag + ">")
 	z := html.NewTokenizer(io.MultiReader(prefix, input))
 	z.Next()
