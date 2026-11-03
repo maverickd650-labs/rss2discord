@@ -67,6 +67,9 @@ func TestNewDiscordClientBuilder_SharesHTTPClientAndRateLimiter(t *testing.T) {
 		if got := discordServer.DeliveryAttempts(); got != 1 {
 			t.Fatalf("DeliveryAttempts() = %d, want 1; second client must share the first client's cooldown", got)
 		}
+		if got := discordServer.MessageCount(); got != 0 {
+			t.Fatalf("MessageCount() during cooldown = %d, want 0", got)
+		}
 
 		time.Sleep(time.Minute)
 		if err := second.SendMessage(t.Context(), discord.Message{Content: messageContent}); err != nil {

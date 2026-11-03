@@ -2113,12 +2113,6 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(feedStatusFor(updated, rssServer.URL()).LastSeenEntry).To(BeEmpty())
 			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(ContainSubstring("rate limited"))
 
-			By("Reconciling during the Retry-After cooldown, where the shared RateLimiter skips the HTTP request")
-			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(discordServer.DeliveryAttempts()).To(Equal(1))
-			Expect(discordServer.MessageCount()).To(Equal(0))
-
 			By("Waiting for the Retry-After cooldown to expire and reconciling again, where the previously unsent entry is delivered")
 			time.Sleep(2 * time.Second)
 			result, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
