@@ -35,12 +35,18 @@ import (
 //   - Author: stripHTML.
 //   - Categories: stripHTML each, drop blanks and join with ", ".
 //   - Content: stripHTML, on demand (see Content).
+//
+// Its exported fields and methods are exactly the template placeholders
+// documented on FeedGroupSpec.Format. Adding an exported member changes that
+// public template interface and must be reflected in the documented contract.
 type displayEntry struct {
 	Title         string
 	Description   string
 	Link          string
 	Image         string
-	Published     string
+	Published string
+	// PublishedUnix is Published as Unix seconds for Discord's <t:UNIX:R>
+	// relative timestamps; it is 0 when the entry is undated.
 	PublishedUnix int64
 	Author        string
 	Categories    string
