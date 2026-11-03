@@ -13,6 +13,7 @@ const (
 	scriptTagName            = "script"
 	styleTagName             = "style"
 	visibleText              = "visible"
+	decodedScriptComparisonInput = decodedScriptComparisonInput
 	beforeAfterText          = "beforeafter"
 	beforeOuterTailAfterText = "beforeouter-tailafter"
 )
@@ -33,9 +34,9 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "comment dropped", input: `a<!-- hidden -->b`, want: "ab"},
 		{name: "bare lt in prose", input: "1 < 2 and 3 > 2", want: "1 < 2 and 3 > 2"},
 		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: beforeAfterText},
-		{name: "decoded script comparison preserves trailing visible text", input: "<script>if(a<b){x++}</script>visible", want: visibleText},
+		{name: "decoded script comparison preserves trailing visible text", input: decodedScriptComparisonInput, want: visibleText},
 		{name: "style raw text preserves less-than content", input: "<style>a<b{color:red}</style>visible", want: visibleText},
-		{name: "escaped script entities remain literal text", input: "&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible", want: "<script>if(a<b){x++}</script>visible"},
+		{name: "escaped script entities remain literal text", input: "&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible", want: decodedScriptComparisonInput},
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
@@ -140,7 +141,7 @@ func FuzzStripHTML(f *testing.F) {
 		"a<!-- c > d -->b",
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
-		"<script>if(a<b){x++}</script>visible",
+		decodedScriptComparisonInput,
 		"&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible",
 		"<script><script/>" + scriptHiddenMarker + "</script>kept",
 		"<script><script>" + scriptHiddenMarker + "</script></script>kept",
