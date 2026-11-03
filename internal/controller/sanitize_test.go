@@ -165,6 +165,8 @@ func FuzzStripHTML(f *testing.F) {
 		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
 		prefixedScriptMismatchedEndTagInput,
 		prefixedStyleMismatchedEndTagInput,
+		"<x:script>hidden</script>" + scriptHiddenMarker + "</x:script>kept",
+		"<x:style>hidden</style>" + styleHiddenMarker + "</x:style>kept",
 		prefixedScriptNestedRawTextInput,
 		prefixedStyleNestedRawTextInput,
 		"<x:script><script>" + scriptHiddenMarker + "</x:script>kept",
