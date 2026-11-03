@@ -167,7 +167,12 @@ func FuzzStripHTML(f *testing.F) {
 			hiddenBlock := tc.nested + tc.marker + tc.closing
 			hiddenIndex := strings.Index(input, hiddenBlock)
 			markerIndex := hiddenIndex + len(tc.nested)
-			visibleMarker := hiddenIndex >= 0 && strings.Contains(input[hiddenIndex+len(hiddenBlock):], tc.marker)
+			visibleIndex := -1
+			if hiddenIndex >= 0 {
+				visibleIndex = strings.Index(input[hiddenIndex+len(hiddenBlock):], tc.marker)
+			}
+			visibleMarker := visibleIndex >= 0 &&
+				!isScriptOrStyleBodyTextAt(input, hiddenIndex+len(hiddenBlock)+visibleIndex, tc.marker)
 			if hiddenIndex >= 0 && isScriptOrStyleBodyTextAt(input, markerIndex, tc.marker) && !visibleMarker && strings.Contains(got, tc.marker) {
 				t.Fatalf("stripHTML(%q) leaked hidden script/style text %q", input, tc.marker)
 			}
