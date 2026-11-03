@@ -108,13 +108,7 @@ func checkReasons(fset *token.FileSet, pkg *ssa.Package, info *types.Info, files
 	f.index(pkg)
 	f.checkSinks()
 	checkReasonSpelling(fset, files, info, f.reached, f.problems)
-	return slices.Sorted(func(yield func(string) bool) {
-		for p := range f.problems {
-			if !yield(p) {
-				return
-			}
-		}
-	})
+	return slices.Sorted(maps.Keys(f.problems))
 }
 
 // index records pkg's functions (closures included), call sites, and every
@@ -555,20 +549,14 @@ func stringConstant(info *types.Info, expr ast.Expr) (string, bool) {
 // string literal. Empty strings appended to a named reason constant do not
 // turn that named value into a split literal spelling.
 func containsNonEmptyStringLiteral(expr ast.Expr) bool {
-	found := false
-	ast.Inspect(expr, func(n ast.Node) bool {
-		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return !found
+	for n := range ast.Preorder(expr) {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			if value, err := strconv.Unquote(lit.Value); err == nil && value != "" {
+				return true
+			}
 		}
-		value, err := strconv.Unquote(lit.Value)
-		if err == nil && value != "" {
-			found = true
-			return false
-		}
-		return !found
-	})
-	return found
+	}
+	return false
 }
 
 // effectiveInitializers maps each spec of a const declaration to the

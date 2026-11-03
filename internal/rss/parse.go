@@ -98,7 +98,7 @@ func (e *UnrecognizedFormatError) Error() string {
 // failure to turn a 2xx response body into entries: malformed or truncated
 // XML (Err is then an *xml.SyntaxError), an empty body (io.EOF), a declared
 // charset that cannot be decoded, or a root element that is no known feed
-// format (Err is then an *UnrecognizedFormatError, which errors.As still
+// format (Err is then an *UnrecognizedFormatError, which errors.AsType still
 // finds). The body is what the server sent, so retrying the same request
 // won't fix it. Typing the whole family here keeps callers from matching
 // encoding/xml's error types themselves.

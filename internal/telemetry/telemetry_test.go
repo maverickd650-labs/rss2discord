@@ -44,7 +44,7 @@ func TestHTTPTransportWrap_InstrumentsWithoutBreakingRequests(t *testing.T) {
 		t.Fatalf("Setup returned error: %v", err)
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
 		_ = shutdown(ctx)
 	}()

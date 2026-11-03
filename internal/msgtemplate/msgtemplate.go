@@ -37,6 +37,7 @@ package msgtemplate
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"strings"
@@ -55,10 +56,7 @@ type Template struct {
 // errors, including unknown helper names, and use of an unsupported construct
 // are returned. The fallback is checked like any other text.
 func Compile(name, text, fallback string) (*Template, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		text = fallback
-	}
+	text = cmp.Or(strings.TrimSpace(text), fallback)
 	tmpl, err := template.New(name).Funcs(templateFuncs).Parse(text)
 	if err != nil {
 		return nil, err

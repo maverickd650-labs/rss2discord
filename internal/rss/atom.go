@@ -17,6 +17,7 @@ limitations under the License.
 package rss
 
 import (
+	"cmp"
 	"encoding/xml"
 	"net/url"
 	"strings"
@@ -286,10 +287,7 @@ func (item atomItem) identityFields(base, id, updated, published string, links a
 		f.published, _ = parseTime(updated)
 	}
 
-	image := enclosureImage(links)
-	if image == "" {
-		image = mediaImage(item.MediaThumbnail, nil, item.MediaGroup)
-	}
+	image := cmp.Or(enclosureImage(links), mediaImage(item.MediaThumbnail, nil, item.MediaGroup))
 	f.image = strings.TrimSpace(resolveAtomURL(base, image))
 	return f
 }
@@ -345,13 +343,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		// summary), so templates can use {{.Content}} regardless of which
 		// elements a given feed fills in.
 		content := atomText(item.Content)
-		description := atomText(item.Summary)
-		if description == "" {
-			description = content
-		}
-		if description == "" {
-			description = item.MediaGroup.description()
-		}
+		description := cmp.Or(atomText(item.Summary), content, item.MediaGroup.description())
 
 		categoryTerms := make([]string, len(item.Categories))
 		for i, c := range item.Categories {

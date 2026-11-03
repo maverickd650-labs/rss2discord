@@ -1,6 +1,7 @@
 package rss
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -154,14 +155,11 @@ func (c *Client) FetchEntries(ctx context.Context, feedURL string, validators Ca
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotModified {
-		result := FetchResult{NotModified: true, ETag: validators.ETag, LastModified: validators.LastModified}
-		if etag := resp.Header.Get("ETag"); etag != "" {
-			result.ETag = etag
-		}
-		if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
-			result.LastModified = lastModified
-		}
-		return result, nil
+		return FetchResult{
+			NotModified:  true,
+			ETag:         cmp.Or(resp.Header.Get("ETag"), validators.ETag),
+			LastModified: cmp.Or(resp.Header.Get("Last-Modified"), validators.LastModified),
+		}, nil
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -99,21 +99,20 @@ func TestStatusApplyConfigurationRoundTrip(t *testing.T) {
 // each typed struct against its generated ApplyConfiguration catches a
 // missing regeneration regardless of what the fixture sets.
 func TestStatusApplyConfigurationCoversEveryField(t *testing.T) {
-	pairs := []struct{ typed, ac any }{
-		{v1alpha1.FeedGroupStatus{}, acv1alpha1.FeedGroupStatusApplyConfiguration{}},
-		{v1alpha1.FeedStatus{}, acv1alpha1.FeedStatusApplyConfiguration{}},
+	pairs := []struct{ typed, ac reflect.Type }{
+		{reflect.TypeFor[v1alpha1.FeedGroupStatus](), reflect.TypeFor[acv1alpha1.FeedGroupStatusApplyConfiguration]()},
+		{reflect.TypeFor[v1alpha1.FeedStatus](), reflect.TypeFor[acv1alpha1.FeedStatusApplyConfiguration]()},
 	}
 	for _, p := range pairs {
 		typed, ac := jsonFieldNames(p.typed), jsonFieldNames(p.ac)
 		if !slices.Equal(typed, ac) {
-			t.Errorf("%T json fields %v != %T json fields %v; re-run `mise run generate`",
+			t.Errorf("%s json fields %v != %s json fields %v; re-run `mise run generate`",
 				p.typed, typed, p.ac, ac)
 		}
 	}
 }
 
-func jsonFieldNames(v any) []string {
-	rt := reflect.TypeOf(v)
+func jsonFieldNames(rt reflect.Type) []string {
 	names := make([]string, 0, rt.NumField())
 	for f := range rt.Fields() {
 		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
@@ -124,11 +123,8 @@ func jsonFieldNames(v any) []string {
 	return names
 }
 
-// Diagnostics shared by the conversion-failure tests below.
-const (
-	msgWantConversionError = "expected a conversion error"
-	msgWantTimeParseError  = "expected a *time.ParseError in the chain, got %T: %v"
-)
+// Diagnostic shared by the conversion-failure tests below.
+const msgWantTimeParseError = "expected a *time.ParseError in the chain, got %T: %v"
 
 // outOfRangeStatus carries a condition time that metav1.Time marshals without
 // complaint but cannot read back (RFC 3339 has four-digit years), so the
@@ -150,9 +146,6 @@ func TestStatusApplyConfiguration_DecodeFailureIsWrapped(t *testing.T) {
 	status := outOfRangeStatus()
 
 	ac, err := statusApplyConfiguration(&status)
-	if err == nil {
-		t.Fatal(msgWantConversionError)
-	}
 	if ac != nil {
 		t.Fatalf("got apply configuration %v alongside the error", ac)
 	}
@@ -172,9 +165,6 @@ func TestApplyStatus_ReturnsConversionErrorWithoutWriting(t *testing.T) {
 	fg.Name, fg.Namespace = "fg", "ns"
 
 	err := (&FeedGroupReconciler{}).applyStatus(t.Context(), fg)
-	if err == nil {
-		t.Fatal(msgWantConversionError)
-	}
 	if _, ok := errors.AsType[*time.ParseError](err); !ok {
 		t.Fatalf(msgWantTimeParseError, err, err)
 	}

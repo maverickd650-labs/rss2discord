@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -44,9 +45,7 @@ type redactedSpan struct {
 }
 
 func (s redactedSpan) Attributes() []attribute.KeyValue {
-	attrs := s.ReadOnlySpan.Attributes()
-	out := make([]attribute.KeyValue, len(attrs))
-	copy(out, attrs)
+	out := slices.Clone(s.ReadOnlySpan.Attributes())
 	for i, attr := range out {
 		// Don't gate on a fixed set of attribute keys (e.g. "url.full") --
 		// a future otelhttp/semconv version could start recording the
@@ -86,13 +85,7 @@ func redactWebhookURL(raw string) (redacted string, changed bool) {
 
 	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
 	// [... "api" "webhooks" <id> <token> ...]
-	idx := -1
-	for i := 0; i+1 < len(segments); i++ {
-		if segments[i] == "webhooks" {
-			idx = i
-			break
-		}
-	}
+	idx := slices.Index(segments, "webhooks")
 	if idx == -1 || idx+2 >= len(segments) {
 		return raw, false
 	}
