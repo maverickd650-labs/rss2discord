@@ -375,11 +375,18 @@ func (l *deliveryLedger) resume() watermarkLookup {
 // ownsPrevious reports whether the stripped key of entries[i]'s previous
 // identity (entry i is a moved entry: earlier releases identified it
 // differently) can only have been recorded for that entry: no other moved entry
-// had the same stripped identity as its previous one, and no current entry has
-// it as its identity or stripped identity.
+// had the same stripped identity as its previous one, and no other current
+// entry has it as its identity or stripped identity.
 func (l *deliveryLedger) ownsPrevious(i int) bool {
-	stripped := l.ids[i].previousStripped
-	return stripped != "" && l.previousStripped[stripped] == 1 && l.claims[stripped] == 0
+	rec := l.ids[i]
+	stripped := rec.previousStripped
+	if stripped == "" || l.previousStripped[stripped] != 1 {
+		return false
+	}
+	if rec.stripped == stripped || rec.identity == stripped {
+		return l.claims[stripped] == 1
+	}
+	return l.claims[stripped] == 0
 }
 
 // carriesOver reports whether what is stored under entries[i]'s previous
