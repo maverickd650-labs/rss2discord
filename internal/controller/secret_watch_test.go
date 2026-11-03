@@ -40,7 +40,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
-	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
 
 // testSecretName names the Secret in the tests that don't need a real one.
@@ -272,14 +271,11 @@ var _ = Describe("Webhook Secret watch", func() {
 			Controller: config.Controller{SkipNameValidation: new(true)},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		httpClient := discordServer.Client()
 		Expect((&FeedGroupReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			RSSClient: testRSSClient(),
-			DiscordClientBuilder: func(webhookURL string) MessageSender {
-				return discord.NewClient(webhookURL, discord.WithHTTPClient(httpClient))
-			},
+			Client:               mgr.GetClient(),
+			Scheme:               mgr.GetScheme(),
+			RSSClient:            testRSSClient(),
+			DiscordClientBuilder: NewDiscordClientBuilder(discordServer.Client()),
 			WatchWebhookSecrets: watchWebhookSecrets,
 		}).SetupWithManager(mgr)).To(Succeed())
 
