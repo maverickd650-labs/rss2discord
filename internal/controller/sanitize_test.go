@@ -13,7 +13,7 @@ const (
 	scriptTagName            = "script"
 	styleTagName             = "style"
 	visibleText              = "visible"
-	decodedScriptComparisonInput = decodedScriptComparisonInput
+	decodedScriptComparisonInput = "<script>if(a<b){x++}</script>visible"
 	beforeAfterText          = "beforeafter"
 	beforeOuterTailAfterText = "beforeouter-tailafter"
 )
