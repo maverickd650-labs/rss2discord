@@ -239,13 +239,12 @@ func main() {
 	// creates, so a 429 seen by one FeedGroup also holds off every other
 	// FeedGroup sharing that webhook.
 	rssClient := rss.NewClientWithTransportWrap(transportWrap)
-	discordHTTPClient := discord.NewHTTPClientWithTransportWrap(transportWrap)
 
 	err = (&controller.FeedGroupReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
 		RSSClient:              rssClient,
-		DiscordClientBuilder:   controller.NewDiscordClientBuilder(discordHTTPClient),
+		DiscordClientBuilder:   controller.NewDiscordClientBuilder(discord.NewHTTPClientWithTransportWrap(transportWrap)),
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
 		WatchWebhookSecrets:    watchWebhookSecrets,
 	}).SetupWithManager(mgr)
