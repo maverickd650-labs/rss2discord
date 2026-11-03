@@ -58,8 +58,8 @@ func TestDisplayOfSanitizesPerField(t *testing.T) {
 		{"Published is RFC 3339 UTC", got.Published, "2026-03-04T05:06:07Z"},
 		{"PublishedUnix is Unix seconds", got.PublishedUnix, published.Unix()},
 		{"Author is HTML-stripped", got.Author, "Jane"},
-		{"Categories are HTML-stripped", got.Categories, []string{"Go", categoryOperators}},
-		{"Content is HTML-stripped on demand", got.content(), "Body"},
+		{"Categories are HTML-stripped and joined", got.Categories, "Go, " + categoryOperators},
+		{"Content is HTML-stripped on demand", got.Content(), "Body"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.field, func(t *testing.T) {
@@ -90,7 +90,7 @@ func TestDisplayOfSanitizesPerField(t *testing.T) {
 func TestDisplayOfShortValues(t *testing.T) {
 	t.Run("plain values pass through unchanged", func(t *testing.T) {
 		d := displayOf(rss.Entry{Author: "Jane Q. Doe", Categories: []string{"Go", "C++", "R&D", "a < b"}})
-		if d.Author != "Jane Q. Doe" || !reflect.DeepEqual(d.Categories, []string{"Go", "C++", "R&D", "a < b"}) {
+		if d.Author != "Jane Q. Doe" || d.Categories != "Go, C++, R&D, a < b" {
 			t.Fatalf("got %q %q", d.Author, d.Categories)
 		}
 	})
@@ -109,14 +109,14 @@ func TestDisplayOfShortValues(t *testing.T) {
 
 	t.Run("categories that strip to nothing are dropped", func(t *testing.T) {
 		d := displayOf(rss.Entry{Categories: []string{"<br>", "<script>x</script>", "Go", "<p> </p>"}})
-		if !reflect.DeepEqual(d.Categories, []string{"Go"}) {
+		if d.Categories != "Go" {
 			t.Fatalf("got %q", d.Categories)
 		}
 	})
 
 	t.Run("no categories stays nil", func(t *testing.T) {
-		if got := displayOf(rss.Entry{}).Categories; got != nil {
-			t.Fatalf("got %#v", got)
+		if got := displayOf(rss.Entry{}).Categories; got != "" {
+			t.Fatalf("got %q, want empty string", got)
 		}
 	})
 

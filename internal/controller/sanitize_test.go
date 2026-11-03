@@ -22,6 +22,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "bare lt in prose", input: "1 < 2 and 3 > 2", want: "1 < 2 and 3 > 2"},
 		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: "beforeafter"},
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
+		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>kept`, want: "kept"},
+		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>kept`, want: "kept"},
 		{name: "style content dropped", input: `<style>p{color:red}</style>kept`, want: "kept"},
 		{name: "uppercase block tags", input: "<P>one</P><P>two</P>", want: "one\n\ntwo"},
 		{name: "prefixed XHTML paragraphs", input: "<x:div><x:p>First</x:p><x:p>Second</x:p></x:div>", want: "First\n\nSecond"},
@@ -61,7 +63,9 @@ func FuzzStripHTML(f *testing.F) {
 		"a<!-- c > d -->b",
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
+		"<script><script/>rss2discord-script-hidden</script>kept",
 		"<style>p{}</style>",
+		"<style><style/>rss2discord-style-hidden</style>kept",
 		"<p>x</p>\n\n\n\n<p>y</p>",
 		"&amp;&lt;&#0;&#x110000;",
 		"\x00\xff<p\x00>",
@@ -78,6 +82,14 @@ func FuzzStripHTML(f *testing.F) {
 		}
 		if strings.Contains(got, "\n\n\n") {
 			t.Fatalf("stripHTML(%q) = %q, contains 3+ consecutive newlines", input, got)
+		}
+		for _, tc := range []struct{ nested, marker string }{
+			{nested: "<script><script/>", marker: "rss2discord-script-hidden"},
+			{nested: "<style><style/>", marker: "rss2discord-style-hidden"},
+		} {
+			if strings.Contains(input, tc.nested+tc.marker+"</") && strings.Contains(got, tc.marker) {
+				t.Fatalf("stripHTML(%q) leaked hidden script/style text %q", input, tc.marker)
+			}
 		}
 	})
 }

@@ -96,7 +96,7 @@ func stripHTML(input string) string {
 			}
 			switch {
 			case skipUntil != "":
-				if tag == skipUntil {
+				if tokenType == html.EndTagToken && tag == skipUntil {
 					skipUntil = ""
 				}
 			case tag == "script" || tag == "style":

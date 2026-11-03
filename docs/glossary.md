@@ -183,11 +183,11 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **Display entry** (`displayEntry`, `displayOf`, `display.go`)
 : An `rss.Entry` as Discord shows it: title, description, feed title, link, image,
-  published (RFC 3339 and Unix), author and categories, built once per entry by `displayOf`.
-  Both the embed (`feedRenderer.build`) and the message templates (`templateData`) read from
-  it and never sanitize raw entry fields themselves, so the per-field rules (`stripHTML`,
+  published (RFC 3339 and Unix), author and comma-separated categories, built once per entry
+  by `displayOf`. Both the embed (`feedRenderer.build`) and message templates read from it
+  directly and never sanitize raw entry fields themselves, so the per-field rules (`stripHTML`,
   `httpURLOrEmpty`, in `sanitize.go`) are readable in one place. The body is kept raw and
-  stripped by `content()` only when a template references `{{.Content}}`.
+  stripped by the lazy `Content()` method only when a template references `{{.Content}}`.
 
 **Message template sandbox** (`msgtemplate`, `internal/msgtemplate`)
 : The only place user-supplied message templates are parsed or run. `Compile` trims,
@@ -195,5 +195,5 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   (`range`, `define`/`template`, `with`, variable assignment, string-building builtins);
   it returns an opaque `Template` whose `Execute` writes through a size-capped buffer and
   returns no partial output on error. No other production package may import
-  `text/template` (`TestOnlyTheSandboxImportsTextTemplate`). The controller maps an entry
-  to `templateData` and calls `Execute`.
+  `text/template` (`TestOnlyTheSandboxImportsTextTemplate`). The controller executes templates
+  directly against the sanitized `displayEntry`.
