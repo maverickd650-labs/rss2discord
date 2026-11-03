@@ -35,6 +35,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: visibleText},
 		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
 		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: visibleText},
+		{name: "nested script body ignores inner content", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: "beforeafter"},
+		{name: "nested style body ignores inner content", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: "beforeafter"},
 		{name: "mixed-prefix script body ignores inner self-closing script", input: `<x:script><script/>leaked</x:script>visible`, want: visibleText},
 		{name: "self-closing script outside a body does not hide following text", input: `a<script/>visible`, want: "avisible"},
 		{name: "script body keeps marker after closing tag", input: `<script><script/>` + scriptHiddenMarker + `</script>` + scriptHiddenMarker, want: scriptHiddenMarker},
@@ -93,6 +95,9 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 			if _, local, ok := strings.Cut(tag, ":"); ok {
 				tag = local
 			}
+			if tokenType == html.StartTagToken && (tag == "script" || tag == "style") {
+				z.NextIsNotRawText()
+			}
 			switch tokenType {
 			case html.StartTagToken:
 				if rawTextTag == "" && (tag == "script" || tag == "style") {
@@ -132,12 +137,14 @@ func FuzzStripHTML(f *testing.F) {
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
 		"<script><script/>" + scriptHiddenMarker + "</script>kept",
+		"<script><script>" + scriptHiddenMarker + "</script></script>kept",
 		"<script><script/>" + scriptHiddenMarker + "</script>" + scriptHiddenMarker,
 		"<textarea><x:script><x:script/>" + scriptHiddenMarker + "</x:script></textarea>",
 		"<textarea><x:style><x:style/>" + styleHiddenMarker + "</x:style></textarea>",
 		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
 		"<style>p{}</style>",
 		"<style><style/>" + styleHiddenMarker + "</style>kept",
+		"<style><style>" + styleHiddenMarker + "</style></style>kept",
 		"<x:style><x:style/>" + styleHiddenMarker + "</x:style>kept",
 		"<p>x</p>\n\n\n\n<p>y</p>",
 		"&amp;&lt;&#0;&#x110000;",
@@ -162,7 +169,9 @@ func FuzzStripHTML(f *testing.F) {
 			marker  string
 		}{
 			{nested: "<script><script/>", closing: "</script>", marker: scriptHiddenMarker},
+			{nested: "<script><script>", closing: "</script></script>", marker: scriptHiddenMarker},
 			{nested: "<style><style/>", closing: "</style>", marker: styleHiddenMarker},
+			{nested: "<style><style>", closing: "</style></style>", marker: styleHiddenMarker},
 			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: scriptHiddenMarker},
 			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: styleHiddenMarker},
 		} {
