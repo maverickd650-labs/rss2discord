@@ -17,6 +17,7 @@ limitations under the License.
 package rss
 
 import (
+	"cmp"
 	"encoding/xml"
 	"strings"
 )
@@ -221,10 +222,7 @@ func (g *mediaGroup) image() string {
 	if g == nil {
 		return ""
 	}
-	if g.Thumbnail != "" {
-		return string(g.Thumbnail)
-	}
-	return string(g.ImageContent)
+	return cmp.Or(string(g.Thumbnail), string(g.ImageContent))
 }
 
 // description returns the group's trimmed <media:description>; nil-safe.
@@ -308,15 +306,9 @@ func rssItemsToEntries(items []rssItem) []Entry {
 		// of the GUID and link changes nothing here.
 		id, idSource := pickIdentity(pickText(item.GUID), link, title)
 
-		author := pickText(item.Author)
-		if author == "" {
-			author = strings.TrimSpace(item.Creator)
-		}
+		author := cmp.Or(pickText(item.Author), strings.TrimSpace(item.Creator))
 
-		description := pickText(item.Description)
-		if description == "" {
-			description = item.MediaGroup.description()
-		}
+		description := cmp.Or(pickText(item.Description), item.MediaGroup.description())
 
 		entries = append(entries, withContentID(Entry{
 			ID:          id,

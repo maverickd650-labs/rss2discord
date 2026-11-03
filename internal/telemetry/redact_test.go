@@ -1,7 +1,6 @@
 package telemetry
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,14 +93,14 @@ func TestRedactingExporter_StripsTokenFromExportedSpan(t *testing.T) {
 	tp := trace.NewTracerProvider(
 		trace.WithSyncer(newRedactingExporter(exporter)),
 	)
-	defer func() { _ = tp.Shutdown(context.Background()) }()
+	defer func() { _ = tp.Shutdown(t.Context()) }()
 
 	client := &http.Client{
 		Transport: otelhttp.NewTransport(base, otelhttp.WithTracerProvider(tp)),
 	}
 
 	webhookURL := srv.URL + "/api/webhooks/123456789/super-secret-token"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhookURL, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, webhookURL, nil)
 	if err != nil {
 		t.Fatalf("building request: %v", err)
 	}
@@ -141,9 +140,9 @@ func TestRedactingExporter_StripsTokenFromExportedSpan(t *testing.T) {
 func TestRedactingExporter_RedactsRegardlessOfAttributeKey(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := trace.NewTracerProvider(trace.WithSyncer(newRedactingExporter(exporter)))
-	defer func() { _ = tp.Shutdown(context.Background()) }()
+	defer func() { _ = tp.Shutdown(t.Context()) }()
 
-	_, span := tp.Tracer("test").Start(context.Background(), "span")
+	_, span := tp.Tracer("test").Start(t.Context(), "span")
 	span.SetAttributes(attribute.String("some.future.attribute.key",
 		"https://discord.com/api/webhooks/123456789/super-secret-token"))
 	span.End()

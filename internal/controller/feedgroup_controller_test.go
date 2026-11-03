@@ -285,10 +285,7 @@ func (d *MockDiscordServer) DeliveryAttempts() int {
 // DiscordClientBuilder returns a DiscordClientBuilder whose clients send
 // every request, over TLS, to this mock server.
 func (d *MockDiscordServer) DiscordClientBuilder() func(webhookURL string) MessageSender {
-	httpClient := d.server.Client()
-	return func(webhookURL string) MessageSender {
-		return discord.NewClient(webhookURL, discord.WithHTTPClient(httpClient))
-	}
+	return NewDiscordClientBuilder(d.server.Client())
 }
 
 const testNamespace = "default"
@@ -2116,7 +2113,8 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(feedStatusFor(updated, rssServer.URL()).LastSeenEntry).To(BeEmpty())
 			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(ContainSubstring("rate limited"))
 
-			By("Reconciling again, where the send succeeds and the previously unsent entry is delivered")
+			By("Waiting for the Retry-After cooldown to expire and reconciling again, where the previously unsent entry is delivered")
+			time.Sleep(2 * time.Second)
 			result, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(discordServer.MessageCount()).To(Equal(1))

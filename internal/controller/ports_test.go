@@ -20,8 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -30,6 +32,57 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
+
+const messageContent = "hello"
+
+func TestNewDiscordClientBuilder_DefaultHTTPClient(t *testing.T) {
+	discordServer := NewMockDiscordServer(t)
+	previous := http.DefaultTransport
+	http.DefaultTransport = discordServer.server.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+
+	sender := NewDiscordClientBuilder(nil)(discordServer.URL())
+	if err := sender.SendMessage(t.Context(), discord.Message{Content: messageContent}); err != nil {
+		t.Fatalf("SendMessage() error = %v, want nil", err)
+	}
+	if got := discordServer.MessageCount(); got != 1 {
+		t.Fatalf("MessageCount() = %d, want 1 through the default HTTP client", got)
+	}
+}
+
+func TestNewDiscordClientBuilder_SharesHTTPClientAndRateLimiter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		discordServer := NewMockDiscordServer(t)
+		discordServer.FailNextRequestsRateLimited(1, "60")
+
+		build := NewDiscordClientBuilder(discordServer.server.Client())
+		first, second := build(discordServer.URL()), build(discordServer.URL())
+
+		if _, ok := errors.AsType[*discord.RateLimitError](first.SendMessage(t.Context(), discord.Message{Content: "first"})); !ok {
+			t.Fatal("first SendMessage() did not return *discord.RateLimitError")
+		}
+		if _, ok := errors.AsType[*discord.RateLimitError](second.SendMessage(t.Context(), discord.Message{Content: "second"})); !ok {
+			t.Fatal("second SendMessage() did not return shared *discord.RateLimitError")
+		}
+		if got := discordServer.DeliveryAttempts(); got != 1 {
+			t.Fatalf("DeliveryAttempts() = %d, want 1; second client must share the first client's cooldown", got)
+		}
+		if got := discordServer.MessageCount(); got != 0 {
+			t.Fatalf("MessageCount() during cooldown = %d, want 0", got)
+		}
+
+		time.Sleep(time.Minute)
+		if err := second.SendMessage(t.Context(), discord.Message{Content: messageContent}); err != nil {
+			t.Fatalf("second SendMessage() after shared cooldown = %v, want nil", err)
+		}
+		if got := discordServer.DeliveryAttempts(); got != 2 {
+			t.Fatalf("DeliveryAttempts() after cooldown = %d, want 2", got)
+		}
+		if got := discordServer.MessageCount(); got != 1 {
+			t.Fatalf("MessageCount() after cooldown = %d, want 1", got)
+		}
+	})
+}
 
 // fakeSender is a MessageSender that replays scripted results, one per call,
 // repeating the last once the script runs out.
@@ -86,11 +139,11 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 			inner := &fakeSender{results: []error{tc.err}}
 			sender := newTimedSender(inner, ns, name)
 
-			err := sender.SendMessage(t.Context(), discord.Message{Content: "hello"})
+			err := sender.SendMessage(t.Context(), discord.Message{Content: messageContent})
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("SendMessage error = %v, want %v", err, tc.err)
 			}
-			if len(inner.sent) != 1 || inner.sent[0].Content != "hello" {
+			if len(inner.sent) != 1 || inner.sent[0].Content != messageContent {
 				t.Fatalf("inner received %+v, want the one message passed in", inner.sent)
 			}
 			if got := histogramSampleCount(t, ns, name, operationSend); got != 1 {

@@ -22,14 +22,12 @@ import (
 	"fmt"
 	goruntime "runtime"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -40,7 +38,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
-	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -354,59 +351,18 @@ func containedPass(ctx context.Context, feedGroup *v1alpha1.FeedGroup, fetcher F
 	return verdict, plan, nil
 }
 
-// webhook returns the group's Discord webhook URL, read uncached from its
-// Secret. It owns every outcome of that lookup: a failed Get or a missing key
-// is an error; the Secret's resourceVersion is then recorded with
-// noteWebhookSecretVersion (so a replaced Secret is noticed even when its new
-// value is unusable); and a blank value is an error. Errors are logged here and
-// returned for Reconcile to surface through settleGroup.
-func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
-	log := logf.FromContext(ctx)
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Name:      feedGroup.Spec.DiscordWebhookSecretRef.Name,
-		Namespace: feedGroup.Namespace,
-	}
-
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		log.Error(err, "failed to resolve Discord webhook URL")
-		return "", err
-	}
-
-	value, ok := secret.Data[feedGroup.Spec.DiscordWebhookSecretRef.Key]
-	if !ok {
-		err := fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
-		log.Error(err, "failed to resolve Discord webhook URL")
-		return "", err
-	}
-	noteWebhookSecretVersion(feedGroup, secret.ResourceVersion)
-
-	webhookURL := strings.TrimSpace(string(value))
-	if webhookURL == "" {
-		err := fmt.Errorf("discord webhook URL is empty")
-		log.Error(err, "invalid webhook secret")
-		return "", err
-	}
-	return webhookURL, nil
-}
-
 // withDefaults fills a nil RSSClient and DiscordClientBuilder with the real
 // clients, once per reconciler (SetupWithManager calls it; a reconciler built
-// as a literal gets it on its first reconcile). The defaulted builder shares one
-// HTTP client and one discord.RateLimiter across every webhook it builds a
-// sender for, so a 429 seen by one FeedGroup holds the others on that webhook,
-// as cmd/main.go's explicit builder does.
+// as a literal gets it on its first reconcile). The RSS client deliberately
+// uses the controller's unwrapped constructor; production transport wrapping
+// belongs to cmd/main.go.
 func (r *FeedGroupReconciler) withDefaults() {
 	r.defaultsOnce.Do(func() {
 		if r.RSSClient == nil {
 			r.RSSClient = rss.NewClient(nil)
 		}
 		if r.DiscordClientBuilder == nil {
-			httpClient := discord.NewHTTPClient()
-			limiter := discord.NewRateLimiter()
-			r.DiscordClientBuilder = func(webhookURL string) MessageSender {
-				return discord.NewClient(webhookURL, discord.WithHTTPClient(httpClient), discord.WithRateLimiter(limiter))
-			}
+			r.DiscordClientBuilder = NewDiscordClientBuilder(nil)
 		}
 	})
 }

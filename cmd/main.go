@@ -232,27 +232,19 @@ func main() {
 		})), "Failed to register tracer shutdown")
 	}
 
-	// RSSClient, the Discord HTTP client, and the Discord rate limiter are
-	// constructed once here and shared across every reconcile, rather than
-	// per-reconcile: the HTTP client so keep-alive connections to
-	// feed/webhook hosts are actually pooled instead of being torn down and
-	// rebuilt every reconciliation, and the rate limiter so a 429 seen while
-	// sending for one FeedGroup also holds off every other FeedGroup sharing
-	// the same webhook (or racing it once
-	// --max-concurrent-feedgroup-reconciles > 1) instead of each discovering
-	// the limit independently.
+	// The RSS client and Discord HTTP client are constructed once here and
+	// shared across every reconcile, so keep-alive connections to feed/webhook
+	// hosts are pooled instead of being torn down and rebuilt every time. The
+	// Discord builder owns the one shared rate limiter for every sender it
+	// creates, so a 429 seen by one FeedGroup also holds off every other
+	// FeedGroup sharing that webhook.
 	rssClient := rss.NewClientWithTransportWrap(transportWrap)
-	discordHTTPClient := discord.NewHTTPClientWithTransportWrap(transportWrap)
-	discordRateLimiter := discord.NewRateLimiter()
 
 	err = (&controller.FeedGroupReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RSSClient: rssClient,
-		DiscordClientBuilder: func(webhookURL string) controller.MessageSender {
-			return discord.NewClient(webhookURL,
-				discord.WithHTTPClient(discordHTTPClient), discord.WithRateLimiter(discordRateLimiter))
-		},
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		RSSClient:               rssClient,
+		DiscordClientBuilder:    controller.NewDiscordClientBuilder(discord.NewHTTPClientWithTransportWrap(transportWrap)),
 		MaxConcurrentReconciles: maxConcurrentFeedGroupReconciles,
 		WatchWebhookSecrets:     watchWebhookSecrets,
 	}).SetupWithManager(mgr)

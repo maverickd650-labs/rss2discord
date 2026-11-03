@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"errors"
 	"strconv"
 	"strings"
@@ -43,14 +44,7 @@ const defaultMessageFormat = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.L
 // A blank feed format falls back to the group format, then defaultMessageFormat.
 // Template parse errors are returned to the caller.
 func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*msgtemplate.Template, error) {
-	tmplText := strings.TrimSpace(feed.Format)
-	if tmplText == "" {
-		tmplText = strings.TrimSpace(feedGroup.Spec.Format)
-	}
-	if tmplText == "" {
-		tmplText = defaultMessageFormat
-	}
-
+	tmplText := cmp.Or(strings.TrimSpace(feed.Format), strings.TrimSpace(feedGroup.Spec.Format), defaultMessageFormat)
 	return msgtemplate.Compile("discordMessage", tmplText, defaultMessageFormat)
 }
 
@@ -58,10 +52,7 @@ func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSp
 // falling back to the FeedGroup's. Returns nil if neither configured one,
 // meaning the feed sends plain-text content.
 func resolveEmbedSpec(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) *v1alpha1.EmbedSpec {
-	if feed.Embed != nil {
-		return feed.Embed
-	}
-	return feedGroup.Spec.Embed
+	return cmp.Or(feed.Embed, feedGroup.Spec.Embed)
 }
 
 // parseHexColor parses a hexadecimal embed color such as "#RRGGBB" or "RRGGBB",

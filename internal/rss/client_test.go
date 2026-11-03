@@ -596,9 +596,9 @@ func TestDefaultClient_LoopbackErrorIsTypedBlockedAddress(t *testing.T) {
 	defer srv.Close()
 
 	_, err := NewClient(nil).FetchEntries(t.Context(), srv.URL, CacheValidators{})
-	var blocked *BlockedAddressError
-	if !errors.As(err, &blocked) {
-		t.Fatalf("expected errors.As to find *BlockedAddressError, got %T: %v", err, err)
+	blocked, ok := errors.AsType[*BlockedAddressError](err)
+	if !ok {
+		t.Fatalf("expected errors.AsType to find *BlockedAddressError, got %T: %v", err, err)
 	}
 	if want := netip.MustParseAddr("127.0.0.1"); blocked.Addr != want {
 		t.Fatalf("BlockedAddressError.Addr = %v, want %v", blocked.Addr, want)
@@ -610,8 +610,8 @@ func TestDefaultClient_LoopbackErrorIsTypedBlockedAddress(t *testing.T) {
 // carried by the typed error.
 func TestGuardDialControl_BlockedAddressErrorText(t *testing.T) {
 	err := guardDialControl("tcp", "[::ffff:10.1.2.3]:80", nil)
-	var blocked *BlockedAddressError
-	if !errors.As(err, &blocked) {
+	blocked, ok := errors.AsType[*BlockedAddressError](err)
+	if !ok {
 		t.Fatalf("expected *BlockedAddressError, got %T: %v", err, err)
 	}
 	if want := netip.MustParseAddr("10.1.2.3"); blocked.Addr != want {

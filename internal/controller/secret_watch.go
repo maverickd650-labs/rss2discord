@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -30,6 +32,42 @@ import (
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 )
+
+// webhook returns the group's Discord webhook URL, read uncached from its
+// Secret. It owns every outcome of that lookup: a failed Get or a missing key
+// is an error; the Secret's resourceVersion is then recorded with
+// noteWebhookSecretVersion (so a replaced Secret is noticed even when its new
+// value is unusable); and a blank value is an error. Errors are logged here and
+// returned for Reconcile to surface through settleGroup.
+func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
+	log := logf.FromContext(ctx)
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{
+		Name:      feedGroup.Spec.DiscordWebhookSecretRef.Name,
+		Namespace: feedGroup.Namespace,
+	}
+
+	if err := r.Get(ctx, secretKey, secret); err != nil {
+		log.Error(err, "failed to resolve Discord webhook URL")
+		return "", err
+	}
+
+	value, ok := secret.Data[feedGroup.Spec.DiscordWebhookSecretRef.Key]
+	if !ok {
+		err := fmt.Errorf("secret %s missing key %q", secretKey.Name, feedGroup.Spec.DiscordWebhookSecretRef.Key)
+		log.Error(err, "failed to resolve Discord webhook URL")
+		return "", err
+	}
+	noteWebhookSecretVersion(feedGroup, secret.ResourceVersion)
+
+	webhookURL := strings.TrimSpace(string(value))
+	if webhookURL == "" {
+		err := fmt.Errorf("discord webhook URL is empty")
+		log.Error(err, "invalid webhook secret")
+		return "", err
+	}
+	return webhookURL, nil
+}
 
 // feedGroupsForSecret maps a webhook Secret event to the FeedGroups in its
 // namespace that reference it. A namespace holds few FeedGroups, so a cached

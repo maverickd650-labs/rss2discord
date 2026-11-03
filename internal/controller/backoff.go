@@ -216,9 +216,7 @@ func nextBackoffUntil(now time.Time, backoff time.Duration) string {
 // The formula is base * 2^retryCount, capped at maxPermanentBackoff, with
 // retryCount floored at 1. A non-positive base returns maxPermanentBackoff.
 func permanentBackoffDuration(retryCount int, base time.Duration) time.Duration {
-	if retryCount < 1 {
-		retryCount = 1
-	}
+	retryCount = max(retryCount, 1)
 	// Avoid overflow: time.Duration is int64, so 1<<63 wraps negative.
 	// Guard the shift itself first, then check whether base*shift exceeds
 	// the cap before multiplying -- otherwise large retryCount values

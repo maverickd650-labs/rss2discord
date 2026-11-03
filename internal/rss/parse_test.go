@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -504,7 +505,7 @@ func TestParseFeed_RSSAuthorAndCategories(t *testing.T) {
 	if entries[0].Author != "jane@example.com (Jane Doe)" {
 		t.Fatalf("unexpected author: %q", entries[0].Author)
 	}
-	if want := []string{"Go", "Kubernetes"}; !slicesEqual(entries[0].Categories, want) {
+	if want := []string{"Go", "Kubernetes"}; !slices.Equal(entries[0].Categories, want) {
 		t.Fatalf("unexpected categories: %v, want %v", entries[0].Categories, want)
 	}
 
@@ -538,28 +539,16 @@ func TestParseFeed_AtomAuthorAndCategories(t *testing.T) {
 	if entries[0].Author != "John Smith" {
 		t.Fatalf("unexpected author: %q", entries[0].Author)
 	}
-	if want := []string{"golang", "kubernetes"}; !slicesEqual(entries[0].Categories, want) {
+	if want := []string{"golang", "kubernetes"}; !slices.Equal(entries[0].Categories, want) {
 		t.Fatalf("unexpected categories: %v, want %v", entries[0].Categories, want)
 	}
 }
 
 func TestTrimCategories(t *testing.T) {
 	got := trimCategories([]string{"  a  ", "", "b", "   "})
-	if want := []string{"a", "b"}; !slicesEqual(got, want) {
+	if want := []string{"a", "b"}; !slices.Equal(got, want) {
 		t.Fatalf("trimCategories() = %v, want %v", got, want)
 	}
-}
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
@@ -569,11 +558,8 @@ func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
 	data := []byte(`<?xml version="1.0"?>
 <feedwrapper><entry><id>1</id><title>X</title></entry></feedwrapper>`)
 	_, _, err := parseFeed(data)
-	if err == nil {
-		t.Fatal("expected an error for an unrecognized root element")
-	}
-	var unrecognized *UnrecognizedFormatError
-	if !errors.As(err, &unrecognized) {
+	unrecognized, ok := errors.AsType[*UnrecognizedFormatError](err)
+	if !ok {
 		t.Fatalf("expected *UnrecognizedFormatError, got %T: %v", err, err)
 	}
 	if unrecognized.Root != "feedwrapper" {
@@ -1474,7 +1460,7 @@ func TestParseFeed_RSSBoundsPerItemSlices(t *testing.T) {
 	for i := range want {
 		want[i] = fmt.Sprintf("c%d", i)
 	}
-	if !slicesEqual(entries[0].Categories, want) {
+	if !slices.Equal(entries[0].Categories, want) {
 		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
 	}
 }
@@ -1496,7 +1482,7 @@ func TestParseFeed_AtomBoundsCategories(t *testing.T) {
 	for i := range want {
 		want[i] = fmt.Sprintf("c%d", i)
 	}
-	if !slicesEqual(entries[0].Categories, want) {
+	if !slices.Equal(entries[0].Categories, want) {
 		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
 	}
 }

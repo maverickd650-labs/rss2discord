@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"unicode/utf8"
 
@@ -78,7 +79,7 @@ func errText(err error) string {
 // bounded, and oversized LastSeenEntry values replaced by clampWatermark
 // digests. It returns the RSSUrls it pruned so the caller can drop their
 // metric series; it does not touch Prometheus.
-func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) (pruned []string) {
+func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) []string {
 	existing := make(map[string]v1alpha1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
 		existing[fs.RSSUrl] = fs
@@ -103,11 +104,7 @@ func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) (pruned []string) {
 	feedGroup.Status.Feeds = rebuilt
 
 	// Whatever is left in existing was dropped from the spec.
-	for url := range existing {
-		pruned = append(pruned, url)
-	}
-	slices.Sort(pruned)
-	return pruned
+	return slices.Sorted(maps.Keys(existing))
 }
 
 // feedStatusFor returns a pointer to the FeedStatus for url, or nil if absent
