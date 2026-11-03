@@ -8,13 +8,13 @@ import (
 )
 
 const (
-	scriptHiddenMarker = "rss2discord-script-hidden"
-	styleHiddenMarker  = "rss2discord-style-hidden"
-	scriptTagName      = "script"
-	styleTagName       = "style"
-	visibleText        = "visible"
-	beforeAfterText           = "beforeafter"
-	beforeOuterTailAfterText   = "beforeouter-tailafter"
+	scriptHiddenMarker       = "rss2discord-script-hidden"
+	styleHiddenMarker        = "rss2discord-style-hidden"
+	scriptTagName            = "script"
+	styleTagName             = "style"
+	visibleText              = "visible"
+	beforeAfterText          = "beforeafter"
+	beforeOuterTailAfterText = "beforeouter-tailafter"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
@@ -34,6 +34,7 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "bare lt in prose", input: "1 < 2 and 3 > 2", want: "1 < 2 and 3 > 2"},
 		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: beforeAfterText},
 		{name: "decoded script comparison preserves trailing visible text", input: "<script>if(a<b){x++}</script>visible", want: visibleText},
+		{name: "style raw text preserves less-than content", input: "<style>a<b{color:red}</style>visible", want: visibleText},
 		{name: "escaped script entities remain literal text", input: "&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible", want: "<script>if(a<b){x++}</script>visible"},
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
