@@ -276,7 +276,7 @@ var _ = Describe("Webhook Secret watch", func() {
 			Scheme:               mgr.GetScheme(),
 			RSSClient:            testRSSClient(),
 			DiscordClientBuilder: NewDiscordClientBuilder(discordServer.Client()),
-			WatchWebhookSecrets: watchWebhookSecrets,
+			WatchWebhookSecrets:  watchWebhookSecrets,
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, stop := context.WithCancel(ctx)
