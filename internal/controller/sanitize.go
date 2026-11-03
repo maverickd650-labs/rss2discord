@@ -80,8 +80,10 @@ func stripHTML(input string) string {
 	var skipDepth int     // open skipUntil elements; the body ends when it returns to 0
 	var skipPrefixed bool // the outer script/style element has a namespace prefix
 	z := html.NewTokenizer(strings.NewReader(input))
+	inputOffset := 0
 	for {
 		tokenType := z.Next()
+		inputOffset += len(z.Raw())
 		switch tokenType {
 		case html.ErrorToken:
 			return finishStrippedText(sb.String())
@@ -105,11 +107,12 @@ func stripHTML(input string) string {
 			}
 			switch {
 			case skipUntil != "":
-				// A prefixed script/style is not a native raw-text tag to
-				// the tokenizer. Any nested start tag can switch it into
-				// raw-text/RCDATA mode (e.g. textarea or plaintext), hiding
-				// the qualified outer end tag from this loop.
-				if skipPrefixed && tokenType == html.StartTagToken {
+				// A nested raw-text/RCDATA element can contain the outer
+				// qualified end tag as text. Let the tokenizer consume it
+				// normally when it has a matching end tag; for an unclosed
+				// element (or plaintext), keep the outer boundary visible.
+				if skipPrefixed && tokenType == html.StartTagToken &&
+					isRawTextElement(tag) && !hasRawTextEndTag(input[inputOffset:], tag) {
 					z.NextIsNotRawText()
 				}
 				// Match the qualified name: </script> must not close <x:script>.
@@ -137,6 +140,40 @@ func stripHTML(input string) string {
 			case isBlockTag(localTag):
 				sb.WriteByte('\n')
 			}
+		}
+	}
+}
+
+// isRawTextElement reports whether the HTML tokenizer treats the next
+// token after a start tag as raw text or RCDATA.
+func isRawTextElement(tag string) bool {
+	switch tag {
+	case "iframe", "noembed", "noframes", "noscript", "plaintext",
+		"script", "style", "textarea", "title", "xmp":
+		return true
+	}
+	return false
+}
+
+// hasRawTextEndTag reports whether input contains a matching end tag for tag
+// according to the HTML tokenizer. Plaintext has no matching end tag.
+func hasRawTextEndTag(input, tag string) bool {
+	if tag == "plaintext" {
+		return false
+	}
+
+	z := html.NewTokenizer(strings.NewReader("<" + tag + ">" + input))
+	if z.Next() != html.StartTagToken {
+		return false
+	}
+	for {
+		tokenType := z.Next()
+		if tokenType == html.ErrorToken {
+			return false
+		}
+		if tokenType == html.EndTagToken {
+			name, _ := z.TagName()
+			return string(name) == tag
 		}
 	}
 }
