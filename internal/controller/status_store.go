@@ -120,10 +120,12 @@ func feedStatusFor(feedGroup *v1alpha1.FeedGroup, url string) *v1alpha1.FeedStat
 	return nil
 }
 
-// setSemanticCondition updates a condition while reporting only semantic changes.
+// setSemanticCondition updates a condition while reporting only semantic changes
+// (a new condition, or a change in Status, Reason or clamped Message).
 // ObservedGeneration is still advanced by SetStatusCondition, but does not by
 // itself warrant a transition Event.
 func setSemanticCondition(conditions *[]metav1.Condition, condition metav1.Condition) bool {
+	condition.Message = clampText(condition.Message, maxConditionMessageBytes)
 	previous := apimeta.FindStatusCondition(*conditions, condition.Type)
 	changed := previous == nil || previous.Status != condition.Status ||
 		previous.Reason != condition.Reason || previous.Message != condition.Message
@@ -141,7 +143,7 @@ func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.Co
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,
-		Message:            clampText(message, maxConditionMessageBytes),
+		Message:            message,
 		ObservedGeneration: generation,
 	})
 }

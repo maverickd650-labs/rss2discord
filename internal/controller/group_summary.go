@@ -32,14 +32,14 @@ import (
 // a Warning Event. It does no I/O, so settleGroup only has to emit the
 // Event it reports.
 //
-// The Event is gated on Ready's reason/message actually changing (as
-// feedAttempt.record does for a feed's config error), not on every reconcile
-// that still sees the bad value; ObservedGeneration is deliberately not
-// compared, so an unrelated spec edit doesn't repeat it. Only the
-// InvalidInterval reason produces one: warning is that condition's message and
-// emit is true exactly on the transition into it (or a change of its message).
-// groupErr outranks the interval problem on Ready, so while it is set no
-// Event is emitted here.
+// The Event is gated on a semantic change to Ready (Status, Reason or Message,
+// via setSemanticCondition, as feedAttempt.record does for a feed's config
+// error), not on every reconcile that still sees the bad value;
+// ObservedGeneration is deliberately not compared, so an unrelated spec edit
+// doesn't repeat it. Only the InvalidInterval reason produces one: warning is
+// that condition's message and emit is true exactly on the transition into it
+// (or a change of its message). groupErr outranks the interval problem on
+// Ready, so while it is set no Event is emitted here.
 func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) (warning string, emit bool) {
 	readyChanged := setReadyCondition(feedGroup, groupErr, cad.err)
 	setFeedReachableCondition(feedGroup)
@@ -83,7 +83,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 			Type:               v1alpha1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             reason,
-			Message:            clampText(message, maxConditionMessageBytes),
+			Message:            message,
 			ObservedGeneration: feedGroup.Generation,
 		})
 	}

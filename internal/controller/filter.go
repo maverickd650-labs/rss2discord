@@ -37,47 +37,50 @@ type entryFilter struct {
 	hasKeywords bool
 }
 
-// compileEntryFilter compiles filter. A nil filter or a blank regex compiles
+// compileEntryFilter compiles filter's regex and normalizes its keywords
+// (trimmed, lowercased, blanks dropped). A nil filter or a blank regex compiles
 // to no regex; an invalid regex is an error.
 func compileEntryFilter(filter *v1alpha1.Filter) (entryFilter, error) {
 	if filter == nil {
 		return entryFilter{}, nil
 	}
 
-	f := entryFilter{hasKeywords: len(filter.Keywords) > 0}
+	var f entryFilter
+	if strings.TrimSpace(filter.Regex) != "" {
+		re, err := regexp.Compile(filter.Regex)
+		if err != nil {
+			return entryFilter{}, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
+		}
+		f.regex = re
+	}
+
+	f.hasKeywords = len(filter.Keywords) > 0
 	for _, keyword := range filter.Keywords {
 		if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" {
 			f.keywords = append(f.keywords, keyword)
 		}
 	}
-
-	if strings.TrimSpace(filter.Regex) == "" {
-		return f, nil
-	}
-
-	re, err := regexp.Compile(filter.Regex)
-	if err != nil {
-		return entryFilter{}, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
-	}
-	f.regex = re
 	return f, nil
 }
 
 // matches reports whether entry passes the filter: its compiled regex (if
 // any) must match the title and description, and, when keywords are set, at
-// least one of them must appear (case-insensitively) in them. A nil filter
-// matches everything.
+// least one of them must appear (case-insensitively) in them. The zero value
+// matches every entry.
 func (f entryFilter) matches(entry rss.Entry) bool {
+	if f.hasKeywords && len(f.keywords) == 0 {
+		return false
+	}
+	if f.regex == nil && !f.hasKeywords {
+		return true
+	}
+
 	content := entry.Title + "\n" + entry.Description
 	if f.regex != nil && !f.regex.MatchString(content) {
 		return false
 	}
-
 	if !f.hasKeywords {
 		return true
-	}
-	if len(f.keywords) == 0 {
-		return false
 	}
 
 	content = strings.ToLower(strings.TrimSpace(content))

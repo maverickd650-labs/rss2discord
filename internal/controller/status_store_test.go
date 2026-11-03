@@ -161,16 +161,17 @@ func TestEnsureFeedStatuses(t *testing.T) {
 
 func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
 	const differentInvalidFilter = "different invalid filter"
+	oversized := strings.Repeat("x", maxConditionMessageBytes+64)
 	fs := &v1alpha1.FeedStatus{}
-	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "invalid filter", 1) {
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, oversized, 1) {
 		t.Fatal("expected a newly added condition to count as changed")
 	}
-	if setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "invalid filter", 2) {
-		t.Fatal("ObservedGeneration-only change must not count as semantic change")
+	if setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, oversized, 2) {
+		t.Fatal("ObservedGeneration-only change with clamped message must not count as semantic change")
 	}
 	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
-	if condition == nil || condition.ObservedGeneration != 2 {
-		t.Fatalf("condition = %+v, want ObservedGeneration 2", condition)
+	if condition == nil || condition.ObservedGeneration != 2 || len(condition.Message) > maxConditionMessageBytes {
+		t.Fatalf("condition = %+v, want ObservedGeneration 2 and clamped Message", condition)
 	}
 	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, differentInvalidFilter, 2) {
 		t.Fatal("expected a message change to count as semantic change")
@@ -178,7 +179,7 @@ func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
 	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonConfigError, differentInvalidFilter, 2) {
 		t.Fatal("expected a status change to count as semantic change")
 	}
-	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonReconciled, differentInvalidFilter, 2) {
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonMessageSent, differentInvalidFilter, 2) {
 		t.Fatal("expected a reason change to count as semantic change")
 	}
 }
