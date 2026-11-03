@@ -114,7 +114,7 @@ func moveSentKey(lastSent map[string]string, from, to string) {
 
 // identityRecord is everything the ledger derives from one entry, computed once
 // (at construction, for the entries of the fetch) so that sent, markHandled,
-// resume and the migrations read it instead of re-parsing the entry's URLs.
+// resume and previous-identity migration read it instead of re-parsing URLs.
 type identityRecord struct {
 	// identity is entryIdentity(entry), mark its watermark form (clampWatermark)
 	// and key its LastSent entry key (hashIdentity).
@@ -205,12 +205,13 @@ type watermarkLookup struct {
 // watermark and the LastSent dedup keys) together with the whole fetch's
 // entries, one identityRecord per entry and every uniqueness count the
 // identity rules depend on. It is built once per fetch, over the sorted,
-// untrimmed entries and before the identity migrations, which only change fs,
-// so the records and counts are the same before and after them. An entry's
-// stripped identity is only unique if it is across the feed, however the
-// entries are later trimmed for catch-up. Everything that reads or writes the
-// watermark and LastSent -- delivery, the migrations, the watermark lookup --
-// goes through it, and every "is this identity unique" rule is decided here.
+// untrimmed entries and before catch-up trimming. Its construction migrates
+// previous identities in the status after the identity records and uniqueness
+// counts are settled. An entry's stripped identity is only unique if it is
+// across the feed, however the entries are later trimmed for catch-up.
+// Everything that reads or writes the watermark and LastSent -- delivery,
+// previous-identity migration, the watermark lookup -- goes through it, and
+// every "is this identity unique" rule is decided here.
 type deliveryLedger struct {
 	fs *v1alpha1.FeedStatus
 	// entries is the whole fetch, sorted oldest-to-newest. The ledger never
