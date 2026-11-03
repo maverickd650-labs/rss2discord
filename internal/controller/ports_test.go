@@ -20,11 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -36,68 +35,50 @@ import (
 
 const messageContent = "hello"
 
-type builderRoundTripper func(*http.Request) (*http.Response, error)
-
-func (f builderRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
-func builderResponse(r *http.Request, status int, headers http.Header) *http.Response {
-	return &http.Response{
-		StatusCode: status,
-		Status:     http.StatusText(status),
-		Header:     headers,
-		Body:       io.NopCloser(strings.NewReader("")),
-		Request:    r,
-	}
-}
-
 func TestNewDiscordClientBuilder_DefaultHTTPClient(t *testing.T) {
+	discordServer := NewMockDiscordServer(t)
 	previous := http.DefaultTransport
-	var requests int
-	http.DefaultTransport = builderRoundTripper(func(r *http.Request) (*http.Response, error) {
-		requests++
-		return builderResponse(r, http.StatusNoContent, make(http.Header)), nil
-	})
+	http.DefaultTransport = discordServer.server.Client().Transport
 	t.Cleanup(func() { http.DefaultTransport = previous })
 
-	sender := NewDiscordClientBuilder(nil)("https://discord.com/api/webhooks/123/token")
+	sender := NewDiscordClientBuilder(nil)(discordServer.URL())
 	if err := sender.SendMessage(t.Context(), discord.Message{Content: messageContent}); err != nil {
 		t.Fatalf("SendMessage() error = %v, want nil", err)
 	}
-	if requests != 1 {
-		t.Fatalf("HTTP requests = %d, want 1 through the default HTTP client", requests)
+	if got := discordServer.MessageCount(); got != 1 {
+		t.Fatalf("MessageCount() = %d, want 1 through the default HTTP client", got)
 	}
 }
 
 func TestNewDiscordClientBuilder_SharesHTTPClientAndRateLimiter(t *testing.T) {
-	var requests int
-	httpClient := &http.Client{Transport: builderRoundTripper(func(r *http.Request) (*http.Response, error) {
-		requests++
-		if requests == 1 {
-			headers := make(http.Header)
-			headers.Set("Retry-After", "60")
-			return builderResponse(r, http.StatusTooManyRequests, headers), nil
-		}
-		return builderResponse(r, http.StatusNoContent, make(http.Header)), nil
-	})}
-	build := NewDiscordClientBuilder(httpClient)
-	webhookURL := "https://discord.com/api/webhooks/123/shared-token"
-	first, second := build(webhookURL), build(webhookURL)
+	synctest.Test(t, func(t *testing.T) {
+		discordServer := NewMockDiscordServer(t)
+		discordServer.FailNextRequestsRateLimited(1, "60")
 
-	if err := first.SendMessage(t.Context(), discord.Message{Content: "first"}); err == nil {
-		t.Fatal("first SendMessage() error = nil, want rate limit")
-	} else if _, ok := errors.AsType[*discord.RateLimitError](err); !ok {
-		t.Fatalf("first SendMessage() error = %T (%v), want *discord.RateLimitError", err, err)
-	}
-	if err := second.SendMessage(t.Context(), discord.Message{Content: "second"}); err == nil {
-		t.Fatal("second SendMessage() error = nil, want shared rate limit")
-	} else if _, ok := errors.AsType[*discord.RateLimitError](err); !ok {
-		t.Fatalf("second SendMessage() error = %T (%v), want *discord.RateLimitError", err, err)
-	}
-	if requests != 1 {
-		t.Fatalf("HTTP requests = %d, want 1; second client must share the first client's cooldown", requests)
-	}
+		build := NewDiscordClientBuilder(discordServer.server.Client())
+		first, second := build(discordServer.URL()), build(discordServer.URL())
+
+		if _, ok := errors.AsType[*discord.RateLimitError](first.SendMessage(t.Context(), discord.Message{Content: "first"})); !ok {
+			t.Fatal("first SendMessage() did not return *discord.RateLimitError")
+		}
+		if _, ok := errors.AsType[*discord.RateLimitError](second.SendMessage(t.Context(), discord.Message{Content: "second"})); !ok {
+			t.Fatal("second SendMessage() did not return shared *discord.RateLimitError")
+		}
+		if got := discordServer.DeliveryAttempts(); got != 1 {
+			t.Fatalf("DeliveryAttempts() = %d, want 1; second client must share the first client's cooldown", got)
+		}
+
+		time.Sleep(time.Minute)
+		if err := second.SendMessage(t.Context(), discord.Message{Content: messageContent}); err != nil {
+			t.Fatalf("second SendMessage() after shared cooldown = %v, want nil", err)
+		}
+		if got := discordServer.DeliveryAttempts(); got != 2 {
+			t.Fatalf("DeliveryAttempts() after cooldown = %d, want 2", got)
+		}
+		if got := discordServer.MessageCount(); got != 1 {
+			t.Fatalf("MessageCount() after cooldown = %d, want 1", got)
+		}
+	})
 }
 
 // fakeSender is a MessageSender that replays scripted results, one per call,
