@@ -803,6 +803,7 @@ func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 }
 
 func TestFeedAttempt_ConfigErrorDoesNotRepeatOnGenerationChange(t *testing.T) {
+	const differentConfigError = "different config error"
 	fg := &v1alpha1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-config-generation", attemptGeneration
 	fs := &v1alpha1.FeedStatus{
@@ -824,11 +825,11 @@ func TestFeedAttempt_ConfigErrorDoesNotRepeatOnGenerationChange(t *testing.T) {
 		t.Fatalf("condition = %+v, want ObservedGeneration %d", condition, attemptGeneration)
 	}
 
-	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New("different config error"))
+	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New(differentConfigError))
 	if got := drainEvents(recorder); len(got) != 1 {
 		t.Fatalf("message change emitted %d Warning Events, want 1: %v", len(got), got)
 	}
-	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New("different config error"))
+	attempt.record(attemptOutcome{kind: attemptConfigError}, errors.New(differentConfigError))
 	if got := drainEvents(recorder); len(got) != 0 {
 		t.Fatalf("unchanged config error emitted Warning Events: %v", got)
 	}

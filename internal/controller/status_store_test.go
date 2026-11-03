@@ -160,6 +160,7 @@ func TestEnsureFeedStatuses(t *testing.T) {
 }
 
 func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
+	const differentInvalidFilter = differentInvalidFilter
 	fs := &v1alpha1.FeedStatus{}
 	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "invalid filter", 1) {
 		t.Fatal("expected a newly added condition to count as changed")
@@ -171,13 +172,13 @@ func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
 	if condition == nil || condition.ObservedGeneration != 2 {
 		t.Fatalf("condition = %+v, want ObservedGeneration 2", condition)
 	}
-	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "different invalid filter", 2) {
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, differentInvalidFilter, 2) {
 		t.Fatal("expected a message change to count as semantic change")
 	}
-	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonConfigError, "different invalid filter", 2) {
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonConfigError, differentInvalidFilter, 2) {
 		t.Fatal("expected a status change to count as semantic change")
 	}
-	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonReconciled, "different invalid filter", 2) {
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonReconciled, differentInvalidFilter, 2) {
 		t.Fatal("expected a reason change to count as semantic change")
 	}
 }
