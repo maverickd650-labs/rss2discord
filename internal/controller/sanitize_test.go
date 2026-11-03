@@ -5,6 +5,11 @@ import (
 	"testing"
 )
 
+const (
+	scriptHiddenMarker = "rss2discord-script-hidden"
+	styleHiddenMarker  = "rss2discord-style-hidden"
+)
+
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
 // tag-stripper mishandles: ">" inside quoted attribute values or comments,
 // bare "<" in prose, and the text content of script/style elements, which
@@ -65,11 +70,11 @@ func FuzzStripHTML(f *testing.F) {
 		"a<!-- c > d -->b",
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
-		"<script><script/>rss2discord-script-hidden</script>kept",
-		"<x:script><x:script/>rss2discord-script-hidden</x:script>kept",
+		"<script><script/>" + scriptHiddenMarker + "</script>kept",
+		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
 		"<style>p{}</style>",
-		"<style><style/>rss2discord-style-hidden</style>kept",
-		"<x:style><x:style/>rss2discord-style-hidden</x:style>kept",
+		"<style><style/>" + styleHiddenMarker + "</style>kept",
+		"<x:style><x:style/>" + styleHiddenMarker + "</x:style>kept",
 		"<p>x</p>\n\n\n\n<p>y</p>",
 		"&amp;&lt;&#0;&#x110000;",
 		"\x00\xff<p\x00>",
@@ -92,10 +97,10 @@ func FuzzStripHTML(f *testing.F) {
 			closing string
 			marker  string
 		}{
-			{nested: "<script><script/>", closing: "</script>", marker: "rss2discord-script-hidden"},
-			{nested: "<style><style/>", closing: "</style>", marker: "rss2discord-style-hidden"},
-			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: "rss2discord-script-hidden"},
-			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: "rss2discord-style-hidden"},
+			{nested: "<script><script/>", closing: "</script>", marker: scriptHiddenMarker},
+			{nested: "<style><style/>", closing: "</style>", marker: styleHiddenMarker},
+			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: scriptHiddenMarker},
+			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: styleHiddenMarker},
 		} {
 			closingIndex := strings.Index(input, tc.closing)
 			visibleMarker := closingIndex >= 0 && strings.Contains(input[closingIndex+len(tc.closing):], tc.marker)
