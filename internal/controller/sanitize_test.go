@@ -1,6 +1,7 @@
 package controller
 
 import (
+	stdhtml "html"
 	"strings"
 	"testing"
 )
@@ -48,6 +49,12 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
 		{name: "prefixed script body restores tokenization after nested textarea", input: `<x:script><textarea>hidden</textarea></x:script>visible`, want: visibleText},
 		{name: "prefixed style body restores tokenization after nested textarea", input: `<x:style><textarea>hidden</textarea></x:style>visible`, want: visibleText},
+		{name: "prefixed script keeps a closed nested script boundary", input: `<x:script><script>"</x:script>leaked"</script>hidden</x:script>visible`, want: visibleText},
+		{name: "prefixed style keeps a closed nested style boundary", input: `<x:style><style>"</x:style>leaked"</style>hidden</x:style>visible`, want: visibleText},
+		{name: "prefixed script keeps a closed nested textarea boundary", input: `<x:script><textarea>hidden</x:script>leaked</textarea>tail</x:script>visible`, want: visibleText},
+		{name: "prefixed style keeps a closed nested textarea boundary", input: `<x:style><textarea>hidden</x:style>leaked</textarea>tail</x:style>visible`, want: visibleText},
+		{name: "prefixed script retains outer boundary for unclosed nested textarea", input: `<x:script><textarea>hidden</x:script>visible`, want: visibleText},
+		{name: "prefixed style retains outer boundary for unclosed nested textarea", input: `<x:style><textarea>hidden</x:style>visible`, want: visibleText},
 		{name: "prefixed script body restores tokenization after nested plaintext", input: `<x:script><plaintext>hidden</plaintext></x:script>visible`, want: visibleText},
 		{name: "prefixed style body restores tokenization after nested plaintext", input: `<x:style><plaintext>hidden</plaintext></x:style>visible`, want: visibleText},
 		{name: "unprefixed script end tag does not close prefixed script", input: prefixedScriptMismatchedEndTagInput, want: visibleText},
@@ -99,6 +106,8 @@ func FuzzStripHTML(f *testing.F) {
 		"a<!-- c > d -->b",
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
+		"<script/>",
+		"<style/>",
 		decodedScriptComparisonInput,
 		"&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible",
 		"<script><script/>" + scriptHiddenMarker + "</script>kept",
@@ -135,6 +144,26 @@ func FuzzStripHTML(f *testing.F) {
 		}
 		if strings.Contains(got, "\n\n\n") {
 			t.Fatalf("stripHTML(%q) = %q, contains 3+ consecutive newlines", input, got)
+		}
+
+		// Escaping keeps the generated body from closing its wrapper, so this
+		// property specifically checks that script/style bodies stay hidden
+		// even when they contain an inner self-closing tag.
+		escaped := stdhtml.EscapeString(input)
+		for _, tc := range []struct {
+			outerTag string
+			innerTag string
+		}{
+			{outerTag: scriptTagName, innerTag: scriptTagName},
+			{outerTag: styleTagName, innerTag: styleTagName},
+			{outerTag: "x:" + scriptTagName, innerTag: "x:" + scriptTagName},
+			{outerTag: "x:" + styleTagName, innerTag: "x:" + styleTagName},
+		} {
+			wrapped := "<" + tc.outerTag + "><" + tc.innerTag + "/>" + escaped +
+				"</" + tc.outerTag + ">" + visibleText
+			if got := stripHTML(wrapped); got != visibleText {
+				t.Fatalf("stripHTML(%q) = %q, want %q", wrapped, got, visibleText)
+			}
 		}
 	})
 }
