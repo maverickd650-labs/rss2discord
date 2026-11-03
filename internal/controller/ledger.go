@@ -53,25 +53,14 @@ func clampWatermark(id string) string {
 }
 
 // The LastSent key scheme lives in this file alone: an entry is recorded under
-// computeEntryKey(entry) and, when its stripped link identity is unique in the
-// fetch, under strippedKey of that too. The deliveryLedger computes each
-// entry's keys once, in its identityRecord, and its entry-level methods (sent,
-// markHandled, rekeySent, moveWatermark, setWatermark) are how delivery and the
-// identity migrations record, re-key and move the watermark without building
-// keys themselves.
+// hashIdentity of its resolved identity and, when its stripped link identity
+// is unique in the fetch, under strippedKey of that too. The deliveryLedger
+// computes each entry's keys once, in its identityRecord, and its entry-level
+// methods (sent, markHandled, rekeySent, moveWatermark, setWatermark) are how
+// delivery and previous-identity migration record, re-key and move the
+// watermark without building keys themselves.
 
-// computeEntryKey hashes an entry's identity into a fixed-length key for
-// Status.LastSent. It intentionally does not also fold in Link or Title the
-// way an earlier version did: those commonly churn (a rotated tracking
-// parameter, an edited headline) on an otherwise-unchanged article, and
-// folding them into the key made every such edit look like a brand new
-// entry and get re-sent as a duplicate -- defeating the point of having a
-// stable GUID-based identity in the first place.
-func computeEntryKey(entry rss.Entry) string {
-	return hashIdentity(entryIdentity(entry))
-}
-
-// hashIdentity is computeEntryKey for an identity the caller already
+// hashIdentity hashes an identity the caller already
 // resolved, so a loop over entries doesn't normalize each URL twice.
 func hashIdentity(identity string) string {
 	hash := sha256.Sum256([]byte(identity))
@@ -128,7 +117,7 @@ func moveSentKey(lastSent map[string]string, from, to string) {
 // resume and the migrations read it instead of re-parsing the entry's URLs.
 type identityRecord struct {
 	// identity is entryIdentity(entry), mark its watermark form (clampWatermark)
-	// and key its LastSent entry key (computeEntryKey).
+	// and key its LastSent entry key (hashIdentity).
 	identity, mark, key string
 	// stripped is strippedLinkIdentity(entry): "" unless the ID came from the
 	// entry's link.
@@ -242,7 +231,8 @@ type deliveryLedger struct {
 }
 
 // newDeliveryLedger builds the ledger for fs over entries, the whole fetch
-// sorted oldest-to-newest and before any catch-up trim.
+// sorted oldest-to-newest and before any catch-up trim. It returns with previous
+// identities migrated, so callers never need a separate migration step.
 func newDeliveryLedger(fs *v1alpha1.FeedStatus, entries []rss.Entry) *deliveryLedger {
 	l := &deliveryLedger{
 		fs:                 fs,
@@ -276,7 +266,39 @@ func newDeliveryLedger(fs *v1alpha1.FeedStatus, entries []rss.Entry) *deliveryLe
 	for i := range l.ids {
 		l.settle(&l.ids[i])
 	}
+	l.migratePreviousIdentities()
 	return l
+}
+
+// previouslyIdentified returns entry carrying the ID earlier releases picked
+// for it, and whether that is a different one (see rss.Entry.PreviousID).
+func previouslyIdentified(entry rss.Entry) (rss.Entry, bool) {
+	if entry.PreviousID == "" {
+		return entry, false
+	}
+	entry.ID, entry.IDSource = entry.PreviousID, entry.PreviousIDSource
+	return entry, true
+}
+
+// migratePreviousIdentities carries a feed's stored identities over for the
+// Atom entries whose ID the parser now picks differently from earlier releases
+// (rss.Entry.PreviousID). The watermark and dedup keys, which are keyed by the
+// old identity, move to the new one while retaining their send times. Without
+// this, such an entry would look new and be sent again, and a watermark naming
+// the old identity would match nothing and fall back to the capped catch-up.
+//
+// It is idempotent and does nothing for an entry whose identity did not change,
+// so it runs during every ledger construction. An old identity that more than
+// one entry shares, or that is another entry's current identity, is left alone,
+// as is a move onto an identity more than one entry now has: it cannot be told
+// which entry the stored value stands for.
+func (l *deliveryLedger) migratePreviousIdentities() {
+	for i := range l.entries {
+		if l.carriesOver(i) {
+			l.moveWatermark(l.record(i).previous, i)
+			l.rekeySent(i)
+		}
+	}
 }
 
 // settle completes rec once the fetch is counted: its unique stripped identity
@@ -305,6 +327,11 @@ func (l *deliveryLedger) recordOf(entry rss.Entry) identityRecord {
 	rec := describeEntry(entry)
 	l.settle(&rec)
 	return rec
+}
+
+// identity returns entry's resolved identity from the ledger's cached record.
+func (l *deliveryLedger) identity(entry rss.Entry) string {
+	return l.recordOf(entry).identity
 }
 
 // resume looks fs.LastSeenEntry up in the fetch: watermarkNone for an empty
@@ -337,15 +364,15 @@ func (l *deliveryLedger) resume() watermarkLookup {
 	return lost
 }
 
-// The identity migrations (identity_migration.go) rewrite stored
-// keys for entries that did not exist under their current identity when the key
-// was written, so each asks the ledger before writing a stripped key (the
-// record's unique form, ownsPrevious, rekeySent): a stripped key stands in for
-// any entry whose stripped link identity matches it, so one recorded for an
-// identity another entry also has would later mark that sibling, alone in the
-// feed, as sent. The two ownership rules differ on purpose and both live here:
-// carriesOver decides on full identities (may a stored entry key move?),
-// ownsPrevious on stripped ones (may a stored stripped key stand for one entry?).
+// Previous-identity migration rewrites stored keys for entries that did not
+// exist under their current identity when the key was written. Before moving
+// an old stripped key it asks the ledger whether that key can only have been
+// recorded for this entry: a stripped key stands for any entry whose stripped
+// link identity matches it, so recording one shared by another entry would
+// later mark that sibling, alone in the feed, as sent. The two ownership rules
+// differ on purpose and both live here: carriesOver decides on full identities
+// (may a stored entry key move?), ownsPrevious on stripped ones (may a stored
+// stripped key stand for one entry?).
 
 // ownsPrevious reports whether the stripped key of entries[i]'s previous
 // identity (entry i is a moved entry: earlier releases identified it
@@ -390,21 +417,6 @@ func (l *deliveryLedger) hasWatermark() bool {
 // setWatermark moves the watermark to entries[i].
 func (l *deliveryLedger) setWatermark(i int) {
 	l.fs.LastSeenEntry = l.ids[i].mark
-}
-
-// recordSentAt records entries[i] in LastSent at sentAt under its entry key,
-// overwriting what was there, and under the stripped key of stripped, a link
-// identity a migration recovered for it, only when that is the entry's own
-// stripped identity and unique in the fetch -- the only stripped key
-// markHandled would record for it. A stripped identity recovered from the
-// entry's previous ID is not its own, and one a sibling shares would later
-// mark that sibling as sent.
-func (l *deliveryLedger) recordSentAt(i int, sentAt, stripped string) {
-	rec := l.ids[i]
-	l.recordKey(rec.key, sentAt)
-	if stripped != "" && rec.unique == stripped {
-		l.recordKey(strippedKey(stripped), sentAt)
-	}
 }
 
 // sentAtKey returns when LastSent recorded key as sent.
