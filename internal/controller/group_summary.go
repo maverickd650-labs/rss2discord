@@ -32,26 +32,20 @@ import (
 // a Warning Event. It does no I/O, so settleGroup only has to emit the
 // Event it reports.
 //
-// The Event is gated on Ready's reason/message actually changing (as
-// feedAttempt.record does for a feed's config error), not on every reconcile
-// that still sees the bad value; ObservedGeneration is deliberately not
-// compared, so an unrelated spec edit doesn't repeat it. Only the
-// InvalidInterval reason produces one: warning is that condition's message and
-// emit is true exactly on the transition into it (or a change of its message).
-// groupErr outranks the interval problem on Ready, so while it is set no
-// Event is emitted here.
+// The Event is gated on a semantic change to Ready (Status, Reason or Message,
+// via setSemanticCondition, as feedAttempt.record does for a feed's config
+// error), not on every reconcile that still sees the bad value;
+// ObservedGeneration is deliberately not compared, so an unrelated spec edit
+// doesn't repeat it. Only the InvalidInterval reason produces one: warning is
+// that condition's message and emit is true exactly on the transition into it
+// (or a change of its message). groupErr outranks the interval problem on
+// Ready, so while it is set no Event is emitted here.
 func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) (warning string, emit bool) {
-	prevReason, prevMessage := "", ""
-	if prev := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady); prev != nil {
-		prevReason, prevMessage = prev.Reason, prev.Message
-	}
-
-	setReadyCondition(feedGroup, groupErr, cad.err)
+	readyChanged := setReadyCondition(feedGroup, groupErr, cad.err)
 	setFeedReachableCondition(feedGroup)
 
 	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
-	if ready != nil && ready.Reason == reasonInvalidInterval &&
-		(ready.Reason != prevReason || ready.Message != prevMessage) {
+	if readyChanged && ready != nil && ready.Reason == reasonInvalidInterval {
 		return ready.Message, true
 	}
 	return "", false
@@ -73,7 +67,9 @@ func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) 
 // the spec is wrong no matter how the feeds fared, and until it's fixed the
 // group is not running on the schedule the user asked for. The InvalidInterval
 // condition clears on its own the reconcile after the spec is corrected.
-func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr error) {
+// It reports whether Status, Reason or Message changed, excluding an
+// ObservedGeneration-only update.
+func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr error) bool {
 	if groupErr != nil {
 		// A pass a feed panicked in did not get through the group, whatever
 		// the feeds' own statuses say (one restored after the panic carries
@@ -83,25 +79,23 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 		if fp, ok := errors.AsType[*feedPanic](groupErr); ok {
 			reason, message = reasonReconcilePanicked, fp.summary()
 		}
-		apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
+		return setSemanticCondition(&feedGroup.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             reason,
-			Message:            clampText(message, maxConditionMessageBytes),
+			Message:            message,
 			ObservedGeneration: feedGroup.Generation,
 		})
-		return
 	}
 
 	if intervalErr != nil {
-		apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
+		return setSemanticCondition(&feedGroup.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             reasonInvalidInterval,
 			Message:            intervalErr.Error(),
 			ObservedGeneration: feedGroup.Generation,
 		})
-		return
 	}
 
 	status := metav1.ConditionTrue
@@ -115,7 +109,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 		message = fmt.Sprintf("%d feed(s) reporting errors", failing)
 	}
 
-	apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
+	return setSemanticCondition(&feedGroup.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionTypeReady,
 		Status:             status,
 		Reason:             reason,

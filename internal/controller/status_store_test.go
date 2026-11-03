@@ -158,3 +158,45 @@ func TestEnsureFeedStatuses(t *testing.T) {
 		t.Fatalf("expected exactly one FeedStatus per spec feed, got %d", len(fg.Status.Feeds))
 	}
 }
+
+func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
+	const differentInvalidFilter = "different invalid filter"
+	oversized := strings.Repeat("x", maxConditionMessageBytes+64)
+	fs := &v1alpha1.FeedStatus{}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, oversized, 1) {
+		t.Fatal("expected a newly added condition to count as changed")
+	}
+	if setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, oversized, 2) {
+		t.Fatal("ObservedGeneration-only change with clamped message must not count as semantic change")
+	}
+	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if condition == nil || condition.ObservedGeneration != 2 || len(condition.Message) > maxConditionMessageBytes {
+		t.Fatalf("condition = %+v, want ObservedGeneration 2 and clamped Message", condition)
+	}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, differentInvalidFilter, 2) {
+		t.Fatal("expected a message change to count as semantic change")
+	}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonConfigError, differentInvalidFilter, 2) {
+		t.Fatal("expected a status change to count as semantic change")
+	}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonMessageSent, differentInvalidFilter, 2) {
+		t.Fatal("expected a reason change to count as semantic change")
+	}
+}
+
+func TestSetReadyCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
+	fg := &v1alpha1.FeedGroup{}
+	fg.Generation = 1
+	intervalErr := errors.New("invalid interval")
+	if !setReadyCondition(fg, nil, intervalErr) {
+		t.Fatal("expected a newly added Ready condition to count as changed")
+	}
+	fg.Generation = 2
+	if setReadyCondition(fg, nil, intervalErr) {
+		t.Fatal("ObservedGeneration-only Ready update must not count as semantic change")
+	}
+	condition := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeReady)
+	if condition == nil || condition.ObservedGeneration != 2 {
+		t.Fatalf("Ready condition = %+v, want ObservedGeneration 2", condition)
+	}
+}

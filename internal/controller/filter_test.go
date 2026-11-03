@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
@@ -48,10 +49,11 @@ func TestCompileEntryFilter(t *testing.T) {
 func TestEntryFilterMatches(t *testing.T) {
 	entry := rss.Entry{Title: "Breaking News", Description: "something happened"}
 
-	t.Run("nil filter matches", func(t *testing.T) {
+	t.Run("zero-value and nil filter match", func(t *testing.T) {
+		var zero entryFilter
 		f, _ := compileEntryFilter(nil)
-		if !f.matches(entry) {
-			t.Fatal("expected nil filter to match everything")
+		if !zero.matches(entry) || !f.matches(entry) {
+			t.Fatal("expected zero-value and nil filter to match everything")
 		}
 	})
 
@@ -69,6 +71,13 @@ func TestEntryFilterMatches(t *testing.T) {
 		}
 	})
 
+	t.Run("blank keywords skipped while non-blank keyword matches description", func(t *testing.T) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"  ", "  HAPPENED "}})
+		if !f.matches(entry) {
+			t.Fatal("expected non-blank keyword to match after skipping blanks")
+		}
+	})
+
 	t.Run("no keyword match rejects", func(t *testing.T) {
 		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"weather"}})
 		if f.matches(entry) {
@@ -76,11 +85,43 @@ func TestEntryFilterMatches(t *testing.T) {
 		}
 	})
 
-	t.Run("blank keywords skipped, empty keyword list matches", func(t *testing.T) {
-		f, _ := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"  "}})
-		// All keywords are blank/skipped, so none match.
+	t.Run("all-blank keywords match nothing even when regex matches", func(t *testing.T) {
+		f, _ := compileEntryFilter(&v1alpha1.Filter{Regex: "Breaking", Keywords: []string{"  ", "\t"}})
 		if f.matches(entry) {
 			t.Fatal("expected all-blank keywords to match nothing")
 		}
 	})
+}
+
+func TestCompileEntryFilter_NormalizesKeywordsOnce(t *testing.T) {
+	f, err := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{"  BREAKING ", " ", "News"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.hasKeywords {
+		t.Fatal("expected configured keywords to be recorded")
+	}
+	if want := []string{"breaking", "news"}; !slices.Equal(f.keywords, want) {
+		t.Fatalf("keywords = %q, want %q", f.keywords, want)
+	}
+
+	blankOnly, err := compileEntryFilter(&v1alpha1.Filter{Keywords: []string{" ", "\t"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blankOnly.hasKeywords || len(blankOnly.keywords) != 0 {
+		t.Fatalf("blank-only keywords produced hasKeywords=%v keywords=%q, want true and empty", blankOnly.hasKeywords, blankOnly.keywords)
+	}
+}
+
+func TestEntryFilter_EmptyKeywordsDoNotRestrict(t *testing.T) {
+	for _, keywords := range [][]string{nil, {}} {
+		f, err := compileEntryFilter(&v1alpha1.Filter{Keywords: keywords})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.hasKeywords || !f.matches(rss.Entry{Title: "anything"}) {
+			t.Errorf("keywords %q unexpectedly restricted the entry", keywords)
+		}
+	}
 }

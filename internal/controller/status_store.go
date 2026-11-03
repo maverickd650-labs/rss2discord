@@ -120,20 +120,30 @@ func feedStatusFor(feedGroup *v1alpha1.FeedGroup, url string) *v1alpha1.FeedStat
 	return nil
 }
 
-// setFeedCondition is apimeta.SetStatusCondition scoped to a single feed's
-// Conditions, so call sites read as "what happened" rather than repeating
-// the metav1.Condition literal at every one of the half-dozen places a
-// fetch/render/send outcome needs to update Reachable or Delivered. Returns
-// whether the condition was newly added or changed (status/reason/message),
-// so a caller with no RetryCount to gate on (e.g. a config error, which
-// isn't retried) can still fire a one-time Event on the transition into that
-// state instead of every reconcile it recurs.
+// setSemanticCondition updates a condition while reporting only semantic changes
+// (a new condition, or a change in Status, Reason or clamped Message).
+// ObservedGeneration is still advanced by SetStatusCondition, but does not by
+// itself warrant a transition Event.
+func setSemanticCondition(conditions *[]metav1.Condition, condition metav1.Condition) bool {
+	condition.Message = clampText(condition.Message, maxConditionMessageBytes)
+	previous := apimeta.FindStatusCondition(*conditions, condition.Type)
+	changed := previous == nil || previous.Status != condition.Status ||
+		previous.Reason != condition.Reason || previous.Message != condition.Message
+	apimeta.SetStatusCondition(conditions, condition)
+	return changed
+}
+
+// setFeedCondition updates one feed's Conditions through setSemanticCondition,
+// so call sites read as "what happened" rather than repeating the metav1.Condition
+// literal at every place a fetch/render/send outcome updates Reachable or Delivered.
+// It reports semantic changes (Status, Reason or Message), allowing a config error
+// to emit a one-time Event without treating an ObservedGeneration update as a transition.
 func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64) bool {
-	return apimeta.SetStatusCondition(&fs.Conditions, metav1.Condition{
+	return setSemanticCondition(&fs.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,
-		Message:            clampText(message, maxConditionMessageBytes),
+		Message:            message,
 		ObservedGeneration: generation,
 	})
 }

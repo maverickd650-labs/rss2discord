@@ -19,64 +19,72 @@ package controller
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
-// entryFilter is a feed's filter compiled once per feed per reconcile: the
-// spec together with its compiled regex, so the two can't be mismatched and
-// the regex isn't recompiled for every entry. The zero value (and the result of
-// compiling a nil filter) matches every entry.
+// entryFilter is a feed's filter compiled once per feed per reconcile. Regexes
+// and keywords are normalized here rather than for every entry. hasKeywords
+// distinguishes an absent keyword restriction from a configured list whose
+// entries are all blank (which deliberately matches nothing). The zero value
+// matches every entry.
 type entryFilter struct {
-	spec  *v1alpha1.Filter
-	regex *regexp.Regexp
+	regex       *regexp.Regexp
+	keywords    []string
+	hasKeywords bool
 }
 
-// compileEntryFilter compiles filter. A nil filter or a blank regex compiles
+// compileEntryFilter compiles filter's regex and normalizes its keywords
+// (trimmed, lowercased, blanks dropped). A nil filter or a blank regex compiles
 // to no regex; an invalid regex is an error.
 func compileEntryFilter(filter *v1alpha1.Filter) (entryFilter, error) {
-	f := entryFilter{spec: filter}
-	if filter == nil || strings.TrimSpace(filter.Regex) == "" {
-		return f, nil
+	if filter == nil {
+		return entryFilter{}, nil
 	}
 
-	re, err := regexp.Compile(filter.Regex)
-	if err != nil {
-		return entryFilter{}, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
+	var f entryFilter
+	if strings.TrimSpace(filter.Regex) != "" {
+		re, err := regexp.Compile(filter.Regex)
+		if err != nil {
+			return entryFilter{}, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
+		}
+		f.regex = re
 	}
-	f.regex = re
+
+	f.hasKeywords = len(filter.Keywords) > 0
+	for _, keyword := range filter.Keywords {
+		if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" {
+			f.keywords = append(f.keywords, keyword)
+		}
+	}
 	return f, nil
 }
 
 // matches reports whether entry passes the filter: its compiled regex (if
 // any) must match the title and description, and, when keywords are set, at
-// least one of them must appear (case-insensitively) in them. A nil filter
-// matches everything.
+// least one of them must appear (case-insensitively) in them. The zero value
+// matches every entry.
 func (f entryFilter) matches(entry rss.Entry) bool {
-	if f.spec == nil {
-		return true
-	}
-
-	if f.regex != nil && !f.regex.MatchString(entry.Title+"\n"+entry.Description) {
+	if f.hasKeywords && len(f.keywords) == 0 {
 		return false
 	}
-
-	if len(f.spec.Keywords) == 0 {
+	if f.regex == nil && !f.hasKeywords {
 		return true
 	}
 
-	content := strings.ToLower(strings.TrimSpace(entry.Title + "\n" + entry.Description))
-	for _, keyword := range f.spec.Keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
-			continue
-		}
-		if strings.Contains(content, strings.ToLower(keyword)) {
-			return true
-		}
+	content := entry.Title + "\n" + entry.Description
+	if f.regex != nil && !f.regex.MatchString(content) {
+		return false
+	}
+	if !f.hasKeywords {
+		return true
 	}
 
-	return false
+	content = strings.ToLower(strings.TrimSpace(content))
+	return slices.ContainsFunc(f.keywords, func(keyword string) bool {
+		return strings.Contains(content, keyword)
+	})
 }
