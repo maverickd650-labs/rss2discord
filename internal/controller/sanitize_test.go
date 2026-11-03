@@ -7,20 +7,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-const (
-	scriptHiddenMarker                    = "rss2discord-script-hidden"
-	styleHiddenMarker                     = "rss2discord-style-hidden"
-	scriptTagName                         = "script"
-	styleTagName                          = "style"
-	visibleText                           = "visible"
-	decodedScriptComparisonInput          = "<script>if(a<b){x++}</script>visible"
-	prefixedScriptMismatchedEndTagInput   = `<x:script>hidden</script>still-hidden</x:script>visible`
-	prefixedStyleMismatchedEndTagInput    = `<x:style>hidden</style>still-hidden</x:style>visible`
-	prefixedScriptNestedRawTextInput      = `<x:script><script>hidden</x:script>visible`
-	prefixedStyleNestedRawTextInput       = `<x:style><style>hidden</x:style>visible`
-	beforeAfterText                       = "beforeafter"
-	beforeOuterTailAfterText              = "beforeouter-tailafter"
-)
+const (\n\tscriptHiddenMarker                  = "rss2discord-script-hidden"\n\tstyleHiddenMarker                   = "rss2discord-style-hidden"\n\tscriptTagName                       = "script"\n\tstyleTagName                        = "style"\n\tvisibleText                         = "visible"\n\tdecodedScriptComparisonInput        = "<script>if(a<b){x++}</script>visible"\n\tprefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`\n\tprefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`\n\tprefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`\n\tprefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`\n\tprefixedScriptEndTag                = prefixedScriptEndTag\n\tprefixedStyleEndTag                 = prefixedStyleEndTag\n\tbeforeAfterText                     = "beforeafter"\n\tbeforeOuterTailAfterText            = "beforeouter-tailafter"\n)
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
 // tag-stripper mishandles: ">" inside quoted attribute values or comments,
@@ -201,12 +188,12 @@ func FuzzStripHTML(f *testing.F) {
 			{nested: "<script><script>", closing: "</script></script>", marker: scriptHiddenMarker},
 			{nested: "<style><style/>", closing: "</style>", marker: styleHiddenMarker},
 			{nested: "<style><style>", closing: "</style></style>", marker: styleHiddenMarker},
-			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: scriptHiddenMarker},
-			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: styleHiddenMarker},
-			{nested: "<x:script>hidden</script>", closing: "</x:script>", marker: scriptHiddenMarker},
-			{nested: "<x:style>hidden</style>", closing: "</x:style>", marker: styleHiddenMarker},
-			{nested: "<x:script><script>", closing: "</x:script>", marker: scriptHiddenMarker},
-			{nested: "<x:style><style>", closing: "</x:style>", marker: styleHiddenMarker},
+			{nested: "<x:script><x:script/>", closing: prefixedScriptEndTag, marker: scriptHiddenMarker},
+			{nested: "<x:style><x:style/>", closing: prefixedStyleEndTag, marker: styleHiddenMarker},
+			{nested: "<x:script>hidden</script>", closing: prefixedScriptEndTag, marker: scriptHiddenMarker},
+			{nested: "<x:style>hidden</style>", closing: prefixedStyleEndTag, marker: styleHiddenMarker},
+			{nested: "<x:script><script>", closing: prefixedScriptEndTag, marker: scriptHiddenMarker},
+			{nested: "<x:style><style>", closing: prefixedStyleEndTag, marker: styleHiddenMarker},
 		} {
 			hiddenBlock := tc.nested + tc.marker + tc.closing
 			hiddenIndex := strings.Index(input, hiddenBlock)
