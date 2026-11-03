@@ -30,7 +30,7 @@ import (
 const (
 	schemeHTTP     = "http"
 	schemeHTTPS    = "https"
-	plaintextTagName = plaintextTagName
+	plaintextTagName = "plaintext"
 )
 
 // httpURLOrEmpty returns rawURL unchanged if it parses with an http or https
