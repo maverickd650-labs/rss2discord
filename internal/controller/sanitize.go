@@ -162,10 +162,9 @@ func hasRawTextEndTag(input, tag string) bool {
 		return false
 	}
 
+	// tag comes from isRawTextElement, so the synthetic opening tag is valid.
 	z := html.NewTokenizer(strings.NewReader("<" + tag + ">" + input))
-	if z.Next() != html.StartTagToken {
-		return false
-	}
+	z.Next()
 	for {
 		tokenType := z.Next()
 		if tokenType == html.ErrorToken {
