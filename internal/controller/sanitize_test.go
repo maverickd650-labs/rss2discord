@@ -104,8 +104,6 @@ func FuzzStripHTML(f *testing.F) {
 			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: scriptHiddenMarker},
 			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: styleHiddenMarker},
 		} {
-			closingIndex := strings.Index(input, tc.closing)
-			visibleMarker := closingIndex >= 0 && strings.Contains(input[closingIndex+len(tc.closing):], tc.marker)
 			hiddenBlock := tc.nested + tc.marker + tc.closing
 			hiddenIndex := strings.Index(input, hiddenBlock)
 			visibleMarker := hiddenIndex >= 0 && strings.Contains(input[hiddenIndex+len(hiddenBlock):], tc.marker)
