@@ -139,7 +139,6 @@ func setSemanticCondition(conditions *[]metav1.Condition, condition metav1.Condi
 // so a caller with no RetryCount to gate on (e.g. a config error, which
 // isn't retried) can still fire a one-time Event on the transition into that
 // state instead of every reconcile it recurs.
-
 func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64) bool {
 	return setSemanticCondition(&fs.Conditions, metav1.Condition{
 		Type:               condType,
