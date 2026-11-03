@@ -25,37 +25,44 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+// documentedDisplayEntryTemplate mirrors the placeholders documented on
+// FeedGroupSpec.Format. Keep this test-only type in sync with that public list.
+type documentedDisplayEntryTemplate struct {
+	Title         string
+	Description   string
+	Link          string
+	Image         string
+	Published     string
+	PublishedUnix int64
+	Author        string
+	Categories    string
+	FeedTitle     string
+}
+
+func (documentedDisplayEntryTemplate) Content() string { return "" }
+
 // TestDisplayEntryTemplatePlaceholders keeps the exported displayEntry
 // surface in sync with the placeholders documented on FeedGroupSpec.Format.
 func TestDisplayEntryTemplatePlaceholders(t *testing.T) {
-	typ := reflect.TypeOf(displayEntry{})
-	want := map[string]struct{}{
-		"Title":         {},
-		"Description":   {},
-		"Link":          {},
-		"Image":         {},
-		"Published":     {},
-		"PublishedUnix": {},
-		"Author":        {},
-		"Categories":    {},
-		"FeedTitle":     {},
-		"Content":       {},
-	}
-
-	got := make(map[string]struct{}, typ.NumField()+typ.NumMethod())
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		if field.IsExported() {
-			got[field.Name] = struct{}{}
-		}
-	}
-	for i := 0; i < typ.NumMethod(); i++ {
-		got[typ.Method(i).Name] = struct{}{}
-	}
+	got := templatePlaceholderNames(reflect.TypeFor[displayEntry]())
+	want := templatePlaceholderNames(reflect.TypeFor[documentedDisplayEntryTemplate]())
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("displayEntry template placeholders = %v, want %v", got, want)
 	}
+}
+
+func templatePlaceholderNames(typ reflect.Type) map[string]struct{} {
+	placeholders := make(map[string]struct{})
+	for field := range typ.Fields() {
+		if field.IsExported() {
+			placeholders[field.Name] = struct{}{}
+		}
+	}
+	for method := range typ.Methods() {
+		placeholders[method.Name] = struct{}{}
+	}
+	return placeholders
 }
 
 // TestDisplayOfSanitizesPerField pins which entry fields displayOf sanitizes,
