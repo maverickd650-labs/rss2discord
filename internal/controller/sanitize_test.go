@@ -7,7 +7,22 @@ import (
 	"golang.org/x/net/html"
 )
 
-const (\n\tscriptHiddenMarker                  = "rss2discord-script-hidden"\n\tstyleHiddenMarker                   = "rss2discord-style-hidden"\n\tscriptTagName                       = "script"\n\tstyleTagName                        = "style"\n\tvisibleText                         = "visible"\n\tdecodedScriptComparisonInput        = "<script>if(a<b){x++}</script>visible"\n\tprefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`\n\tprefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`\n\tprefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`\n\tprefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`\n\tprefixedScriptEndTag                = prefixedScriptEndTag\n\tprefixedStyleEndTag                 = prefixedStyleEndTag\n\tbeforeAfterText                     = "beforeafter"\n\tbeforeOuterTailAfterText            = "beforeouter-tailafter"\n)
+const (
+	scriptHiddenMarker                  = "rss2discord-script-hidden"
+	styleHiddenMarker                   = "rss2discord-style-hidden"
+	scriptTagName                       = "script"
+	styleTagName                        = "style"
+	visibleText                         = "visible"
+	decodedScriptComparisonInput        = "<script>if(a<b){x++}</script>visible"
+	prefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`
+	prefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`
+	prefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`
+	prefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`
+	prefixedScriptEndTag                = "</x:script>"
+	prefixedStyleEndTag                 = "</x:style>"
+	beforeAfterText                     = "beforeafter"
+	beforeOuterTailAfterText            = "beforeouter-tailafter"
+)
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
 // tag-stripper mishandles: ">" inside quoted attribute values or comments,
