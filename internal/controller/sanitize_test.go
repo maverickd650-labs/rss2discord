@@ -31,6 +31,7 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
 		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: "visible"},
 		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: "visible"},
+		{name: "script body keeps marker after closing tag", input: `<script><script/>` + scriptHiddenMarker + `</script>` + scriptHiddenMarker, want: scriptHiddenMarker},
 		{name: "style content dropped", input: `<style>p{color:red}</style>kept`, want: "kept"},
 		{name: "uppercase block tags", input: "<P>one</P><P>two</P>", want: "one\n\ntwo"},
 		{name: "prefixed XHTML paragraphs", input: "<x:div><x:p>First</x:p><x:p>Second</x:p></x:div>", want: "First\n\nSecond"},
@@ -71,6 +72,7 @@ func FuzzStripHTML(f *testing.F) {
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
 		"<script><script/>" + scriptHiddenMarker + "</script>kept",
+		"<script><script/>" + scriptHiddenMarker + "</script>" + scriptHiddenMarker,
 		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
 		"<style>p{}</style>",
 		"<style><style/>" + styleHiddenMarker + "</style>kept",
@@ -104,8 +106,10 @@ func FuzzStripHTML(f *testing.F) {
 		} {
 			closingIndex := strings.Index(input, tc.closing)
 			visibleMarker := closingIndex >= 0 && strings.Contains(input[closingIndex+len(tc.closing):], tc.marker)
-			hiddenMarker := strings.Contains(input, tc.nested+tc.marker+tc.closing)
-			if hiddenMarker && !visibleMarker && strings.Contains(got, tc.marker) {
+			hiddenBlock := tc.nested + tc.marker + tc.closing
+			hiddenIndex := strings.Index(input, hiddenBlock)
+			visibleMarker := hiddenIndex >= 0 && strings.Contains(input[hiddenIndex+len(hiddenBlock):], tc.marker)
+			if hiddenIndex >= 0 && !visibleMarker && strings.Contains(got, tc.marker) {
 				t.Fatalf("stripHTML(%q) leaked hidden script/style text %q", input, tc.marker)
 			}
 		}
