@@ -34,6 +34,8 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+const messageContent = "hello"
+
 type builderRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f builderRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -51,7 +53,6 @@ func builderResponse(r *http.Request, status int, headers http.Header) *http.Res
 }
 
 func TestNewDiscordClientBuilder_DefaultHTTPClient(t *testing.T) {
-	const messageContent = "hello"
 	previous := http.DefaultTransport
 	var requests int
 	http.DefaultTransport = builderRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -158,7 +159,7 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("SendMessage error = %v, want %v", err, tc.err)
 			}
-			if len(inner.sent) != 1 || inner.sent[0].Content != "hello" {
+			if len(inner.sent) != 1 || inner.sent[0].Content != messageContent {
 				t.Fatalf("inner received %+v, want the one message passed in", inner.sent)
 			}
 			if got := histogramSampleCount(t, ns, name, operationSend); got != 1 {
