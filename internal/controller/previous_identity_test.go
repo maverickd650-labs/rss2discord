@@ -11,6 +11,9 @@ import (
 )
 
 const (
+	ownLinkBase    = "https://ownership.example.test/own"
+	sharedLinkBase = "https://ownership.example.test/shared"
+
 	prevIDNew     = "urn:previous-identity:new"
 	prevIDOld     = "urn:previous-identity:old"
 	prevIDOther   = "urn:previous-identity:other"
@@ -24,6 +27,21 @@ const (
 // current ID, previous the one earlier releases picked.
 func changedID(id string, source rss.IDSource, previous string, previousSource rss.IDSource) rss.Entry {
 	return rss.Entry{ID: id, IDSource: source, PreviousID: previous, PreviousIDSource: previousSource, Title: id}
+}
+
+const (
+	ownLinkBase    = "https://ownership.example.test/own"
+	sharedLinkBase = "https://ownership.example.test/shared"
+)
+
+// ownershipLink is a link-derived entry with id as both ID and title.
+func ownershipLink(id string) rss.Entry {
+	return rss.Entry{ID: id, IDSource: rss.IDFromLink, Title: id}
+}
+
+// indexOfEntry is where entry sits in entries, which must hold it.
+func indexOfEntry(entries []rss.Entry, entry rss.Entry) int {
+	return slices.IndexFunc(entries, func(e rss.Entry) bool { return refOf(e) == refOf(entry) })
 }
 
 func TestMigratePreviousIdentities(t *testing.T) {
@@ -143,7 +161,7 @@ func TestMigratePreviousIdentities(t *testing.T) {
 			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: tc.sent}
 			// Idempotent: a second pass over the migrated status changes nothing.
 			for range 2 {
-				migratePreviousIdentities(newDeliveryLedger(fs, slices.Clone(tc.entries)))
+				newDeliveryLedger(fs, tc.entries)
 			}
 			if fs.LastSeenEntry != tc.wantMark {
 				t.Errorf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, tc.wantMark)
@@ -167,7 +185,7 @@ func TestMigratePreviousIdentities_LongWatermark(t *testing.T) {
 	entry := changedID(prevIDNew, rss.IDFromGUID, oldID, rss.IDFromGUID)
 	fs := &v1alpha1.FeedStatus{LastSeenEntry: clampWatermark(normalizeIdentity(oldID))}
 
-	migratePreviousIdentities(newDeliveryLedger(fs, []rss.Entry{entry}))
+	newDeliveryLedger(fs, []rss.Entry{entry})
 
 	if want := clampWatermark(prevIDNew); fs.LastSeenEntry != want {
 		t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, want)
@@ -207,7 +225,7 @@ func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T)
 	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
 		hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt,
 	}}
-	migratePreviousIdentities(newDeliveryLedger(fs, []rss.Entry{moved, sibling}))
+	newDeliveryLedger(fs, []rss.Entry{moved, sibling})
 
 	// The moved entry leaves the feed; the sibling is now alone under the
 	// stripped identity.
@@ -243,7 +261,7 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			// The full key was pruned; only the stripped key is left.
 			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
-			migratePreviousIdentities(newDeliveryLedger(fs, slices.Clone(tc.entries)))
+			newDeliveryLedger(fs, tc.entries)
 
 			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
 				t.Errorf("old stripped key kept; LastSent = %v", fs.LastSent)
@@ -259,5 +277,55 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 				t.Errorf("sibling taken as sent; LastSent = %v", fs.LastSent)
 			}
 		})
+	}
+}
+
+// TestStrippedOwnership_OwnsPrevious covers the question the previous-identity
+// migration asks: can the old stripped key only be this one moved entry's?
+func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
+	mover := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	sibling := ownershipLink(prevLinkNew + "#b")
+	otherMover := changedID(prevIDOther, rss.IDFromGUID, prevLinkOld+"#y", rss.IDFromLink)
+	claimant := ownershipLink(prevLinkOld + "#z")
+	guidClaimant := rss.Entry{ID: normalizeIdentity(prevLinkOld), IDSource: rss.IDFromGUID}
+	guidMover := changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)
+
+	for _, tc := range []struct {
+		name    string
+		entries []rss.Entry
+		mover   rss.Entry
+		want    bool
+	}{
+		{name: "the only mover off that stripped identity", entries: []rss.Entry{mover, sibling}, mover: mover, want: true},
+		{name: "another mover had the same stripped identity", entries: []rss.Entry{mover, sibling, otherMover}, mover: mover},
+		{name: "a current entry has it as its stripped identity", entries: []rss.Entry{mover, sibling, claimant}, mover: mover},
+		{name: "a current entry has it as its identity", entries: []rss.Entry{mover, sibling, guidClaimant}, mover: mover},
+		{name: "a previous ID without a stripped form", entries: []rss.Entry{guidMover}, mover: guidMover},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(indexOfEntry(tc.entries, tc.mover)); got != tc.want {
+				t.Errorf("ownsPrevious = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The previous-identity pass only moves a stripped LastSent key onto a unique
+// stripped identity, so a sibling alone under the identity the moved entry
+// left must not read as sent.
+func TestMigratePreviousIdentities_SiblingNeverInheritsAStrippedKey(t *testing.T) {
+	// The sibling now shares the moved entry's new stripped identity, and the
+	// full key was pruned, leaving only the old stripped key.
+	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	sibling := ownershipLink(prevLinkNew + "#b")
+	fs := currentStatus()
+	fs.LastSent = map[string]string{strippedKey(prevLinkOld): prevSentAt}
+	ledger := newDeliveryLedger(fs, []rss.Entry{moved, sibling})
+
+	if _, ok := fs.LastSent[strippedKey(normalizeIdentity(prevLinkNew))]; ok {
+		t.Errorf("shared stripped key recorded; LastSent = %v", fs.LastSent)
+	}
+	if !ledger.sent(moved) || ledger.sent(sibling) {
+		t.Errorf("sent(moved), sent(sibling) = %v, %v; want true, false", ledger.sent(moved), ledger.sent(sibling))
 	}
 }
