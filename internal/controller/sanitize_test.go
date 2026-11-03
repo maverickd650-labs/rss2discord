@@ -51,6 +51,7 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "prefixed script body restores tokenization after nested textarea", input: `<x:script><textarea>hidden</textarea></x:script>visible`, want: visibleText},
 		{name: "prefixed style body restores tokenization after nested textarea", input: `<x:style><textarea>hidden</textarea></x:style>visible`, want: visibleText},
 		{name: "prefixed script keeps a closed nested script boundary", input: `<x:script><script>"</x:script>leaked"</script>hidden</x:script>visible`, want: visibleText},
+		{name: "prefixed script preserves outer boundary across double-escaped nested script", input: `<x:script><script><!--<script></script>--!><script></x:script>leaked</script></x:script>visible`, want: visibleText},
 		{name: "prefixed style keeps a closed nested style boundary", input: `<x:style><style>"</x:style>leaked"</style>hidden</x:style>visible`, want: visibleText},
 		{name: "prefixed script keeps a closed nested textarea boundary", input: `<x:script><textarea>hidden</x:script>leaked</textarea>tail</x:script>visible`, want: visibleText},
 		{name: "prefixed style keeps a closed nested textarea boundary", input: `<x:style><textarea>hidden</x:style>leaked</textarea>tail</x:style>visible`, want: visibleText},
@@ -94,6 +95,26 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 				t.Fatalf("stripHTML(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRawTextEndTagLookaheadDoesNotCacheScriptMissesAcrossEscapedStates(t *testing.T) {
+	input := `<!--<script></script>--!><script></x:script>leaked</script></x:script>`
+	secondScript := strings.LastIndex(input, "<script>")
+	if secondScript < 0 {
+		t.Fatal("test input is missing its second script start tag")
+	}
+	afterSecondScript := secondScript + len("<script>")
+	lookahead := rawTextEndTagLookahead{input: input}
+
+	if lookahead.hasEndTagAt(0, scriptTagName) {
+		t.Fatal("first script suffix unexpectedly has a matching end tag")
+	}
+	if _, cached := lookahead.noEndTags[scriptTagName]; cached {
+		t.Fatal("script miss must not be cached across tokenizer escape states")
+	}
+	if !lookahead.hasEndTagAt(afterSecondScript, scriptTagName) {
+		t.Fatal("later script suffix has a matching end tag, but lookahead missed it")
 	}
 }
 
