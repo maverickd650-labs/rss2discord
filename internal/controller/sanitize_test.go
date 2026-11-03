@@ -11,6 +11,7 @@ const (
 	styleHiddenMarker                   = "rss2discord-style-hidden"
 	scriptTagName                       = "script"
 	styleTagName                        = "style"
+	textareaTagName                     = "textarea"
 	visibleText                         = "visible"
 	decodedScriptComparisonInput        = "<script>if(a<b){x++}</script>visible"
 	prefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`
@@ -99,13 +100,13 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 func TestRawTextEndTagLookaheadCachesMissingTags(t *testing.T) {
 	lookahead := rawTextEndTagLookahead{input: `<textarea>first<textarea>second`}
 
-	if lookahead.hasEndTagAt(0, "textarea") {
+	if lookahead.hasEndTagAt(0, textareaTagName) {
 		t.Fatal("hasEndTagAt() = true for an input without a matching end tag")
 	}
-	if _, ok := lookahead.noEndTags["textarea"]; !ok {
+	if _, ok := lookahead.noEndTags[textareaTagName]; !ok {
 		t.Fatal("missing end tag was not cached")
 	}
-	if lookahead.hasEndTagAt(len(lookahead.input), "textarea") {
+	if lookahead.hasEndTagAt(len(lookahead.input), textareaTagName) {
 		t.Fatal("hasEndTagAt() = true for a later suffix after a cached miss")
 	}
 }
