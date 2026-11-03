@@ -55,6 +55,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "prefixed style keeps a closed nested textarea boundary", input: `<x:style><textarea>hidden</x:style>leaked</textarea>tail</x:style>visible`, want: visibleText},
 		{name: "prefixed script retains outer boundary for unclosed nested textarea", input: `<x:script><textarea>hidden</x:script>visible`, want: visibleText},
 		{name: "prefixed style retains outer boundary for unclosed nested textarea", input: `<x:style><textarea>hidden</x:style>visible`, want: visibleText},
+		{name: "prefixed script finds a distant nested textarea end tag", input: `<x:script><textarea>hidden</x:script>` + strings.Repeat("x", 64*1024) + `</textarea>tail</x:script>visible`, want: visibleText},
+		{name: "prefixed script handles many unclosed nested textareas", input: `<x:script>` + strings.Repeat("<textarea>hidden", 1000) + `</x:script>visible`, want: visibleText},
 		{name: "prefixed script body restores tokenization after nested plaintext", input: `<x:script><plaintext>hidden</plaintext></x:script>visible`, want: visibleText},
 		{name: "prefixed style body restores tokenization after nested plaintext", input: `<x:style><plaintext>hidden</plaintext></x:style>visible`, want: visibleText},
 		{name: "unprefixed script end tag does not close prefixed script", input: prefixedScriptMismatchedEndTagInput, want: visibleText},
@@ -91,6 +93,20 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 				t.Fatalf("stripHTML(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRawTextEndTagLookaheadCachesMissingTags(t *testing.T) {
+	lookahead := rawTextEndTagLookahead{input: `<textarea>first<textarea>second`}
+
+	if lookahead.hasEndTagAt(0, "textarea") {
+		t.Fatal("hasEndTagAt() = true for an input without a matching end tag")
+	}
+	if _, ok := lookahead.noEndTags["textarea"]; !ok {
+		t.Fatal("missing end tag was not cached")
+	}
+	if lookahead.hasEndTagAt(len(lookahead.input), "textarea") {
+		t.Fatal("hasEndTagAt() = true for a later suffix after a cached miss")
 	}
 }
 
