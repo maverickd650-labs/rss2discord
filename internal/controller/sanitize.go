@@ -28,9 +28,9 @@ import (
 // schemeHTTP/schemeHTTPS are the only URL schemes normalizeIdentity and
 // httpURLOrEmpty treat as a URL rather than opaque text.
 const (
-	schemeHTTP          = "http"
-	schemeHTTPS         = "https"
-	plaintextTagName    = "plaintext"
+	schemeHTTP           = "http"
+	schemeHTTPS          = "https"
+	plaintextTagName     = "plaintext"
 	scriptRawTextTagName = "script"
 )
 
