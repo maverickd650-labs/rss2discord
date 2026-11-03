@@ -51,6 +51,7 @@ func builderResponse(r *http.Request, status int, headers http.Header) *http.Res
 }
 
 func TestNewDiscordClientBuilder_DefaultHTTPClient(t *testing.T) {
+	const messageContent = "hello"
 	previous := http.DefaultTransport
 	var requests int
 	http.DefaultTransport = builderRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -60,7 +61,7 @@ func TestNewDiscordClientBuilder_DefaultHTTPClient(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = previous })
 
 	sender := NewDiscordClientBuilder(nil)("https://discord.com/api/webhooks/123/token")
-	if err := sender.SendMessage(t.Context(), discord.Message{Content: "hello"}); err != nil {
+	if err := sender.SendMessage(t.Context(), discord.Message{Content: messageContent}); err != nil {
 		t.Fatalf("SendMessage() error = %v, want nil", err)
 	}
 	if requests != 1 {
@@ -153,7 +154,7 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 			inner := &fakeSender{results: []error{tc.err}}
 			sender := newTimedSender(inner, ns, name)
 
-			err := sender.SendMessage(t.Context(), discord.Message{Content: "hello"})
+			err := sender.SendMessage(t.Context(), discord.Message{Content: messageContent})
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("SendMessage error = %v, want %v", err, tc.err)
 			}
