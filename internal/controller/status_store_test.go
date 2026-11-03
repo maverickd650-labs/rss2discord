@@ -160,7 +160,7 @@ func TestEnsureFeedStatuses(t *testing.T) {
 }
 
 func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
-	const differentInvalidFilter = differentInvalidFilter
+	const differentInvalidFilter = "different invalid filter"
 	fs := &v1alpha1.FeedStatus{}
 	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "invalid filter", 1) {
 		t.Fatal("expected a newly added condition to count as changed")
