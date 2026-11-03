@@ -13,7 +13,8 @@ const (
 	scriptTagName      = "script"
 	styleTagName       = "style"
 	visibleText        = "visible"
-	beforeAfterText    = "beforeafter"
+	beforeAfterText           = "beforeafter"
+	beforeOuterTailAfterText   = "beforeouter-tailafter"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
@@ -40,8 +41,8 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: visibleText},
 		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
 		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: visibleText},
-		{name: "nested script body ignores inner content", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: beforeAfterText},
-		{name: "nested style body ignores inner content", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: beforeAfterText},
+		{name: "script raw text ends at first matching end tag", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: beforeOuterTailAfterText},
+		{name: "style raw text ends at first matching end tag", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: beforeOuterTailAfterText},
 		{name: "mixed-prefix script body ignores inner self-closing script", input: `<x:script><script/>leaked</x:script>visible`, want: visibleText},
 		{name: "self-closing script outside a body does not hide following text", input: `a<script/>visible`, want: "avisible"},
 		{name: "script body keeps marker after closing tag", input: `<script><script/>` + scriptHiddenMarker + `</script>` + scriptHiddenMarker, want: scriptHiddenMarker},
