@@ -14,6 +14,10 @@ const (
 	styleTagName                 = "style"
 	visibleText                  = "visible"
 	decodedScriptComparisonInput = "<script>if(a<b){x++}</script>visible"
+	prefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`
+	prefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`
+	prefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`
+	prefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`
 	beforeAfterText              = "beforeafter"
 	beforeOuterTailAfterText     = "beforeouter-tailafter"
 )
@@ -42,6 +46,10 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
 		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: visibleText},
 		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
+		{name: "unprefixed script end tag does not close prefixed script", input: prefixedScriptMismatchedEndTagInput, want: visibleText},
+		{name: "unprefixed style end tag does not close prefixed style", input: prefixedStyleMismatchedEndTagInput, want: visibleText},
+		{name: "nested script raw text does not consume prefixed outer end tag", input: prefixedScriptNestedRawTextInput, want: visibleText},
+		{name: "nested style raw text does not consume prefixed outer end tag", input: prefixedStyleNestedRawTextInput, want: visibleText},
 		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: visibleText},
 		{name: "script raw text ends at first matching end tag", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: beforeOuterTailAfterText},
 		{name: "style raw text ends at first matching end tag", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: beforeOuterTailAfterText},
@@ -84,6 +92,7 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 	offset := 0
 	rawTextTag := ""
 	rawTextDepth := 0
+	rawTextPrefixed := false
 
 	for {
 		tokenType := z.Next()
@@ -100,14 +109,20 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 			}
 			name, _ := z.TagName()
 			tag := string(name)
+			localTag := tag
 			if _, local, ok := strings.Cut(tag, ":"); ok {
-				tag = local
+				localTag = local
+			}
+			if rawTextPrefixed && tokenType == html.StartTagToken &&
+				(tag == scriptTagName || tag == styleTagName) {
+				z.NextIsNotRawText()
 			}
 			switch tokenType {
 			case html.StartTagToken:
-				if rawTextTag == "" && (tag == scriptTagName || tag == styleTagName) {
+				if rawTextTag == "" && (localTag == scriptTagName || localTag == styleTagName) {
 					rawTextTag = tag
 					rawTextDepth = 1
+					rawTextPrefixed = tag != localTag
 				} else if tag == rawTextTag {
 					rawTextDepth++
 				}
@@ -116,12 +131,12 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 					rawTextDepth--
 					if rawTextDepth == 0 {
 						rawTextTag = ""
+						rawTextPrefixed = false
 					}
 				}
 			}
 		case html.TextToken:
-			if (rawTextTag == scriptTagName || rawTextTag == styleTagName) &&
-				markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
+			if rawTextTag != "" && markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
 				return true
 			}
 		}
@@ -149,6 +164,12 @@ func FuzzStripHTML(f *testing.F) {
 		"<textarea><x:script><x:script/>" + scriptHiddenMarker + "</x:script></textarea>",
 		"<textarea><x:style><x:style/>" + styleHiddenMarker + "</x:style></textarea>",
 		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
+		prefixedScriptMismatchedEndTagInput,
+		prefixedStyleMismatchedEndTagInput,
+		prefixedScriptNestedRawTextInput,
+		prefixedStyleNestedRawTextInput,
+		"<x:script><script>" + scriptHiddenMarker + "</x:script>kept",
+		"<x:style><style>" + styleHiddenMarker + "</x:style>kept",
 		"<style>p{}</style>",
 		"<style><style/>" + styleHiddenMarker + "</style>kept",
 		"<style><style>" + styleHiddenMarker + "</style></style>kept",
@@ -181,6 +202,10 @@ func FuzzStripHTML(f *testing.F) {
 			{nested: "<style><style>", closing: "</style></style>", marker: styleHiddenMarker},
 			{nested: "<x:script><x:script/>", closing: "</x:script>", marker: scriptHiddenMarker},
 			{nested: "<x:style><x:style/>", closing: "</x:style>", marker: styleHiddenMarker},
+			{nested: "<x:script>hidden</script>", closing: "</x:script>", marker: scriptHiddenMarker},
+			{nested: "<x:style>hidden</style>", closing: "</x:style>", marker: styleHiddenMarker},
+			{nested: "<x:script><script>", closing: "</x:script>", marker: scriptHiddenMarker},
+			{nested: "<x:style><style>", closing: "</x:style>", marker: styleHiddenMarker},
 		} {
 			hiddenBlock := tc.nested + tc.marker + tc.closing
 			hiddenIndex := strings.Index(input, hiddenBlock)
