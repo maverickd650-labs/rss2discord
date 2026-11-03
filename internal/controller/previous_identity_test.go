@@ -11,9 +11,6 @@ import (
 )
 
 const (
-	ownLinkBase    = "https://ownership.example.test/own"
-	sharedLinkBase = "https://ownership.example.test/shared"
-
 	prevIDNew     = "urn:previous-identity:new"
 	prevIDOld     = "urn:previous-identity:old"
 	prevIDOther   = "urn:previous-identity:other"
