@@ -91,6 +91,12 @@ func stripHTML(input string) string {
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
 			name, _ := z.TagName()
 			tag := string(name)
+			// A self-closing <script/> or <style/> has no body, but the
+			// tokenizer still enters raw-text mode after it and would swallow
+			// the following markup (including an outer end tag) as text.
+			if tokenType == html.SelfClosingTagToken {
+				z.NextIsNotRawText()
+			}
 			// Atom XHTML may use prefixes inherited from the feed element.
 			if _, local, ok := strings.Cut(tag, ":"); ok {
 				tag = local
