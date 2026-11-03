@@ -120,15 +120,6 @@ func feedStatusFor(feedGroup *v1alpha1.FeedGroup, url string) *v1alpha1.FeedStat
 	return nil
 }
 
-// setFeedCondition is apimeta.SetStatusCondition scoped to a single feed's
-// Conditions, so call sites read as "what happened" rather than repeating
-// the metav1.Condition literal at every one of the half-dozen places a
-// fetch/render/send outcome needs to update Reachable or Delivered. Returns
-// whether the condition was newly added or changed (status/reason/message),
-// so a caller with no RetryCount to gate on (e.g. a config error, which
-// isn't retried) can still fire a one-time Event on the transition into that
-// state instead of every reconcile it recurs.
-
 // setSemanticCondition updates a condition while reporting only semantic changes.
 // ObservedGeneration is still advanced by SetStatusCondition, but does not by
 // itself warrant a transition Event.
@@ -139,6 +130,15 @@ func setSemanticCondition(conditions *[]metav1.Condition, condition metav1.Condi
 	apimeta.SetStatusCondition(conditions, condition)
 	return changed
 }
+
+// setFeedCondition is apimeta.SetStatusCondition scoped to a single feed's
+// Conditions, so call sites read as "what happened" rather than repeating
+// the metav1.Condition literal at every one of the half-dozen places a
+// fetch/render/send outcome needs to update Reachable or Delivered. Returns
+// whether the condition was newly added or changed (status/reason/message),
+// so a caller with no RetryCount to gate on (e.g. a config error, which
+// isn't retried) can still fire a one-time Event on the transition into that
+// state instead of every reconcile it recurs.
 
 func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64) bool {
 	return setSemanticCondition(&fs.Conditions, metav1.Condition{
