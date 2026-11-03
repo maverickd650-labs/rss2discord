@@ -174,4 +174,27 @@ func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
 	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, "different invalid filter", 2) {
 		t.Fatal("expected a message change to count as semantic change")
 	}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonConfigError, "different invalid filter", 2) {
+		t.Fatal("expected a status change to count as semantic change")
+	}
+	if !setFeedCondition(fs, v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonReconciled, "different invalid filter", 2) {
+		t.Fatal("expected a reason change to count as semantic change")
+	}
+}
+
+func TestSetReadyCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
+	fg := &v1alpha1.FeedGroup{}
+	fg.Generation = 1
+	intervalErr := errors.New("invalid interval")
+	if !setReadyCondition(fg, nil, intervalErr) {
+		t.Fatal("expected a newly added Ready condition to count as changed")
+	}
+	fg.Generation = 2
+	if setReadyCondition(fg, nil, intervalErr) {
+		t.Fatal("ObservedGeneration-only Ready update must not count as semantic change")
+	}
+	condition := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeReady)
+	if condition == nil || condition.ObservedGeneration != 2 {
+		t.Fatalf("Ready condition = %+v, want ObservedGeneration 2", condition)
+	}
 }

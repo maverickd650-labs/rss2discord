@@ -105,6 +105,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   `Delivered` condition, `LastError`, `RetryCount`, permanent backoff, the once-only
   persistent-failure Events and the retry decision. Config-error Events use semantic changes to
   the Delivered condition (Status, Reason or Message), not ObservedGeneration-only updates.
+  Ready-condition Warning Events use the same semantic comparison for InvalidInterval.
 
 **Retry run** (`RetryCount`, `BackoffUntil`)
 : The consecutive failures of one phase of a feed's sync -- fetch (`Reachable` False) or
