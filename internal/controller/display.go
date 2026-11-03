@@ -40,11 +40,11 @@ import (
 // documented on FeedGroupSpec.Format. Adding an exported member changes that
 // public template interface and must be reflected in the documented contract.
 type displayEntry struct {
-	Title         string
-	Description   string
-	Link          string
-	Image         string
-	Published string
+	Title       string
+	Description string
+	Link        string
+	Image       string
+	Published   string
 	// PublishedUnix is Published as Unix seconds for Discord's <t:UNIX:R>
 	// relative timestamps; it is 0 when the entry is undated.
 	PublishedUnix int64
