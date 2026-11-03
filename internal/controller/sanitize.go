@@ -76,8 +76,8 @@ func stripHTML(input string) string {
 	var sb strings.Builder
 	sb.Grow(len(input))
 
-	var skipUntil string // qualified name; non-empty while inside a <script>/<style> element
-	var skipDepth int    // open skipUntil elements; the body ends when it returns to 0
+	var skipUntil string  // qualified name; non-empty while inside a <script>/<style> element
+	var skipDepth int     // open skipUntil elements; the body ends when it returns to 0
 	var skipPrefixed bool // the outer script/style element has a namespace prefix
 	z := html.NewTokenizer(strings.NewReader(input))
 	for {
