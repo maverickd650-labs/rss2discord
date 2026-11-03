@@ -29,10 +29,6 @@ func changedID(id string, source rss.IDSource, previous string, previousSource r
 	return rss.Entry{ID: id, IDSource: source, PreviousID: previous, PreviousIDSource: previousSource, Title: id}
 }
 
-const (
-	ownLinkBase    = "https://ownership.example.test/own"
-	sharedLinkBase = "https://ownership.example.test/shared"
-)
 
 // ownershipLink is a link-derived entry with id as both ID and title.
 func ownershipLink(id string) rss.Entry {
