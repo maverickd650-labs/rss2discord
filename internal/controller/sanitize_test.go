@@ -85,6 +85,9 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 		tokenEnd := offset + len(raw)
 		switch tokenType {
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
+			if tokenType == html.SelfClosingTagToken {
+				z.NextIsNotRawText()
+			}
 			name, _ := z.TagName()
 			tag := string(name)
 			if _, local, ok := strings.Cut(tag, ":"); ok {
