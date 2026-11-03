@@ -12,7 +12,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   watermark lookup, delivery plan,
   catch-up limit, backlog skip) and is the only place that settles the status. It hands
   the send loop the entries to consider (`entries`), the render-failure evidence window
-  (`renderEvidence`) and two ledger operations (`sent`, `markHandled`).
+  (`renderEvidence`) and three ledger operations (`sent`, `markHandled`, `identity`).
 
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
@@ -50,7 +50,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   identity, retaining send times. It alone writes the watermark and `LastSent` (apart from
   status normalization and pruning) and owns the key scheme -- an entry's own key
   (`hashIdentity(identity)`) plus, when its stripped link identity is unique in the fetch, the
-  stripped key (`strippedKey`). Delivery uses `sent`/`markHandled`; migration uses
+  stripped key (`strippedKey`). Delivery uses `sent`, `markHandled` and `identity`; migration uses
   `carriesOver`, `ownsPrevious`, `rekeySent`, `moveWatermark` and `setWatermark`, so every
   "is this identity unique" rule is decided in `ledger.go`.
 

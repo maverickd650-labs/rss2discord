@@ -1,12 +1,29 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -150,20 +167,15 @@ func TestMigratePreviousIdentities(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: tc.sent}
+			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: maps.Clone(tc.sent)}
 			// Check both the initial migration and its idempotent second pass.
 			for pass := range 2 {
 				newDeliveryLedger(fs, tc.entries)
 				if fs.LastSeenEntry != tc.wantMark {
 					t.Errorf("pass %d: LastSeenEntry = %q, want %q", pass+1, fs.LastSeenEntry, tc.wantMark)
 				}
-				if len(fs.LastSent) != len(tc.wantSent) {
+				if !maps.Equal(fs.LastSent, tc.wantSent) {
 					t.Errorf("pass %d: LastSent = %v, want %v", pass+1, fs.LastSent, tc.wantSent)
-				}
-				for key, want := range tc.wantSent {
-					if got := fs.LastSent[key]; got != want {
-						t.Errorf("pass %d: LastSent[%s] = %q, want %q", pass+1, key, got, want)
-					}
 				}
 			}
 		})
@@ -276,6 +288,8 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 // migration asks: can the old stripped key only be this one moved entry's?
 func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 	mover := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
+	moverUniqueA := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink)
+	moverUniqueB := changedID(prevLinkNew+"#b", rss.IDFromLink, prevLinkOld+"#y", rss.IDFromLink)
 	sibling := ownershipLink(prevLinkNew + "#b")
 	otherMover := changedID(prevIDOther, rss.IDFromGUID, prevLinkOld+"#y", rss.IDFromLink)
 	claimant := ownershipLink(prevLinkOld + "#z")
@@ -290,10 +304,7 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 	}{
 		{name: "the only mover off that stripped identity", entries: []rss.Entry{mover, sibling}, mover: mover, want: true},
 		{name: "another mover had the same stripped identity", entries: []rss.Entry{mover, sibling, otherMover}, mover: mover},
-		{name: "distinct new identities do not disambiguate a shared previous stripped identity", entries: []rss.Entry{
-			changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink),
-			changedID(prevLinkNew+"#b", rss.IDFromLink, prevLinkOld+"#y", rss.IDFromLink),
-		}, mover: changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink)},
+		{name: "distinct new identities do not disambiguate a shared previous stripped identity", entries: []rss.Entry{moverUniqueA, moverUniqueB}, mover: moverUniqueA},
 		{name: "a current entry has it as its stripped identity", entries: []rss.Entry{mover, sibling, claimant}, mover: mover},
 		{name: "a current entry has it as its identity", entries: []rss.Entry{mover, sibling, guidClaimant}, mover: mover},
 		{name: "a previous ID without a stripped form", entries: []rss.Entry{guidMover}, mover: guidMover},
@@ -306,30 +317,42 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 	}
 }
 
-
-// A previous stripped identity shared by two movers is ambiguous even when
-// their new stripped identities are unique. Neither entry may inherit its key.
+// A previous stripped identity claimed by another moved or current entry is
+// ambiguous even when a mover's new stripped identity is unique. No entry may
+// inherit its key.
 func TestMigratePreviousIdentities_SharedPreviousStrippedIdentityWithUniqueTargets(t *testing.T) {
 	movedA := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink)
 	movedB := changedID(prevLinkNew+"#b", rss.IDFromLink, prevLinkOld+"#y", rss.IDFromLink)
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
-		strippedKey(prevLinkOld): prevSentAt,
-	}}
-	ledger := newDeliveryLedger(fs, []rss.Entry{movedA, movedB})
+	claimant := ownershipLink(prevLinkOld + "#z")
 
-	if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
-		t.Fatalf("ambiguous previous stripped key kept; LastSent = %v", fs.LastSent)
-	}
-	for _, entry := range []rss.Entry{movedA, movedB} {
-		if ledger.sent(entry) {
-			t.Errorf("entry %q inherited an ambiguous previous stripped key; LastSent = %v", entry.ID, fs.LastSent)
-		}
-		if _, ok := fs.LastSent[computeEntryKey(entry)]; ok {
-			t.Errorf("entry %q unexpectedly received a sent key; LastSent = %v", entry.ID, fs.LastSent)
-		}
-		if _, ok := fs.LastSent[strippedKey(normalizeIdentity(entry.ID))]; ok {
-			t.Errorf("entry %q unexpectedly received a stripped key; LastSent = %v", entry.ID, fs.LastSent)
-		}
+	for _, tc := range []struct {
+		name    string
+		entries []rss.Entry
+	}{
+		{name: "two movers share the previous stripped identity", entries: []rss.Entry{movedA, movedB}},
+		{name: "a current entry claims the previous stripped identity", entries: []rss.Entry{movedA, claimant}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
+				strippedKey(prevLinkOld): prevSentAt,
+			}}
+			ledger := newDeliveryLedger(fs, tc.entries)
+
+			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
+				t.Fatalf("ambiguous previous stripped key kept; LastSent = %v", fs.LastSent)
+			}
+			for _, entry := range tc.entries {
+				if ledger.sent(entry) {
+					t.Errorf("entry %q inherited an ambiguous previous stripped key; LastSent = %v", entry.ID, fs.LastSent)
+				}
+				if _, ok := fs.LastSent[computeEntryKey(entry)]; ok {
+					t.Errorf("entry %q unexpectedly received a sent key; LastSent = %v", entry.ID, fs.LastSent)
+				}
+				if _, ok := fs.LastSent[strippedKey(normalizeIdentity(entry.ID))]; ok {
+					t.Errorf("entry %q unexpectedly received a stripped key; LastSent = %v", entry.ID, fs.LastSent)
+				}
+			}
+		})
 	}
 }
 

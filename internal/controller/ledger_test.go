@@ -114,7 +114,13 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 					t.Fatalf("LastSent[%s] = %q, want %q", key, at, ledgerTestNow)
 				}
 			}
-			if want := clampWatermark(entryIdentity(tc.handled)); fs.LastSeenEntry != want {
+			if got, want := ledger.identity(tc.handled), entryIdentity(tc.handled); got != want {
+				t.Fatalf("identity(handled) = %q, want %q", got, want)
+			}
+			if got, want := ledger.identity(tc.probe), entryIdentity(tc.probe); got != want {
+				t.Fatalf("identity(probe) = %q, want %q", got, want)
+			}
+			if want := clampWatermark(ledger.identity(tc.handled)); fs.LastSeenEntry != want {
 				t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, want)
 			}
 			if found := ledger.resume().state == watermarkFound; found != tc.wantResume {
