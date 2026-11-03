@@ -10,7 +10,10 @@ import (
 const (
 	scriptHiddenMarker = "rss2discord-script-hidden"
 	styleHiddenMarker  = "rss2discord-style-hidden"
+	scriptTagName      = "script"
+	styleTagName       = "style"
 	visibleText        = "visible"
+	beforeAfterText    = "beforeafter"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
@@ -28,15 +31,15 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "gt inside comment", input: `a<!-- x > y -->b`, want: "ab"},
 		{name: "comment dropped", input: `a<!-- hidden -->b`, want: "ab"},
 		{name: "bare lt in prose", input: "1 < 2 and 3 > 2", want: "1 < 2 and 3 > 2"},
-		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: "beforeafter"},
+		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: beforeAfterText},
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
 		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
 		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
 		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: visibleText},
 		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
 		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: visibleText},
-		{name: "nested script body ignores inner content", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: "beforeafter"},
-		{name: "nested style body ignores inner content", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: "beforeafter"},
+		{name: "nested script body ignores inner content", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: beforeAfterText},
+		{name: "nested style body ignores inner content", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: beforeAfterText},
 		{name: "mixed-prefix script body ignores inner self-closing script", input: `<x:script><script/>leaked</x:script>visible`, want: visibleText},
 		{name: "self-closing script outside a body does not hide following text", input: `a<script/>visible`, want: "avisible"},
 		{name: "script body keeps marker after closing tag", input: `<script><script/>` + scriptHiddenMarker + `</script>` + scriptHiddenMarker, want: scriptHiddenMarker},
@@ -95,12 +98,12 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 			if _, local, ok := strings.Cut(tag, ":"); ok {
 				tag = local
 			}
-			if tokenType == html.StartTagToken && (tag == "script" || tag == "style") {
+			if tokenType == html.StartTagToken && (tag == scriptTagName || tag == styleTagName) {
 				z.NextIsNotRawText()
 			}
 			switch tokenType {
 			case html.StartTagToken:
-				if rawTextTag == "" && (tag == "script" || tag == "style") {
+				if rawTextTag == "" && (tag == scriptTagName || tag == styleTagName) {
 					rawTextTag = tag
 					rawTextDepth = 1
 				} else if tag == rawTextTag {
@@ -115,7 +118,7 @@ func isScriptOrStyleBodyTextAt(input string, markerIndex int, marker string) boo
 				}
 			}
 		case html.TextToken:
-			if (rawTextTag == "script" || rawTextTag == "style") &&
+			if (rawTextTag == scriptTagName || rawTextTag == styleTagName) &&
 				markerIndex >= offset && markerIndex+len(marker) <= tokenEnd {
 				return true
 			}
