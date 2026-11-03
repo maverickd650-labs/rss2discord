@@ -189,10 +189,6 @@ func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
 // semantics. The synthetic opening tag and input suffix are streamed
 // separately, avoiding a copy of the remaining input.
 func hasRawTextEndTag(input io.Reader, tag string) bool {
-	if tag == plaintextTagName {
-		return false
-	}
-
 	prefix := strings.NewReader("<" + tag + ">")
 	z := html.NewTokenizer(io.MultiReader(prefix, input))
 	z.Next()
