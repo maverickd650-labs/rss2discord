@@ -241,7 +241,7 @@ func main() {
 	rssClient := rss.NewClientWithTransportWrap(transportWrap)
 
 	err = (&controller.FeedGroupReconciler{
-		Client:                 mgr.GetClient(),
+		Client:                  mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
 		RSSClient:              rssClient,
 		DiscordClientBuilder:   controller.NewDiscordClientBuilder(discord.NewHTTPClientWithTransportWrap(transportWrap)),
