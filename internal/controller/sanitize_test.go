@@ -250,7 +250,9 @@ func FuzzStripHTML(f *testing.F) {
 }
 
 // stripHTMLBenchInputs are representative entry bodies: a short feed
-// excerpt, a typical article summary, and a pathological large payload.
+// excerpt, a typical article summary, a pathological large payload, and a
+// feed-cap-sized (10MB, rss.maxFeedResponseBytes) prefixed script body full of
+// unclosed nested scripts, the worst case for the script lookahead budget.
 func stripHTMLBenchInputs() map[string]string {
 	short := `<p>Some excerpt text with a <a href="https://example.com/a">link</a>.</p>` +
 		`<a href="https://example.com/full">Continue reading...</a>`
@@ -258,11 +260,13 @@ func stripHTMLBenchInputs() map[string]string {
 		`<p class="para">Lorem <b>ipsum</b> dolor sit amet, <a href="https://example.com/x?a=1&amp;b=2" title="t">consectetur</a> `+
 			`adipiscing elit &amp; sed do eiusmod.</p><ul><li>one</li><li>two</li></ul><br/>`, 20)
 	large := strings.Repeat(article, 40)
-	return map[string]string{"short": short, "article": article, "large": large}
+	const unit = "<!----!><script>"
+	nestedScripts := prefixedScriptStartTag + strings.Repeat(unit, 10<<20/len(unit)) + prefixedScriptEndTag
+	return map[string]string{"short": short, "article": article, "large": large, "nested-scripts": nestedScripts}
 }
 
 func BenchmarkStripHTML(b *testing.B) {
-	for _, name := range []string{"short", "article", "large"} {
+	for _, name := range []string{"short", "article", "large", "nested-scripts"} {
 		in := stripHTMLBenchInputs()[name]
 		b.Run(name, func(b *testing.B) {
 			b.SetBytes(int64(len(in)))
