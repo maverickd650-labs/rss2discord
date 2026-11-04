@@ -1280,53 +1280,81 @@ func TestProcessFeed_DeliveryRunSurvivesSuccessfulFetches(t *testing.T) {
 	}
 }
 
-func TestProcessFeed_FilterRegex(t *testing.T) {
-	fg, feed := newMetricsFeedGroup("processfeed-filter-regex", "fg-filter-regex", "")
-	feed.Filter = &v1alpha1.Filter{Regex: "Kubernetes|K8s"}
-	fg.Spec.Feeds[0] = feed
-	sender := &fakeSender{}
-
-	fetch := rss.FetchResult{Entries: []rss.Entry{
-		{ID: "k8s-1", Title: "Kubernetes Release v1.30", Description: "New Kubernetes version released", Seq: 1},
-		{ID: "python-conf", Title: "Python Conference Schedule", Description: "Python conference talks announced", Seq: 0},
-	}}
-
-	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
-
-	if len(sender.sent) != 1 {
-		t.Fatalf("sender called %d times, want 1", len(sender.sent))
+func TestProcessFeed_Filter(t *testing.T) {
+	tests := []struct {
+		name         string
+		filter       *v1alpha1.Filter
+		entries      []rss.Entry
+		wantContent  string
+		wantLastSeen string
+	}{
+		{
+			name:   "regex match",
+			filter: &v1alpha1.Filter{Regex: "Kubernetes|K8s"},
+			entries: []rss.Entry{
+				{ID: "k8s-1", Title: "Kubernetes Release v1.30", Description: "New Kubernetes version released", Seq: 1},
+				{ID: "python-conf", Title: "Python Conference Schedule", Description: "Python conference talks announced", Seq: 0},
+			},
+			wantContent:  "Kubernetes Release v1.30",
+			wantLastSeen: "k8s-1",
+		},
+		{
+			name:   "keyword match in title",
+			filter: &v1alpha1.Filter{Keywords: []string{"Python", "Django"}},
+			entries: []rss.Entry{
+				{ID: "python-1", Title: "Python Tutorial", Description: "Learn Python basics", Seq: 1},
+				{ID: "js-1", Title: "JavaScript Best Practices", Description: "Advanced JS patterns", Seq: 0},
+			},
+			wantContent:  "Python Tutorial",
+			wantLastSeen: "python-1",
+		},
+		{
+			name:   "keyword match in description",
+			filter: &v1alpha1.Filter{Keywords: []string{"Django"}},
+			entries: []rss.Entry{
+				{ID: "web-frameworks", Title: "Web Frameworks", Description: "Deep dive into Django internals", Seq: 1},
+				{ID: "unrelated", Title: "Rust Updates", Description: "Rust 2026 edition", Seq: 0},
+			},
+			wantContent:  "Web Frameworks",
+			wantLastSeen: "web-frameworks",
+		},
+		{
+			name:   "zero matches does not send or advance watermark",
+			filter: &v1alpha1.Filter{Keywords: []string{"Nomatch"}},
+			entries: []rss.Entry{
+				{ID: "filtered-1", Title: "Article 1", Description: "Desc 1", Seq: 1},
+				{ID: "filtered-2", Title: "Article 2", Description: "Desc 2", Seq: 0},
+			},
+			wantContent:  "",
+			wantLastSeen: "",
+		},
 	}
-	if !strings.Contains(sender.sent[0].Content, "Kubernetes Release v1.30") {
-		t.Fatalf("sent content = %q, want Kubernetes entry", sender.sent[0].Content)
-	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
-	if fs.LastSeenEntry != "k8s-1" {
-		t.Fatalf("LastSeenEntry = %q, want k8s-1", fs.LastSeenEntry)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed := newMetricsFeedGroup("processfeed-filter", "fg-filter", "")
+			feed.Filter = tc.filter
+			fg.Spec.Feeds[0] = feed
+			sender := &fakeSender{}
 
-func TestProcessFeed_FilterKeywords(t *testing.T) {
-	fg, feed := newMetricsFeedGroup("processfeed-filter-keywords", "fg-filter-keywords", "")
-	feed.Filter = &v1alpha1.Filter{Keywords: []string{"Python", "Django"}}
-	fg.Spec.Feeds[0] = feed
-	sender := &fakeSender{}
+			processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: tc.entries}, nil, sender))
 
-	fetch := rss.FetchResult{Entries: []rss.Entry{
-		{ID: "python-1", Title: "Python Tutorial", Description: "Learn Python basics", Seq: 1},
-		{ID: "js-1", Title: "JavaScript Best Practices", Description: "Advanced JS patterns", Seq: 0},
-	}}
-
-	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
-
-	if len(sender.sent) != 1 {
-		t.Fatalf("sender called %d times, want 1", len(sender.sent))
-	}
-	if !strings.Contains(sender.sent[0].Content, "Python Tutorial") {
-		t.Fatalf("sent content = %q, want Python entry", sender.sent[0].Content)
-	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
-	if fs.LastSeenEntry != "python-1" {
-		t.Fatalf("LastSeenEntry = %q, want python-1", fs.LastSeenEntry)
+			if tc.wantContent == "" {
+				if len(sender.sent) != 0 {
+					t.Fatalf("sender called %d times, want 0", len(sender.sent))
+				}
+			} else {
+				if len(sender.sent) != 1 {
+					t.Fatalf("sender called %d times, want 1", len(sender.sent))
+				}
+				if !strings.Contains(sender.sent[0].Content, tc.wantContent) {
+					t.Fatalf("sent content = %q, want %q", sender.sent[0].Content, tc.wantContent)
+				}
+			}
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			if fs.LastSeenEntry != tc.wantLastSeen {
+				t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, tc.wantLastSeen)
+			}
+		})
 	}
 }
 
@@ -1565,6 +1593,9 @@ func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 	}
 
 	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false once retries are exhausted")
+	}
 	if fs.RetryCount != 3 {
 		t.Fatalf("RetryCount = %d, want 3", fs.RetryCount)
 	}
@@ -1584,7 +1615,7 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	fg.Spec.Feeds[0] = feed
 	fetch := oneEntryFetch()
 	recorder := events.NewFakeRecorder(10)
-	sender := &fakeSender{results: []error{errors.New("500 internal server error")}}
+	sender := &fakeSender{results: []error{errInternalServer}}
 
 	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
 	if !verdict.retry {
@@ -1615,6 +1646,9 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	}
 
 	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false once retries are exhausted")
+	}
 	if fs.RetryCount != 3 {
 		t.Fatalf("RetryCount = %d, want 3", fs.RetryCount)
 	}
@@ -1626,7 +1660,7 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 }
 
 func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
-	fg, feed := newMetricsFeedGroup("processfeed-send-halt", "fg-send-halt", "{{.Title}}")
+	fg, feed := newMetricsFeedGroup("processfeed-send-halt", "fg-send-halt", tmplTitle)
 	fg.Spec.Retries = 3
 	fg.Spec.Feeds[0] = feed
 	fetch := rss.FetchResult{Entries: []rss.Entry{
@@ -1634,7 +1668,7 @@ func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
 		{ID: "newer-article", Title: "Newer Article", Seq: 0},
 	}}
 
-	sender := &fakeSender{results: []error{errors.New("500 internal server error")}}
+	sender := &fakeSender{results: []error{errInternalServer}}
 	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
 
 	if len(sender.sent) != 1 {
@@ -1666,7 +1700,7 @@ func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
 	fetch := oneEntryFetch()
 	fetch.ETag = `"v1"`
 
-	sender := &fakeSender{results: []error{errors.New("500 internal server error")}}
+	sender := &fakeSender{results: []error{errInternalServer}}
 	for range 2 {
 		processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
 	}

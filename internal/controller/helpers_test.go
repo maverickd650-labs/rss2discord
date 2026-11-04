@@ -1,5 +1,10 @@
 package controller
 
+import "errors"
+
+// errInternalServer is a common 500 error used in fakeSender setups.
+var errInternalServer = errors.New("500 internal server error")
+
 // overflowingInterval passes the CRD's Pattern and MaxLength yet is rejected
 // by time.ParseDuration (overflow); notParsable is rejected outright.
 const (
