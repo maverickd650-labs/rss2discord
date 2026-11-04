@@ -179,7 +179,7 @@ func (s *feedSync) apply(ctx context.Context, run feedRun, attempt feedAttempt) 
 	// A 304 is just as much a successful check as one that found something to
 	// send -- it shouldn't read as stale just because nothing changed. This does
 	// give up the optimization of skipping the status write when nothing
-	// else changed (settleGroup diffs on the whole status), so a
+	// else changed (groupSync settlement diffs on the whole status), so a
 	// quiet feed now costs one status write per poll interval instead of
 	// zero.
 	attempt.record(attemptOutcome{kind: attemptFetchSucceeded}, nil)

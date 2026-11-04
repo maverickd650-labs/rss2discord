@@ -169,16 +169,16 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 	}
 }
 
-// prepareStatus rebuilds Status.Feeds to the spec and reports the URLs it
-// pruned, so Reconcile can drop their metric series.
-func TestPrepareStatus_ReturnsPrunedURLs(t *testing.T) {
+// ensureFeedStatuses rebuilds Status.Feeds to the spec and reports the URLs it
+// pruned, so openGroupSync can drop their metric series.
+func TestEnsureFeedStatuses_ReturnsPrunedURLs(t *testing.T) {
 	fg := passGroup(t, "fg-prune")
 	fg.Status.Feeds = append(fg.Status.Feeds, v1alpha1.FeedStatus{RSSUrl: "https://example.com/gone"})
 
-	prep := prepareStatus(fg)
+	pruned := ensureFeedStatuses(fg)
 
-	if !slices.Equal(prep.pruned, []string{"https://example.com/gone"}) {
-		t.Fatalf("pruned = %v, want the removed feed", prep.pruned)
+	if !slices.Equal(pruned, []string{"https://example.com/gone"}) {
+		t.Fatalf("pruned = %v, want the removed feed", pruned)
 	}
 	if len(fg.Status.Feeds) != 2 || fg.Status.Feeds[0].RSSUrl != passFeedA || fg.Status.Feeds[1].RSSUrl != passFeedB {
 		t.Fatalf("Status.Feeds = %+v, want the spec's feeds in order", fg.Status.Feeds)
@@ -188,7 +188,7 @@ func TestPrepareStatus_ReturnsPrunedURLs(t *testing.T) {
 // A spec change (generation ahead of the observed one) resets permanent
 // backoff for every feed; an unchanged spec leaves it alone. The snapshot is
 // taken after the reset and is independent of later status changes.
-func TestPrepareStatus_SpecChangeClearsPermanentBackoff(t *testing.T) {
+func TestOpenGroupSync_SpecChangeClearsPermanentBackoff(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
 		generation, observed  int64
@@ -204,21 +204,21 @@ func TestPrepareStatus_SpecChangeClearsPermanentBackoff(t *testing.T) {
 			fs := feedStatusFor(fg, passFeedA)
 			fs.LastError, fs.RetryCount, fs.BackoffUntil = "404", 4, until
 
-			prep := prepareStatus(fg)
+			sync := (&FeedGroupReconciler{}).openGroupSync(fg)
 
-			if prep.specChanged != tc.wantChanged {
-				t.Errorf("specChanged = %v, want %v", prep.specChanged, tc.wantChanged)
+			if sync.specChanged != tc.wantChanged {
+				t.Errorf("specChanged = %v, want %v", sync.specChanged, tc.wantChanged)
 			}
 			got := feedStatusFor(fg, passFeedA)
 			if kept := got.BackoffUntil == until && got.RetryCount == 4; kept != tc.wantKept {
 				t.Errorf("backoff kept = %v (BackoffUntil %q, RetryCount %d), want %v", kept, got.BackoffUntil, got.RetryCount, tc.wantKept)
 			}
-			snap := prep.snapshot.Feeds[0]
+			snap := sync.original.Feeds[0]
 			if snap.BackoffUntil != got.BackoffUntil || snap.RetryCount != got.RetryCount {
 				t.Errorf("snapshot = %+v, want the post-reset status", snap)
 			}
 			got.RetryCount = 99
-			if prep.snapshot.Feeds[0].RetryCount == 99 {
+			if sync.original.Feeds[0].RetryCount == 99 {
 				t.Error("snapshot aliases the live status")
 			}
 		})

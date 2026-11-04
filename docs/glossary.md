@@ -77,9 +77,20 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 **Reconcile pass** (`reconcilePass`, `feedgroup_controller.go`)
 : The pure middle of a reconcile, once the webhook is resolved: plan the due feeds, fetch them
   concurrently and fold each through `processFeed`, stopping after a Discord rate limit. It does
-  no Kubernetes I/O and returns the folded `attemptVerdict` and the `feedPlan`. `prepareStatus`
-  is its counterpart before it (normalize status, reset backoffs on a spec change, snapshot);
-  `settleGroup` is the write after it.
+  no Kubernetes I/O and returns the folded `attemptVerdict` and the `feedPlan`. `openGroupSync`
+  opens the group's status lifecycle before it; `groupSync.settlePass` is the settlement after it.
+
+**Group sync** (`groupSync`, `settle.go`)
+: The application of one reconcile's outcome to that `FeedGroup`'s `FeedGroupStatus`. It is
+  opened with `openGroupSync` (normalizing `Status.Feeds` to `Spec.Feeds`, forgetting metric
+  series for pruned feeds, resetting permanent backoffs on a spec change, snapshotting
+  pre-reconcile status to skip no-op API writes, and resolving the group's `cadence`) and settled
+  through explicit methods: `settlePass` (advancing `ObservedGeneration` and requeuing from the
+  plan and verdict), `settleWebhookError` (advancing `ObservedGeneration` and surfacing the error
+  on `Ready`), or `settlePanic` (preserving `ObservedGeneration` and surfacing the panic on
+  `Ready`). It summarizes `Ready` and `FeedReachable` conditions (gating `InvalidInterval` Warning
+  Events via `setSemanticCondition` / `setReadyCondition` in `status_store.go`), refreshes per-feed
+  gauges, and writes status via server-side apply when changed.
 
 **Group cadence** (`cadence`, `cadence.go`)
 : A FeedGroup's timing resolved once from its spec by `cadenceOf`: `poll` (`Spec.Interval`),
