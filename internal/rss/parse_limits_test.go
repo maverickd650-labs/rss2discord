@@ -43,13 +43,13 @@ var limitTestFormats = []struct {
 		name:     formatAtom,
 		document: `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">%s<title>After entries</title></feed>`,
 		entry:    `<entry>%s</entry>`,
-		category: `<category term=" %s "/>`,
+		category: atomCategory,
 	},
 	{
 		name:     "atom without xmlns",
 		document: `<feed xmlns:media="http://search.yahoo.com/mrss/">%s<title>After entries</title></feed>`,
 		entry:    `<entry>%s</entry>`,
-		category: `<category term=" %s "/>`,
+		category: atomCategory,
 	},
 }
 
