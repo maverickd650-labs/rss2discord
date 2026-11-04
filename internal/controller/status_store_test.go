@@ -356,12 +356,16 @@ func TestGroupSync_SettlePass(t *testing.T) {
 
 	// Warning Event for InvalidInterval
 	fg.Spec.Interval = "invalid"
+	fg.Status.ObservedGeneration = fg.Generation - 1
 	syncInvalid := r.openGroupSync(fg)
 	// Mutate status to force semantic difference, but with out-of-range status to verify applyStatus error
 	fg.Status.Feeds = []v1alpha1.FeedStatus{outOfRangeFeedStatus(feed.RSSUrl)}
 	_, err = syncInvalid.settlePass(t.Context(), feedPlan{}, attemptVerdict{})
 	if err == nil {
 		t.Fatal("expected status conversion error from applyStatus")
+	}
+	if fg.Status.ObservedGeneration != fg.Generation {
+		t.Errorf("ObservedGeneration = %d, want %d", fg.Status.ObservedGeneration, fg.Generation)
 	}
 	eventList := drainEvents(recorder)
 	if len(eventList) == 0 || !strings.Contains(eventList[0], reasonInvalidInterval) {
@@ -405,11 +409,15 @@ func TestGroupSync_SettleWebhookError(t *testing.T) {
 
 	// Status conversion failure propagates error
 	fg.Status.Feeds = []v1alpha1.FeedStatus{outOfRangeFeedStatus(feed.RSSUrl)}
+	fg.Status.ObservedGeneration = fg.Generation - 1
 	syncErr := r.openGroupSync(fg)
 	fg.Status.Feeds[0].LastError = "changed" // make it not deep equal
 	_, err = syncErr.settleWebhookError(t.Context(), webhookErr)
 	if err == nil {
 		t.Fatal("expected status conversion error")
+	}
+	if fg.Status.ObservedGeneration != fg.Generation {
+		t.Errorf("ObservedGeneration = %d, want %d", fg.Status.ObservedGeneration, fg.Generation)
 	}
 }
 
