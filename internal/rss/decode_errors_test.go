@@ -30,12 +30,38 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 	})
 
 	t.Run("atomLinks through parseAtom", func(t *testing.T) {
-		entries, title, err := parseAtom([]byte(atomOpen + `<link href="https://example.com/a"></bad>` + atomClose))
+		entries, title, err := parseAtom([]byte(atomOpen+`<link href="https://example.com/a"></bad>`+atomClose), atomNamespace)
 		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
 			t.Fatalf(msgWantSyntaxError, err, err)
 		}
 		if entries != nil || title != "" {
 			t.Fatalf("got entries=%v title=%q, want none", entries, title)
+		}
+	})
+
+	t.Run("entryList", func(t *testing.T) {
+		var list entryList[atomEntry]
+		err := xml.Unmarshal([]byte(`<entry><link href="https://example.com/a"></bad></entry>`), &struct {
+			Entries *entryList[atomEntry] `xml:"entry"`
+		}{Entries: &list})
+		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
+			t.Fatalf(msgWantSyntaxError, err, err)
+		}
+		if len(list) != 0 {
+			t.Fatalf("a failed entry must not be retained, got %v", list)
+		}
+	})
+
+	t.Run("atomCategories", func(t *testing.T) {
+		var cats atomCategories
+		err := xml.Unmarshal([]byte(`<entry><category term="a"></bad></entry>`), &struct {
+			Cats *atomCategories `xml:"category"`
+		}{Cats: &cats})
+		if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
+			t.Fatalf(msgWantSyntaxError, err, err)
+		}
+		if len(cats) != 0 {
+			t.Fatalf("a failed category must not be retained, got %v", cats)
 		}
 	})
 
@@ -68,7 +94,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 		} {
 			doc := `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><entry><media:group>` +
 				child + `</media:group></entry></feed>`
-			if _, _, err := parseAtom([]byte(doc)); err == nil {
+			if _, _, err := parseAtom([]byte(doc), atomNamespace); err == nil {
 				t.Fatalf("expected an error for %s", child)
 			} else if _, ok := errors.AsType[*xml.SyntaxError](err); !ok {
 				t.Fatalf(msgWantSyntaxError, err, err)
@@ -77,7 +103,7 @@ func TestBoundedUnmarshalers_ReturnDecodeErrors(t *testing.T) {
 	})
 }
 
-func TestParseAtom_RootElementError(t *testing.T) {
+func TestParseFeed_RootElementError(t *testing.T) {
 	for name, doc := range map[string]string{
 		"no input":     "",
 		"no element":   "<!-- just a comment -->",
@@ -85,7 +111,7 @@ func TestParseAtom_RootElementError(t *testing.T) {
 		"unclosed tag": `<feed`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			entries, title, err := parseAtom([]byte(doc))
+			entries, title, err := parseFeed([]byte(doc))
 			if err == nil {
 				t.Fatal("expected an error")
 			}

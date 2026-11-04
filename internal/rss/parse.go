@@ -112,32 +112,22 @@ func (e *ParseError) Error() string {
 
 func (e *ParseError) Unwrap() error { return e.Err }
 
-// appendBounded decodes the element at start into a new T and appends it to s
-// unless s already holds limit elements, in which case the element is skipped
-// without being decoded. It is the shared body of the bounded slice types
-// below, whose UnmarshalXML encoding/xml calls once per matching element.
-func appendBounded[T any](d *xml.Decoder, start xml.StartElement, s []T, limit int) ([]T, error) {
-	if len(s) >= limit {
-		return s, d.Skip()
-	}
-	var v T
-	if err := d.DecodeElement(&v, &start); err != nil {
-		return s, err
-	}
-	return append(s, v), nil
-}
+// entryList collects a feed's <item>/<entry> elements, stopping decoding after
+// maxFeedEntries: later elements are skipped rather than allocated.
+type entryList[E any] []E
 
-// trimCategories trims each category and drops any that are blank, so
-// whitespace-only <category> elements don't surface as empty entries.
-func trimCategories(raw []string) []string {
-	categories := make([]string, 0, len(raw))
-	for _, c := range raw {
-		c = strings.TrimSpace(c)
-		if c != "" {
-			categories = append(categories, c)
-		}
+// UnmarshalXML retains the first maxFeedEntries elements. XML decoding errors are
+// returned; excess elements are ignored.
+func (c *entryList[E]) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	if len(*c) >= maxFeedEntries {
+		return d.Skip()
 	}
-	return categories
+	var v E
+	if err := d.DecodeElement(&v, &start); err != nil {
+		return err
+	}
+	*c = append(*c, v)
+	return nil
 }
 
 // unmarshalXML decodes data into v using encoding/xml, with a CharsetReader
@@ -150,17 +140,9 @@ func unmarshalXML(data []byte, v any) error {
 	return decoder.Decode(v)
 }
 
-// rootElementName returns the local name of data's outermost XML element
-// ("rss" or "feed", typically), reading only as far as that first start tag
-// rather than decoding the whole document. parseFeed uses this to pick
-// parseRSS vs. parseAtom without paying for a full Unmarshal twice -- once
-// here and again in whichever of those it then calls.
-func rootElementName(data []byte) (string, error) {
-	root, err := rootElement(data)
-	return root.Local, err
-}
-
-// rootElement is rootElementName with the root's namespace too.
+// rootElement returns the XML name (local name and namespace) of data's outermost
+// element ("rss", "feed", or "RDF", typically), reading only as far as that first
+// start tag rather than decoding the whole document.
 func rootElement(data []byte) (xml.Name, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.CharsetReader = charset.NewReaderLabel
@@ -187,19 +169,19 @@ func parseFeed(data []byte) ([]Entry, string, error) {
 }
 
 func parseFeedDocument(data []byte) ([]Entry, string, error) {
-	root, err := rootElementName(data)
+	root, err := rootElement(data)
 	if err != nil {
 		return nil, "", err
 	}
 
-	switch strings.ToLower(root) {
+	switch strings.ToLower(root.Local) {
 	case "rss":
 		return parseRSS(data)
 	case "feed":
-		return parseAtom(data)
+		return parseAtom(data, root.Space)
 	case "rdf":
 		return parseRDF(data)
 	default:
-		return nil, "", &UnrecognizedFormatError{Root: root}
+		return nil, "", &UnrecognizedFormatError{Root: root.Local}
 	}
 }

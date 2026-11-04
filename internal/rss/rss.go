@@ -31,8 +31,8 @@ type rssChannel struct {
 	// Title is a slice of nsText for the same reason as rssItem's fields: a
 	// channel-level <itunes:title> or <media:title> shares the local name and
 	// would otherwise override the real <title>.
-	Title nsTexts  `xml:"title"`
-	Items rssItems `xml:"item"`
+	Title nsTexts            `xml:"title"`
+	Items entryList[rssItem] `xml:"item"`
 }
 
 // rdfEnvelope is RSS 1.0's document shape: root <rdf:RDF>, with <item>
@@ -42,9 +42,9 @@ type rssChannel struct {
 // same local names RSS 2.0 uses (dc:creator and dc:date match rssItem's
 // Creator and DCDate regardless of namespace prefix).
 type rdfEnvelope struct {
-	XMLName xml.Name   `xml:"RDF"`
-	Channel rdfChannel `xml:"channel"`
-	Items   rssItems   `xml:"item"`
+	XMLName xml.Name           `xml:"RDF"`
+	Channel rdfChannel         `xml:"channel"`
+	Items   entryList[rssItem] `xml:"item"`
 }
 
 // rdfChannel is RSS 1.0's <channel>, which carries feed metadata only; its
@@ -61,19 +61,6 @@ const rss10Namespace = "http://purl.org/rss/1.0/"
 // contentNamespace is the RSS 1.0 Content module's namespace, home of
 // <content:encoded>.
 const contentNamespace = "http://purl.org/rss/1.0/modules/content/"
-
-// rssItems collects a document's <item> elements but, unlike a plain
-// []rssItem, stops decoding after maxFeedEntries: later items are skipped
-// rather than allocated. Document order is kept, so Entry.Seq is unaffected.
-type rssItems []rssItem
-
-// UnmarshalXML retains the first maxFeedEntries items. XML decoding errors are
-// returned; excess items are ignored.
-func (c *rssItems) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
-	var err error
-	*c, err = appendBounded(d, start, *c, maxFeedEntries)
-	return err
-}
 
 type rssItem struct {
 	// These are nsTexts, not strings, so namespaced extension elements with
@@ -319,7 +306,7 @@ func rssItemsToEntries(items []rssItem) []Entry {
 			Content:     pickTextPrefer(item.ContentEncoded, contentNamespace, ""),
 			Image:       strings.TrimSpace(entryImage(item.Enclosure, item.MediaThumbnail, item.MediaContent, item.MediaGroup)),
 			Author:      author,
-			Categories:  trimCategories(item.Categories),
+			Categories:  item.Categories,
 			Published:   published,
 			Seq:         i,
 		}))

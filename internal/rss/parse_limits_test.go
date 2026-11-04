@@ -14,10 +14,12 @@ import (
 // after the entry limit has been reached.
 // Literals repeated across the limit tests below; constants keep goconst quiet.
 const (
-	hrefArticle     = "article"
-	blogBaseURL     = "https://example.com/blog/"
-	blogPostArticle = "https://example.com/blog/posts/article"
-	postsDir        = "posts/"
+	formatAtomWithoutXMLNS = "atom without xmlns"
+	hrefArticle            = "article"
+	blogBaseURL            = "https://example.com/blog/"
+	blogPostArticle        = "https://example.com/blog/posts/article"
+	postsDir               = "posts/"
+	atomCategory           = `<category term=" %s "/>`
 )
 
 var limitTestFormats = []struct {
@@ -43,7 +45,13 @@ var limitTestFormats = []struct {
 		name:     formatAtom,
 		document: `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">%s<title>After entries</title></feed>`,
 		entry:    `<entry>%s</entry>`,
-		category: `<category term=" %s "/>`,
+		category: atomCategory,
+	},
+	{
+		name:     formatAtomWithoutXMLNS,
+		document: `<feed xmlns:media="http://search.yahoo.com/mrss/">%s<title>After entries</title></feed>`,
+		entry:    `<entry>%s</entry>`,
+		category: atomCategory,
 	},
 }
 
@@ -276,10 +284,16 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 			for _, name := range []string{"first", "second"} {
 				image := fmt.Sprintf(`<media:content medium="image" url="https://example.com/%s.png"/>`, name)
 				links := ""
-				if format.name == formatAtom {
-					// Fill all three retained link roles on each Atom entry.
+				if format.name == formatAtom || format.name == formatAtomWithoutXMLNS {
+					// Exercise retained Atom links on each entry.
 					links = fmt.Sprintf(`<link rel="self" href="self"/><link href="https://example.com/%s"/>`, name)
-					image = fmt.Sprintf(`<link rel="enclosure" type="image/png" href="https://example.com/%s.png"/>`, name)
+					if format.name == formatAtom {
+						image = fmt.Sprintf(`<link rel="enclosure" type="image/png" href="https://example.com/%s.png"/>`, name)
+					} else {
+						// Direct media:content shares a local name with Atom content;
+						// the loose decoder uses the unambiguous thumbnail element.
+						image = fmt.Sprintf(`<media:thumbnail url="https://example.com/%s.png"/>`, name)
+					}
 				}
 				fmt.Fprintf(&body, format.entry, links+strings.Repeat(image, 4))
 			}
@@ -294,7 +308,7 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 				if want := "https://example.com/" + name + ".png"; entries[i].Image != want {
 					t.Fatalf("entry[%d] image = %q, want %q", i, entries[i].Image, want)
 				}
-				if want := "https://example.com/" + name; format.name == formatAtom && entries[i].Link != want {
+				if want := "https://example.com/" + name; (format.name == formatAtom || format.name == formatAtomWithoutXMLNS) && entries[i].Link != want {
 					t.Fatalf("entry[%d] link = %q, want %q", i, entries[i].Link, want)
 				}
 			}
