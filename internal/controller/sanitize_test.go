@@ -1,8 +1,27 @@
 package controller
 
 import (
+	stdhtml "html"
 	"strings"
 	"testing"
+)
+
+const (
+	scriptHiddenMarker                  = "rss2discord-script-hidden"
+	styleHiddenMarker                   = "rss2discord-style-hidden"
+	visibleText                         = "visible"
+	decodedScriptComparisonInput        = "<script>if(a<b){x++}</script>visible"
+	prefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`
+	prefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`
+	prefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`
+	prefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`
+	prefixedScriptStartTag              = "<x:script>"
+	prefixedScriptEndTag                = "</x:script>"
+	prefixedStyleEndTag                 = "</x:style>"
+	scriptStartTag                      = "<script>"
+	scriptEndTagHit                     = "x</script>"
+	beforeAfterText                     = "beforeafter"
+	beforeOuterTailAfterText            = "beforeouter-tailafter"
 )
 
 // TestStripHTMLMarkupEdgeCases covers real-world feed markup that a regex
@@ -20,8 +39,38 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 		{name: "gt inside comment", input: `a<!-- x > y -->b`, want: "ab"},
 		{name: "comment dropped", input: `a<!-- hidden -->b`, want: "ab"},
 		{name: "bare lt in prose", input: "1 < 2 and 3 > 2", want: "1 < 2 and 3 > 2"},
-		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: "beforeafter"},
+		{name: "script content dropped", input: `before<script>var x = 1 < 2;</script>after`, want: beforeAfterText},
+		{name: "decoded script comparison preserves trailing visible text", input: decodedScriptComparisonInput, want: visibleText},
+		{name: "style raw text preserves less-than content", input: "<style>a<b{color:red}</style>visible", want: visibleText},
+		{name: "escaped script entities remain literal text", input: "&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible", want: decodedScriptComparisonInput},
 		{name: "script content with tags dropped", input: `a<script>document.write("<p>x</p>")</script>b`, want: "ab"},
+		{name: "script body ignores inner self-closing script", input: `<script><script/>leaked</script>script-visible`, want: "script-visible"},
+		{name: "style body ignores inner self-closing style", input: `<style><style/>leaked</style>style-visible`, want: "style-visible"},
+		{name: "prefixed script body ignores inner self-closing script", input: `<x:script><x:script/>leaked</x:script>visible`, want: visibleText},
+		{name: "prefixed style body ignores inner self-closing style", input: `<x:style><x:style/>leaked</x:style>visible`, want: visibleText},
+		{name: "prefixed script body restores tokenization after nested textarea", input: `<x:script><textarea>hidden</textarea></x:script>visible`, want: visibleText},
+		{name: "prefixed style body restores tokenization after nested textarea", input: `<x:style><textarea>hidden</textarea></x:style>visible`, want: visibleText},
+		{name: "prefixed script keeps a closed nested script boundary", input: `<x:script><script>"</x:script>leaked"</script>hidden</x:script>visible`, want: visibleText},
+		{name: "prefixed script preserves outer boundary across double-escaped nested script", input: `<x:script><script><!--<script></script>--!><script></x:script>leaked</script></x:script>visible`, want: visibleText},
+		{name: "prefixed style keeps a closed nested style boundary", input: `<x:style><style>"</x:style>leaked"</style>hidden</x:style>visible`, want: visibleText},
+		{name: "prefixed script keeps a closed nested textarea boundary", input: `<x:script><textarea>hidden</x:script>leaked</textarea>tail</x:script>visible`, want: visibleText},
+		{name: "prefixed style keeps a closed nested textarea boundary", input: `<x:style><textarea>hidden</x:style>leaked</textarea>tail</x:style>visible`, want: visibleText},
+		{name: "prefixed script retains outer boundary for unclosed nested textarea", input: `<x:script><textarea>hidden</x:script>visible`, want: visibleText},
+		{name: "prefixed style retains outer boundary for unclosed nested textarea", input: `<x:style><textarea>hidden</x:style>visible`, want: visibleText},
+		{name: "prefixed script finds a distant nested textarea end tag", input: `<x:script><textarea>hidden</x:script>` + strings.Repeat("x", 64*1024) + `</textarea>tail</x:script>visible`, want: visibleText},
+		{name: "prefixed script handles many unclosed nested textareas", input: `<x:script>` + strings.Repeat("<textarea>hidden", 1000) + `</x:script>visible`, want: visibleText},
+		{name: "prefixed script body restores tokenization after nested plaintext", input: `<x:script><plaintext>hidden</plaintext></x:script>visible`, want: visibleText},
+		{name: "prefixed style body restores tokenization after nested plaintext", input: `<x:style><plaintext>hidden</plaintext></x:style>visible`, want: visibleText},
+		{name: "unprefixed script end tag does not close prefixed script", input: prefixedScriptMismatchedEndTagInput, want: visibleText},
+		{name: "unprefixed style end tag does not close prefixed style", input: prefixedStyleMismatchedEndTagInput, want: visibleText},
+		{name: "nested script raw text does not consume prefixed outer end tag", input: prefixedScriptNestedRawTextInput, want: visibleText},
+		{name: "nested style raw text does not consume prefixed outer end tag", input: prefixedStyleNestedRawTextInput, want: visibleText},
+		{name: "prefixed script body ignores nested script element", input: `<x:script><x:script>a</x:script>leaked</x:script>visible`, want: visibleText},
+		{name: "script raw text ends at first matching end tag", input: `before<script>outer<script>inner</script>outer-tail</script>after`, want: beforeOuterTailAfterText},
+		{name: "style raw text ends at first matching end tag", input: `before<style>outer<style>inner</style>outer-tail</style>after`, want: beforeOuterTailAfterText},
+		{name: "mixed-prefix script body ignores inner self-closing script", input: `<x:script><script/>leaked</x:script>visible`, want: visibleText},
+		{name: "self-closing script outside a body does not hide following text", input: `a<script/>visible`, want: "avisible"},
+		{name: "script body keeps marker after closing tag", input: `<script><script/>` + scriptHiddenMarker + `</script>` + scriptHiddenMarker, want: scriptHiddenMarker},
 		{name: "style content dropped", input: `<style>p{color:red}</style>kept`, want: "kept"},
 		{name: "uppercase block tags", input: "<P>one</P><P>two</P>", want: "one\n\ntwo"},
 		{name: "prefixed XHTML paragraphs", input: "<x:div><x:p>First</x:p><x:p>Second</x:p></x:div>", want: "First\n\nSecond"},
@@ -49,9 +98,88 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 	}
 }
 
+func TestRawTextEndTagLookaheadDoesNotCacheScriptMissesAcrossEscapedStates(t *testing.T) {
+	input := `<!--<script></script>--!><script></x:script>leaked</script></x:script>`
+	secondScript := strings.LastIndex(input, scriptStartTag)
+	if secondScript < 0 {
+		t.Fatal("test input is missing its second script start tag")
+	}
+	afterSecondScript := secondScript + len(scriptStartTag)
+	lookahead := rawTextEndTagLookahead{input: input}
+
+	if lookahead.hasEndTagAt(0, scriptTagName) {
+		t.Fatal("first script suffix unexpectedly has a matching end tag")
+	}
+	if _, cached := lookahead.noEndTags[scriptTagName]; cached {
+		t.Fatal("script miss must not be cached across tokenizer escape states")
+	}
+	if !lookahead.hasEndTagAt(afterSecondScript, scriptTagName) {
+		t.Fatal("later script suffix has a matching end tag, but lookahead missed it")
+	}
+}
+
+func TestRawTextEndTagLookaheadCachesMissingTags(t *testing.T) {
+	lookahead := rawTextEndTagLookahead{input: `<textarea>first<textarea>second`}
+
+	if lookahead.hasEndTagAt(0, textareaTagName) {
+		t.Fatal("hasEndTagAt() = true for an input without a matching end tag")
+	}
+	if _, ok := lookahead.noEndTags[textareaTagName]; !ok {
+		t.Fatal("missing end tag was not cached")
+	}
+	if lookahead.hasEndTagAt(len(lookahead.input), textareaTagName) {
+		t.Fatal("hasEndTagAt() = true for a later suffix after a cached miss")
+	}
+}
+
+// TestRawTextEndTagLookaheadBoundsScriptMisses pins the budget that keeps
+// uncacheable script misses from rescanning the input once per nested tag.
+func TestRawTextEndTagLookaheadBoundsScriptMisses(t *testing.T) {
+	const tags = 1000
+	input := strings.Repeat(scriptStartTag, tags)
+	lookahead := rawTextEndTagLookahead{input: input}
+
+	for i := range tags {
+		if lookahead.hasEndTagAt(i*len(scriptStartTag), scriptTagName) {
+			t.Fatalf("hasEndTagAt(%d) = true for an input without an end tag", i)
+		}
+	}
+	if limit := scriptLookaheadBudgetFactor * len(input); lookahead.scriptMissBytes > limit {
+		t.Fatalf("scanned %d bytes for script misses, want at most %d", lookahead.scriptMissBytes, limit)
+	}
+}
+
+// TestRawTextEndTagLookaheadScriptHitsSpendNoBudget checks that script hits
+// are never charged: the tokenizer consumes the scanned span anyway, so only
+// misses can make the lookahead's total work superlinear.
+func TestRawTextEndTagLookaheadScriptHitsSpendNoBudget(t *testing.T) {
+	input := strings.Repeat(scriptEndTagHit, 100)
+	lookahead := rawTextEndTagLookahead{input: input}
+
+	for i := range 100 {
+		if !lookahead.hasEndTagAt(i*len(scriptEndTagHit), scriptTagName) {
+			t.Fatalf("hasEndTagAt(%d) = false, want a matching end tag", i)
+		}
+	}
+	if lookahead.scriptMissBytes != 0 {
+		t.Fatalf("script hits charged %d bytes, want 0", lookahead.scriptMissBytes)
+	}
+}
+
+// TestStripHTMLManyUnclosedNestedScripts covers the input shape the script
+// budget exists for: it must stay linear and keep the outer boundary.
+func TestStripHTMLManyUnclosedNestedScripts(t *testing.T) {
+	for _, unit := range []string{scriptStartTag, "<!----!>" + scriptStartTag} {
+		input := prefixedScriptStartTag + strings.Repeat(unit, 20000) + prefixedScriptEndTag + visibleText
+		if got := stripHTML(input); got != visibleText {
+			t.Fatalf("stripHTML(%q...) = %q, want %q", input[:64], got, visibleText)
+		}
+	}
+}
+
 // FuzzStripHTML checks structural invariants of the stripped output for
-// arbitrary input: it must be trimmed, never leave a run of 3+ newlines, and
-// never contain script/style element bodies.
+// arbitrary input: it must be trimmed and never leave a run of 3+ newlines.
+// Targeted script/style body suppression is covered by table-driven regression tests.
 func FuzzStripHTML(f *testing.F) {
 	seeds := []string{
 		"",
@@ -61,7 +189,28 @@ func FuzzStripHTML(f *testing.F) {
 		"a<!-- c > d -->b",
 		"1 < 2 > 0",
 		"<script>alert(1)</script>",
+		"<script/>",
+		"<style/>",
+		decodedScriptComparisonInput,
+		"&lt;script&gt;if(a&lt;b){x++}&lt;/script&gt;visible",
+		"<script><script/>" + scriptHiddenMarker + "</script>kept",
+		"<script><script>" + scriptHiddenMarker + "</script></script>kept",
+		"<script><script/>" + scriptHiddenMarker + "</script>" + scriptHiddenMarker,
+		"<textarea><x:script><x:script/>" + scriptHiddenMarker + "</x:script></textarea>",
+		"<textarea><x:style><x:style/>" + styleHiddenMarker + "</x:style></textarea>",
+		"<x:script><x:script/>" + scriptHiddenMarker + "</x:script>kept",
+		prefixedScriptMismatchedEndTagInput,
+		prefixedStyleMismatchedEndTagInput,
+		"<x:script>hidden</script>" + scriptHiddenMarker + "</x:script>kept",
+		"<x:style>hidden</style>" + styleHiddenMarker + "</x:style>kept",
+		prefixedScriptNestedRawTextInput,
+		prefixedStyleNestedRawTextInput,
+		"<x:script><script>" + scriptHiddenMarker + "</x:script>kept",
+		"<x:style><style>" + styleHiddenMarker + "</x:style>kept",
 		"<style>p{}</style>",
+		"<style><style/>" + styleHiddenMarker + "</style>kept",
+		"<style><style>" + styleHiddenMarker + "</style></style>kept",
+		"<x:style><x:style/>" + styleHiddenMarker + "</x:style>kept",
 		"<p>x</p>\n\n\n\n<p>y</p>",
 		"&amp;&lt;&#0;&#x110000;",
 		"\x00\xff<p\x00>",
@@ -79,11 +228,33 @@ func FuzzStripHTML(f *testing.F) {
 		if strings.Contains(got, "\n\n\n") {
 			t.Fatalf("stripHTML(%q) = %q, contains 3+ consecutive newlines", input, got)
 		}
+
+		// Escaping keeps the generated body from closing its wrapper, so this
+		// property specifically checks that script/style bodies stay hidden
+		// even when they contain an inner self-closing tag.
+		escaped := stdhtml.EscapeString(input)
+		for _, tc := range []struct {
+			outerTag string
+			innerTag string
+		}{
+			{outerTag: scriptTagName, innerTag: scriptTagName},
+			{outerTag: styleTagName, innerTag: styleTagName},
+			{outerTag: "x:" + scriptTagName, innerTag: "x:" + scriptTagName},
+			{outerTag: "x:" + styleTagName, innerTag: "x:" + styleTagName},
+		} {
+			wrapped := "<" + tc.outerTag + "><" + tc.innerTag + "/>" + escaped +
+				"</" + tc.outerTag + ">" + visibleText
+			if got := stripHTML(wrapped); got != visibleText {
+				t.Fatalf("stripHTML(%q) = %q, want %q", wrapped, got, visibleText)
+			}
+		}
 	})
 }
 
 // stripHTMLBenchInputs are representative entry bodies: a short feed
-// excerpt, a typical article summary, and a pathological large payload.
+// excerpt, a typical article summary, a pathological large payload, and a
+// feed-cap-sized (10MB, rss.maxFeedResponseBytes) prefixed script body full of
+// unclosed nested scripts, the worst case for the script lookahead budget.
 func stripHTMLBenchInputs() map[string]string {
 	short := `<p>Some excerpt text with a <a href="https://example.com/a">link</a>.</p>` +
 		`<a href="https://example.com/full">Continue reading...</a>`
@@ -91,11 +262,13 @@ func stripHTMLBenchInputs() map[string]string {
 		`<p class="para">Lorem <b>ipsum</b> dolor sit amet, <a href="https://example.com/x?a=1&amp;b=2" title="t">consectetur</a> `+
 			`adipiscing elit &amp; sed do eiusmod.</p><ul><li>one</li><li>two</li></ul><br/>`, 20)
 	large := strings.Repeat(article, 40)
-	return map[string]string{"short": short, "article": article, "large": large}
+	unit := "<!----!>" + scriptStartTag
+	nestedScripts := prefixedScriptStartTag + strings.Repeat(unit, 10<<20/len(unit)) + prefixedScriptEndTag
+	return map[string]string{"short": short, "article": article, "large": large, "nested-scripts": nestedScripts}
 }
 
 func BenchmarkStripHTML(b *testing.B) {
-	for _, name := range []string{"short", "article", "large"} {
+	for _, name := range []string{"short", "article", "large", "nested-scripts"} {
 		in := stripHTMLBenchInputs()[name]
 		b.Run(name, func(b *testing.B) {
 			b.SetBytes(int64(len(in)))

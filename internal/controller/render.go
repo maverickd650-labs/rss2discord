@@ -74,50 +74,12 @@ func parseHexColor(s string) int {
 // the feed nor the group set EmbedSpec.DescriptionFormat.
 const defaultDescriptionFormat = "{{.Description}}"
 
-// templateData is the value a message template executes against; its
-// exported fields and methods are the documented {{.Placeholders}}.
-type templateData struct {
-	Title       string
-	Description string
-	Link        string
-	Image       string
-	Published   string
-	// PublishedUnix is Published as Unix seconds (0 when undated, like
-	// Published's ""), for Discord's <t:UNIX:R> dynamic timestamps.
-	PublishedUnix int64
-	Author        string
-	Categories    string
-	FeedTitle     string
-
-	entry displayEntry
-}
-
-// Content is the entry's full body with HTML stripped. It is a method rather
-// than a field so the strip -- over a body that can run to tens of KB -- only
-// happens for templates that actually reference {{.Content}}.
-func (d templateData) Content() string {
-	return d.entry.content()
-}
-
-// renderTemplate executes tmpl against entry and returns the raw output. It
-// is not clamped to Discord's limits (feedRenderer.build does that once, via
-// discord.Fit); its size is already bounded by the msgtemplate sandbox. Execution errors, including helper errors, are
-// returned with empty text.
+// renderTemplate executes tmpl directly against the sanitized display entry and
+// returns the raw output. It is not clamped to Discord's limits (feedRenderer.build
+// does that once, via discord.Fit); its size is already bounded by the msgtemplate
+// sandbox. Execution errors, including helper errors, are returned with empty text.
 func renderTemplate(tmpl *msgtemplate.Template, entry displayEntry) (string, error) {
-	data := templateData{
-		Title:         entry.Title,
-		Description:   entry.Description,
-		Link:          entry.Link,
-		Image:         entry.Image,
-		Published:     entry.Published,
-		PublishedUnix: entry.PublishedUnix,
-		Author:        entry.Author,
-		Categories:    entry.joinedCategories(),
-		FeedTitle:     entry.FeedTitle,
-		entry:         entry,
-	}
-
-	return tmpl.Execute(data)
+	return tmpl.Execute(entry)
 }
 
 // feedRenderer turns one feed's entries into Discord messages. It owns the

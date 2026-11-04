@@ -25,25 +25,31 @@ import (
 
 // displayEntry is an rss.Entry as it is shown to Discord: every presentation
 // field sanitized exactly once, by displayOf. Both the embed (feedRenderer.build)
-// and the message templates (templateData) read from it and never sanitize raw
-// entry fields themselves, so what is and isn't sanitized is readable here.
+// and message templates read from it directly and never sanitize raw entry fields
+// themselves, so what is and isn't sanitized is readable here.
 //
 // Sanitization per field:
 //   - Title, Description, FeedTitle: stripHTML.
 //   - Link, Image: httpURLOrEmpty (http/https only).
 //   - Published, PublishedUnix: formatted by formatPublished/publishedUnix ("" and 0 when undated).
-//   - Author, Categories: stripHTML each; a category that strips to nothing is dropped
-//     (as the parsers already drop blank ones).
-//   - Content: stripHTML, on demand (see content).
+//   - Author: stripHTML.
+//   - Categories: stripHTML each, drop blanks and join with ", ".
+//   - Content: stripHTML, on demand (see Content).
+//
+// Its exported fields and methods are exactly the template placeholders
+// documented on FeedGroupSpec.Format. Adding an exported member changes that
+// public template interface and must be reflected in the documented contract.
 type displayEntry struct {
-	Title         string
-	Description   string
-	Link          string
-	Image         string
-	Published     string
+	Title       string
+	Description string
+	Link        string
+	Image       string
+	Published   string
+	// PublishedUnix is Published as Unix seconds for Discord's <t:UNIX:R>
+	// relative timestamps; it is 0 when the entry is undated.
 	PublishedUnix int64
 	Author        string
-	Categories    []string
+	Categories    string
 	FeedTitle     string
 
 	rawContent string
@@ -62,7 +68,7 @@ func displayOf(entry rss.Entry) displayEntry {
 		Published:     formatPublished(entry.Published),
 		PublishedUnix: publishedUnix(entry.Published),
 		Author:        stripHTML(entry.Author),
-		Categories:    stripCategories(entry.Categories),
+		Categories:    strings.Join(stripCategories(entry.Categories), ", "),
 		FeedTitle:     stripHTML(entry.FeedTitle),
 		rawContent:    entry.Content,
 	}
@@ -81,14 +87,11 @@ func stripCategories(categories []string) []string {
 	return out
 }
 
-// content is the entry's full body with HTML stripped, computed on each call.
-func (d displayEntry) content() string {
+// Content is the entry's full body with HTML stripped, computed on each call.
+// It is a method so large bodies are only stripped when a template references
+// {{.Content}}.
+func (d displayEntry) Content() string {
 	return stripHTML(d.rawContent)
-}
-
-// joinedCategories is the categories as templates see them, comma-separated.
-func (d displayEntry) joinedCategories() string {
-	return strings.Join(d.Categories, ", ")
 }
 
 // formatPublished renders t as RFC 3339 UTC, or "" for the zero time. Feeds
