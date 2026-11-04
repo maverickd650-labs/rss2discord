@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.1](https://github.com/maverickd650-labs/rss2discord/compare/v0.16.0...v0.16.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* **controller:** address review findings on retry phase capture ([#372](https://github.com/maverickd650-labs/rss2discord/issues/372)) ([3a46384](https://github.com/maverickd650-labs/rss2discord/commit/3a46384794617412379f8ec00e10ce1285a5540d))
+* **controller:** consolidate webhook Secret and Discord client setup ([#375](https://github.com/maverickd650-labs/rss2discord/issues/375)) ([597956b](https://github.com/maverickd650-labs/rss2discord/commit/597956bcf282f80a9a707d01e83075398906e9e8))
+* **controller:** gate condition events on semantic changes ([#377](https://github.com/maverickd650-labs/rss2discord/issues/377)) ([dafbd1f](https://github.com/maverickd650-labs/rss2discord/commit/dafbd1f3136aa04320330a81fb21389160b049ac))
+* **controller:** make retryRun own its phase snapshot ([#371](https://github.com/maverickd650-labs/rss2discord/issues/371)) ([0ccc018](https://github.com/maverickd650-labs/rss2discord/commit/0ccc0187c1c1f08909f5fa98f8241caa7bf2f7ee))
+* **controller:** prevent nested script/style tags leaking content ([#381](https://github.com/maverickd650-labs/rss2discord/issues/381)) ([97e51eb](https://github.com/maverickd650-labs/rss2discord/commit/97e51eb74f7a1a58d672dd069603601a6da80b70))
+
 ## [0.16.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.15.0...v0.16.0) (2026-11-01)
 
 
