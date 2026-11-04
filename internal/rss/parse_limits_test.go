@@ -18,6 +18,7 @@ const (
 	blogBaseURL     = "https://example.com/blog/"
 	blogPostArticle = "https://example.com/blog/posts/article"
 	postsDir        = "posts/"
+	atomCategory    = `<category term=" %s "/>`
 )
 
 var limitTestFormats = []struct {
