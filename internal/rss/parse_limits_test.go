@@ -283,10 +283,16 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 			for _, name := range []string{"first", "second"} {
 				image := fmt.Sprintf(`<media:content medium="image" url="https://example.com/%s.png"/>`, name)
 				links := ""
-				if format.name == formatAtom {
+				if format.name == formatAtom || format.name == "atom without xmlns" {
 					// Fill all three retained link roles on each Atom entry.
 					links = fmt.Sprintf(`<link rel="self" href="self"/><link href="https://example.com/%s"/>`, name)
-					image = fmt.Sprintf(`<link rel="enclosure" type="image/png" href="https://example.com/%s.png"/>`, name)
+					if format.name == formatAtom {
+						image = fmt.Sprintf(`<link rel="enclosure" type="image/png" href="https://example.com/%s.png"/>`, name)
+					} else {
+						// Direct media:content shares a local name with Atom content;
+						// the loose decoder uses the unambiguous thumbnail element.
+						image = fmt.Sprintf(`<media:thumbnail url="https://example.com/%s.png"/>`, name)
+					}
 				}
 				fmt.Fprintf(&body, format.entry, links+strings.Repeat(image, 4))
 			}
