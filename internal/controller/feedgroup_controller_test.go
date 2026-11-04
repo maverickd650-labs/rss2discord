@@ -1310,6 +1310,77 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(feedStatusFor(updated, rssServer.URL()).ETag).To(Equal(`"v1"`))
 			Expect(feedsWithError(updated)).To(Equal(0))
 		})
+
+		It("should halt processing later feeds on rate limit and preserve the second feed status", func() {
+			const feedGroupName = "test-feedgroup-rate-limit-multi"
+
+			By("Creating mock Discord webhook server and two mock RSS servers")
+			discordServer := NewMockDiscordServer(GinkgoTB())
+			DeferCleanup(discordServer.Close)
+
+			rssServerA := NewMockRSSServer(createRSSFeed(testEntry{
+				title:   "Feed A Entry",
+				guid:    "feed-a-1",
+				link:    "https://example.com/a-1",
+				pubDate: time.Now().Format(time.RFC1123Z),
+			}))
+			DeferCleanup(rssServerA.Close)
+			rssServerA.SetETag(`"etag-a"`)
+
+			rssServerB := NewMockRSSServer(createRSSFeed(testEntry{
+				title:   "Feed B Entry",
+				guid:    "feed-b-1",
+				link:    "https://example.com/b-1",
+				pubDate: time.Now().Format(time.RFC1123Z),
+			}))
+			DeferCleanup(rssServerB.Close)
+			rssServerB.SetETag(`"etag-b"`)
+
+			createWebhookSecret(ctx, "secret-rate-limit-multi", discordServer.URL())
+
+			fg := newTestFeedGroup(feedGroupName, "secret-rate-limit-multi", rssServerA.URL(), func(fg *rss2discordv1alpha1.FeedGroup) {
+				fg.Spec.RetryInterval = "5m"
+				fg.Spec.Feeds = append(fg.Spec.Feeds, rss2discordv1alpha1.FeedSpec{
+					RSSUrl: rssServerB.URL(),
+					Format: "{{.Title}}",
+				})
+			})
+			Expect(k8sClient.Create(ctx, fg)).To(Succeed())
+
+			reconciler := newTestReconciler(discordServer)
+
+			By("Simulating feed B previously delivered with persisted status and watermark")
+			fgCreated := &rss2discordv1alpha1.FeedGroup{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, fgCreated)).To(Succeed())
+			ensureFeedStatuses(fgCreated)
+			statusB := feedStatusFor(fgCreated, rssServerB.URL())
+			statusB.LastSeenEntry = "feed-b-0"
+			statusB.ETag = `"etag-b-old"`
+			statusB.LastChecked = time.Now().Add(-10 * time.Minute).Format(time.RFC3339)
+			Expect(k8sClient.Status().Update(ctx, fgCreated)).To(Succeed())
+
+			By("Configuring Discord server to rate-limit feed A delivery")
+			discordServer.FailNextRequestsRateLimited(1, "7")
+
+			By("Running reconciliation, where feed A hits rate limiting")
+			result, err := reconcileFeedGroup(ctx, reconciler, feedGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(discordServer.MessageCount()).To(Equal(0))
+			Expect(result.RequeueAfter).To(Equal(7 * time.Second))
+
+			By("Asserting feed A status records the rate limit error and did not persist its new ETag")
+			updated := &rss2discordv1alpha1.FeedGroup{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, updated)).To(Succeed())
+			statusA := feedStatusFor(updated, rssServerA.URL())
+			Expect(statusA.LastError).To(ContainSubstring("rate limited"))
+			Expect(statusA.ETag).To(BeEmpty())
+
+			By("Asserting feed B was untouched by the rate limit on feed A")
+			statusBUpdated := feedStatusFor(updated, rssServerB.URL())
+			Expect(statusBUpdated.LastSeenEntry).To(Equal("feed-b-0"))
+			Expect(statusBUpdated.ETag).To(Equal(`"etag-b-old"`))
+			Expect(statusBUpdated.LastError).To(BeEmpty())
+		})
 	})
 
 	Describe("FeedGroup validation", func() {
