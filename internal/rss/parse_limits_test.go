@@ -14,6 +14,7 @@ import (
 // after the entry limit has been reached.
 // Literals repeated across the limit tests below; constants keep goconst quiet.
 const (
+	formatAtomWithoutXMLNS = "atom without xmlns"
 	hrefArticle     = "article"
 	blogBaseURL     = "https://example.com/blog/"
 	blogPostArticle = "https://example.com/blog/posts/article"
@@ -47,7 +48,7 @@ var limitTestFormats = []struct {
 		category: atomCategory,
 	},
 	{
-		name:     "atom without xmlns",
+		name:     formatAtomWithoutXMLNS,
 		document: `<feed xmlns:media="http://search.yahoo.com/mrss/">%s<title>After entries</title></feed>`,
 		entry:    `<entry>%s</entry>`,
 		category: atomCategory,
@@ -283,7 +284,7 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 			for _, name := range []string{"first", "second"} {
 				image := fmt.Sprintf(`<media:content medium="image" url="https://example.com/%s.png"/>`, name)
 				links := ""
-				if format.name == formatAtom || format.name == "atom without xmlns" {
+				if format.name == formatAtom || format.name == formatAtomWithoutXMLNS {
 					// Exercise retained Atom links on each entry.
 					links = fmt.Sprintf(`<link rel="self" href="self"/><link href="https://example.com/%s"/>`, name)
 					if format.name == formatAtom {
@@ -307,7 +308,7 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 				if want := "https://example.com/" + name + ".png"; entries[i].Image != want {
 					t.Fatalf("entry[%d] image = %q, want %q", i, entries[i].Image, want)
 				}
-				if want := "https://example.com/" + name; (format.name == formatAtom || format.name == "atom without xmlns") && entries[i].Link != want {
+				if want := "https://example.com/" + name; (format.name == formatAtom || format.name == formatAtomWithoutXMLNS) && entries[i].Link != want {
 					t.Fatalf("entry[%d] link = %q, want %q", i, entries[i].Link, want)
 				}
 			}
