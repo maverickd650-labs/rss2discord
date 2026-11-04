@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	v1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 	"k8s.io/client-go/tools/events"
 )
@@ -42,13 +42,13 @@ const (
 
 // reloadStatus replaces fg's status with a copy read back from its JSON form,
 // then renormalizes it the way Reconcile does before processing feeds.
-func reloadStatus(t *testing.T, fg *v1alpha1.FeedGroup) *v1alpha1.FeedStatus {
+func reloadStatus(t *testing.T, fg *v1beta1.FeedGroup) *v1beta1.FeedStatus {
 	t.Helper()
 	raw, err := json.Marshal(fg.Status)
 	if err != nil {
 		t.Fatalf("marshal status: %v", err)
 	}
-	var reloaded v1alpha1.FeedGroupStatus
+	var reloaded v1beta1.FeedGroupStatus
 	if err := json.Unmarshal(raw, &reloaded); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
@@ -62,9 +62,9 @@ func reloadStatus(t *testing.T, fg *v1alpha1.FeedGroup) *v1alpha1.FeedStatus {
 type pendingCase struct {
 	name string
 	// prepare makes the next processFeed calls leave the new entry pending.
-	prepare func(server *MockDiscordServer, feed *v1alpha1.FeedSpec)
+	prepare func(server *MockDiscordServer, feed *v1beta1.FeedSpec)
 	// fix lets the entry through.
-	fix func(feed *v1alpha1.FeedSpec)
+	fix func(feed *v1beta1.FeedSpec)
 }
 
 // Validators from a fetch that left anything pending must not replace the
@@ -75,20 +75,20 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 	for _, tc := range []pendingCase{
 		{
 			name: "send error",
-			prepare: func(server *MockDiscordServer, _ *v1alpha1.FeedSpec) {
+			prepare: func(server *MockDiscordServer, _ *v1beta1.FeedSpec) {
 				server.FailNextRequests(4, http.StatusInternalServerError)
 			},
-			fix: func(*v1alpha1.FeedSpec) {},
+			fix: func(*v1beta1.FeedSpec) {},
 		},
 		{
 			name:    "render error",
-			prepare: func(_ *MockDiscordServer, feed *v1alpha1.FeedSpec) { feed.Format = "{{.Title.Nope}}" },
-			fix:     func(feed *v1alpha1.FeedSpec) { feed.Format = "" },
+			prepare: func(_ *MockDiscordServer, feed *v1beta1.FeedSpec) { feed.Format = "{{.Title.Nope}}" },
+			fix:     func(feed *v1beta1.FeedSpec) { feed.Format = "" },
 		},
 		{
 			name:    "config error",
-			prepare: func(_ *MockDiscordServer, feed *v1alpha1.FeedSpec) { feed.Filter = &v1alpha1.Filter{Regex: "("} },
-			fix:     func(feed *v1alpha1.FeedSpec) { feed.Filter = nil },
+			prepare: func(_ *MockDiscordServer, feed *v1beta1.FeedSpec) { feed.Filter = &v1beta1.Filter{Regex: "("} },
+			fix:     func(feed *v1beta1.FeedSpec) { feed.Filter = nil },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

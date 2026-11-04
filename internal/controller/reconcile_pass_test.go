@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -52,11 +52,11 @@ func (f *urlFetcher) FetchEntries(_ context.Context, url string, _ rss.CacheVali
 }
 
 // passGroup is a two-feed FeedGroup (feed-a, feed-b) with ensured statuses.
-func passGroup(t *testing.T, name string) *v1alpha1.FeedGroup {
+func passGroup(t *testing.T, name string) *v1beta1.FeedGroup {
 	t.Helper()
 	fg, _ := newMetricsFeedGroup("reconcile-pass", name, tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
-	fg.Spec.Feeds = []v1alpha1.FeedSpec{
+	fg.Spec.Feeds = []v1beta1.FeedSpec{
 		{RSSUrl: passFeedA, Format: tmplTitle},
 		{RSSUrl: passFeedB, Format: tmplTitle},
 	}
@@ -81,10 +81,10 @@ func TestReconcilePass_RateLimitStopsLaterFeeds(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sender called %d times, want 1 (the second feed must not be attempted)", len(sender.sent))
 	}
-	if a := feedStatusFor(fg, passFeedA); a.LastError == "" || a.LastChecked == "" {
+	if a := feedStatusFor(fg, passFeedA); a.LastError == "" || a.LastChecked == nil {
 		t.Errorf("feed-a status = %+v, want the rate limit recorded", a)
 	}
-	if b := feedStatusFor(fg, passFeedB); b.LastChecked != "" || b.LastError != "" || b.RetryCount != 0 {
+	if b := feedStatusFor(fg, passFeedB); b.LastChecked != nil || b.LastError != "" || b.RetryCount != 0 {
 		t.Errorf("feed-b status = %+v, want untouched", b)
 	}
 	if len(plan.active) != 2 {
@@ -114,8 +114,8 @@ func TestReconcilePass_WithoutRateLimitEveryFeedIsProcessed(t *testing.T) {
 	if len(sender.sent) != 2 || len(fetcher.fetched) != 2 {
 		t.Fatalf("sent %d, fetched %d, want 2 each", len(sender.sent), len(fetcher.fetched))
 	}
-	if got := feedStatusFor(fg, passFeedB).LastChecked; got != passNow.Format(time.RFC3339) {
-		t.Errorf("LastChecked = %q, want the pass's now", got)
+	if got := feedStatusFor(fg, passFeedB).LastChecked; got == nil || !got.Time.Equal(passNow) {
+		t.Errorf("LastChecked = %v, want the pass's now", got)
 	}
 }
 
@@ -123,33 +123,33 @@ func TestReconcilePass_WithoutRateLimitEveryFeedIsProcessed(t *testing.T) {
 // wake time) unless force is set; a feed in permanent backoff is skipped even
 // when forced by the caller.
 func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
-	recent := passNow.Add(-time.Minute).Format(time.RFC3339)
+	recent := metav1TimeRFC3339(passNow.Add(-time.Minute).Format(time.RFC3339))
 	tests := []struct {
 		name        string
 		force       bool
-		prepare     func(a, b *v1alpha1.FeedStatus)
-		mutate      func(fg *v1alpha1.FeedGroup)
+		prepare     func(a, b *v1beta1.FeedStatus)
+		mutate      func(fg *v1beta1.FeedGroup)
 		wantFetched []string
 		wantNextDue bool
 	}{
 		{name: "never checked feeds are fetched", wantFetched: []string{passFeedA, passFeedB}},
 		{
 			name: "a paused feed is skipped",
-			mutate: func(fg *v1alpha1.FeedGroup) {
+			mutate: func(fg *v1beta1.FeedGroup) {
 				fg.Spec.Feeds[0].Paused = true
 			},
 			wantFetched: []string{passFeedB},
 		},
 		{
 			name: "recently checked feed waits for its interval",
-			prepare: func(a, _ *v1alpha1.FeedStatus) {
+			prepare: func(a, _ *v1beta1.FeedStatus) {
 				a.LastChecked = recent
 			},
 			wantFetched: []string{passFeedB}, wantNextDue: true,
 		},
 		{
 			name: "force fetches a recently checked feed",
-			prepare: func(a, _ *v1alpha1.FeedStatus) {
+			prepare: func(a, _ *v1beta1.FeedStatus) {
 				a.LastChecked = recent
 			},
 			force:       true,
@@ -157,9 +157,9 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 		},
 		{
 			name: "a backed-off feed is skipped",
-			prepare: func(_, b *v1alpha1.FeedStatus) {
+			prepare: func(_, b *v1beta1.FeedStatus) {
 				b.LastError, b.RetryCount = "404", 1
-				b.BackoffUntil = passNow.Add(time.Hour).Format(time.RFC3339)
+				b.BackoffUntil = metav1TimeRFC3339(passNow.Add(time.Hour).Format(time.RFC3339))
 			},
 			force:       true,
 			wantFetched: []string{passFeedA},
@@ -193,7 +193,7 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 // pruned, so openGroupSync can drop their metric series.
 func TestEnsureFeedStatuses_ReturnsPrunedURLs(t *testing.T) {
 	fg := passGroup(t, "fg-prune")
-	fg.Status.Feeds = append(fg.Status.Feeds, v1alpha1.FeedStatus{RSSUrl: "https://example.com/gone"})
+	fg.Status.Feeds = append(fg.Status.Feeds, v1beta1.FeedStatus{RSSUrl: "https://example.com/gone"})
 
 	pruned := ensureFeedStatuses(fg)
 
@@ -220,7 +220,7 @@ func TestOpenGroupSync_SpecChangeClearsPermanentBackoff(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fg := passGroup(t, "fg-backoff")
 			fg.Generation, fg.Status.ObservedGeneration = tc.generation, tc.observed
-			until := passNow.Add(time.Hour).Format(time.RFC3339)
+			until := metav1TimeRFC3339(passNow.Add(time.Hour).Format(time.RFC3339))
 			fs := feedStatusFor(fg, passFeedA)
 			fs.LastError, fs.RetryCount, fs.BackoffUntil = "404", 4, until
 
@@ -230,11 +230,11 @@ func TestOpenGroupSync_SpecChangeClearsPermanentBackoff(t *testing.T) {
 				t.Errorf("specChanged = %v, want %v", sync.specChanged, tc.wantChanged)
 			}
 			got := feedStatusFor(fg, passFeedA)
-			if kept := got.BackoffUntil == until && got.RetryCount == 4; kept != tc.wantKept {
-				t.Errorf("backoff kept = %v (BackoffUntil %q, RetryCount %d), want %v", kept, got.BackoffUntil, got.RetryCount, tc.wantKept)
+			if kept := got.BackoffUntil.Equal(until) && got.RetryCount == 4; kept != tc.wantKept {
+				t.Errorf("backoff kept = %v (BackoffUntil %v, RetryCount %d), want %v", kept, got.BackoffUntil, got.RetryCount, tc.wantKept)
 			}
 			snap := sync.original.Feeds[0]
-			if snap.BackoffUntil != got.BackoffUntil || snap.RetryCount != got.RetryCount {
+			if !timePtrEqual(snap.BackoffUntil, got.BackoffUntil) || snap.RetryCount != got.RetryCount {
 				t.Errorf("snapshot = %+v, want the post-reset status", snap)
 			}
 			got.RetryCount = 99

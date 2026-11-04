@@ -90,7 +90,7 @@ func TestDisplayOfSanitizesPerField(t *testing.T) {
 		field     string
 		got, want any
 	}{
-		{"Title is HTML-stripped", got.Title, "Title"},
+		{"Title is HTML-stripped", got.Title, testTitle},
 		{"Description is HTML-stripped", got.Description, "Desc"},
 		{"FeedTitle is HTML-stripped", got.FeedTitle, "Feed"},
 		{"Link drops a non-http(s) scheme", got.Link, ""},

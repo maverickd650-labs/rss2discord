@@ -28,7 +28,7 @@ import (
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -84,12 +84,12 @@ func syncSpec(catchUpLimit int) feedSyncSpec {
 
 // currentStatus is a feed status in the current identity scheme that was
 // initialized by an earlier sync and holds the "old" validators.
-func currentStatus() *v1alpha1.FeedStatus {
-	return &v1alpha1.FeedStatus{
+func currentStatus() *v1beta1.FeedStatus {
+	return &v1beta1.FeedStatus{
 		RSSUrl:        exampleFeedURL,
 		Initialized:   true,
 		StateVersion:  currentStateVersion,
-		LastChecked:   "2026-01-01T00:00:00Z",
+		LastChecked:   metav1TimeRFC3339("2026-01-01T00:00:00Z"),
 		ETag:          validatorsOld,
 		LastModified:  syncTestOldMod,
 		LastSent:      map[string]string{},
@@ -98,21 +98,21 @@ func currentStatus() *v1alpha1.FeedStatus {
 }
 
 // failing marks fs as stuck on a failure that a settled sync would clear.
-func failing(fs *v1alpha1.FeedStatus) *v1alpha1.FeedStatus {
-	fs.LastError, fs.RetryCount, fs.BackoffUntil = testBoom, 3, "2031-02-03T04:05:06Z"
+func failing(fs *v1beta1.FeedStatus) *v1beta1.FeedStatus {
+	fs.LastError, fs.RetryCount, fs.BackoffUntil = testBoom, 3, metav1TimeRFC3339("2031-02-03T04:05:06Z")
 	return fs
 }
 
-func assertFailureCleared(t *testing.T, fs *v1alpha1.FeedStatus, want bool) {
+func assertFailureCleared(t *testing.T, fs *v1beta1.FeedStatus, want bool) {
 	t.Helper()
-	cleared := fs.LastError == "" && fs.RetryCount == 0 && fs.BackoffUntil == ""
+	cleared := fs.LastError == "" && fs.RetryCount == 0 && fs.BackoffUntil == nil
 	if cleared != want {
-		t.Fatalf("failure state: LastError=%q RetryCount=%d BackoffUntil=%q, cleared=%t want %t",
+		t.Fatalf("failure state: LastError=%q RetryCount=%d BackoffUntil=%v, cleared=%t want %t",
 			fs.LastError, fs.RetryCount, fs.BackoffUntil, cleared, want)
 	}
 }
 
-func assertValidators(t *testing.T, fs *v1alpha1.FeedStatus, etag, lastModified string) {
+func assertValidators(t *testing.T, fs *v1beta1.FeedStatus, etag, lastModified string) {
 	t.Helper()
 	if fs.ETag != etag || fs.LastModified != lastModified {
 		t.Fatalf("validators = %q / %q, want %q / %q", fs.ETag, fs.LastModified, etag, lastModified)
@@ -132,7 +132,7 @@ func expectPanic(t *testing.T, what string, fn func()) {
 // A pending sync still initializes the status and stamps its stateVersion; it
 // only withholds the validators.
 func TestFeedSync_PendingStillInitializesTheStatus(t *testing.T) {
-	fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}} // never checked
+	fs := &v1beta1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}} // never checked
 	s := openFeedSync(fs, syncFetch(syncEntries(3)...), syncSpec(defaultCatchUpLimit))
 	s.begin()
 	s.close(syncPending)
@@ -174,7 +174,7 @@ func TestFeedSync_ValidatorsAreOnlyPersistedWhenNothingIsPending(t *testing.T) {
 
 func TestFeedSync_NotModified(t *testing.T) {
 	t.Run("confirms and stores the validators", func(t *testing.T) {
-		fs := failing(&v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}})
+		fs := failing(&v1beta1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}})
 		fetch := rss.FetchResult{NotModified: true, ETag: validatorsNext}
 		s := openFeedSync(fs, fetch, syncSpec(defaultCatchUpLimit))
 		verdict, ok := s.withoutEntries()
@@ -221,9 +221,9 @@ func TestFeedSync_Empty(t *testing.T) {
 func TestFeedSync_FailedAndMisconfiguredFetchesSettleNothing(t *testing.T) {
 	for _, verdict := range []syncVerdict{syncFetchFailed, syncConfigError} {
 		t.Run(fmt.Sprint(verdict), func(t *testing.T) {
-			fs := failing(&v1alpha1.FeedStatus{
+			fs := failing(&v1beta1.FeedStatus{
 				RSSUrl:        exampleFeedURL,
-				LastChecked:   "2025-12-29T00:00:00Z",
+				LastChecked:   metav1TimeRFC3339("2025-12-29T00:00:00Z"),
 				LastSeenEntry: "watermark",
 				ETag:          validatorsOld,
 				LastSent:      map[string]string{"key": "2025-12-30T00:00:00Z"},
@@ -296,7 +296,7 @@ func TestFeedSync_CatchUp(t *testing.T) {
 // the watermark, nothing is sent, and later syncs resume right behind it.
 func TestFeedSync_BacklogSkipOnAFirstSync(t *testing.T) {
 	all := syncEntries(6)
-	fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{RSSUrl: exampleFeedURL, LastSent: map[string]string{}}
 
 	first := openFeedSync(fs, syncFetch(all[:4]...), syncSpec(0))
 	first.begin()
@@ -494,10 +494,10 @@ func TestProcessFeed_PanicAfterASendKeepsTheSentEntryRecorded(t *testing.T) {
 }
 
 func TestFeedSync_SecureAfterPanicLeavesAStartedCloseAlone(t *testing.T) {
-	fs := &v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "after-close"}
+	fs := &v1beta1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "after-close"}
 	s := openFeedSync(fs, oneEntryFetch(), feedSyncSpec{catchUpLimit: defaultCatchUpLimit, now: testReconcileInstant})
 	s.closing = true
-	s.secureAfterPanic(&v1alpha1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "before"}, feedAttempt{}, nil)
+	s.secureAfterPanic(&v1beta1.FeedStatus{RSSUrl: exampleFeedURL, LastSeenEntry: "before"}, feedAttempt{}, nil)
 	if fs.LastSeenEntry != "after-close" || fs.Initialized {
 		t.Fatalf("secureAfterPanic changed a status close had started settling: %+v", fs)
 	}

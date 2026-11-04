@@ -136,9 +136,12 @@ type Embed struct {
 	ThumbnailURL string
 	// ImageURL is the large image shown below the embed's description, as
 	// opposed to the small ThumbnailURL beside it.
-	ImageURL   string
-	AuthorName string
-	FooterText string
+	ImageURL      string
+	AuthorName    string
+	AuthorURL     string
+	AuthorIconURL string
+	FooterText    string
+	FooterIconURL string
 }
 
 // Message is a single Discord webhook delivery. Content is sent as a plain
@@ -190,11 +193,14 @@ type discordEmbedMedia struct {
 }
 
 type discordEmbedAuthor struct {
-	Name string `json:"name"`
+	Name    string `json:"name,omitempty"`
+	URL     string `json:"url,omitempty"`
+	IconURL string `json:"icon_url,omitempty"`
 }
 
 type discordEmbedFooter struct {
-	Text string `json:"text"`
+	Text    string `json:"text,omitempty"`
+	IconURL string `json:"icon_url,omitempty"`
 }
 
 // RateLimitError indicates Discord responded with HTTP 429 and how long the
@@ -459,11 +465,18 @@ func embedToPayload(e Embed) discordEmbed {
 	if e.ImageURL != "" {
 		payload.Image = &discordEmbedMedia{URL: e.ImageURL}
 	}
-	if e.AuthorName != "" {
-		payload.Author = &discordEmbedAuthor{Name: e.AuthorName}
+	if e.AuthorName != "" || e.AuthorURL != "" || e.AuthorIconURL != "" {
+		payload.Author = &discordEmbedAuthor{
+			Name:    e.AuthorName,
+			URL:     e.AuthorURL,
+			IconURL: e.AuthorIconURL,
+		}
 	}
-	if e.FooterText != "" {
-		payload.Footer = &discordEmbedFooter{Text: e.FooterText}
+	if e.FooterText != "" || e.FooterIconURL != "" {
+		payload.Footer = &discordEmbedFooter{
+			Text:    e.FooterText,
+			IconURL: e.FooterIconURL,
+		}
 	}
 	return payload
 }

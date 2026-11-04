@@ -24,7 +24,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	v1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 const (
@@ -34,11 +34,11 @@ const (
 	reasonHTTP500   = "HTTP500"
 )
 
-func feedWithReachable(url string, status metav1.ConditionStatus, reason, lastError string) v1alpha1.FeedStatus {
-	fs := v1alpha1.FeedStatus{RSSUrl: url, LastError: lastError}
+func feedWithReachable(url string, status metav1.ConditionStatus, reason, lastError string) v1beta1.FeedStatus {
+	fs := v1beta1.FeedStatus{RSSUrl: url, LastError: lastError}
 	if status != "" {
 		fs.Conditions = []metav1.Condition{{
-			Type: v1alpha1.FeedConditionTypeReachable, Status: status, Reason: reason,
+			Type: v1beta1.FeedConditionTypeReachable, Status: status, Reason: reason,
 		}}
 	}
 	return fs
@@ -56,7 +56,7 @@ func TestSummarizeGroup(t *testing.T) {
 		name string
 		// in
 		interval      string
-		feeds         []v1alpha1.FeedStatus
+		feeds         []v1beta1.FeedStatus
 		webhookErr    error
 		priorReady    *metav1.Condition
 		wantReady     metav1.ConditionStatus
@@ -68,7 +68,7 @@ func TestSummarizeGroup(t *testing.T) {
 	}{
 		{
 			name:          "healthy group",
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionTrue, "FetchSucceeded", "")},
+			feeds:         []v1beta1.FeedStatus{feedWithReachable("a", metav1.ConditionTrue, "FetchSucceeded", "")},
 			wantReady:     metav1.ConditionTrue,
 			wantReadyWhy:  whyReconciled,
 			wantReachable: metav1.ConditionTrue,
@@ -76,7 +76,7 @@ func TestSummarizeGroup(t *testing.T) {
 		},
 		{
 			name:          "feed error flips Ready but not FeedReachable when the feed was reachable",
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionTrue, "FetchSucceeded", "send failed")},
+			feeds:         []v1beta1.FeedStatus{feedWithReachable("a", metav1.ConditionTrue, "FetchSucceeded", "send failed")},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  whyFeedErrors,
 			wantReachable: metav1.ConditionTrue,
@@ -84,7 +84,7 @@ func TestSummarizeGroup(t *testing.T) {
 		},
 		{
 			name: "unreachable feed reports the dominant reason on both conditions",
-			feeds: []v1alpha1.FeedStatus{
+			feeds: []v1beta1.FeedStatus{
 				feedWithReachable("a", metav1.ConditionFalse, reasonHTTP404, "404"),
 				feedWithReachable("b", metav1.ConditionFalse, reasonHTTP404, "404"),
 				feedWithReachable("c", metav1.ConditionFalse, "Timeout", "timeout"),
@@ -96,7 +96,7 @@ func TestSummarizeGroup(t *testing.T) {
 		},
 		{
 			name:          "unknown or missing Reachable is not a failure",
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionUnknown, "Pending", ""), feedWithReachable("b", "", "", "")},
+			feeds:         []v1beta1.FeedStatus{feedWithReachable("a", metav1.ConditionUnknown, "Pending", ""), feedWithReachable("b", "", "", "")},
 			wantReady:     metav1.ConditionTrue,
 			wantReadyWhy:  whyReconciled,
 			wantReachable: metav1.ConditionTrue,
@@ -105,7 +105,7 @@ func TestSummarizeGroup(t *testing.T) {
 		{
 			name:          "invalid interval outranks feed errors and emits once",
 			interval:      badInterval,
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, reasonHTTP500, "boom")},
+			feeds:         []v1beta1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, reasonHTTP500, "boom")},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  reasonInvalidInterval,
 			wantReachable: metav1.ConditionFalse,
@@ -116,7 +116,7 @@ func TestSummarizeGroup(t *testing.T) {
 		{
 			name:          "webhook error outranks invalid interval and emits no Event",
 			interval:      badInterval,
-			feeds:         []v1alpha1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, reasonHTTP500, "boom")},
+			feeds:         []v1beta1.FeedStatus{feedWithReachable("a", metav1.ConditionFalse, reasonHTTP500, "boom")},
 			webhookErr:    webhookErr,
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  "WebhookUnresolved",
@@ -127,7 +127,7 @@ func TestSummarizeGroup(t *testing.T) {
 			name:     "no Event when InvalidInterval is already recorded with the same message",
 			interval: badInterval,
 			// Message filled in by the test from cadenceOf.
-			priorReady:    &metav1.Condition{Type: v1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: reasonInvalidInterval},
+			priorReady:    &metav1.Condition{Type: v1beta1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: reasonInvalidInterval},
 			wantReady:     metav1.ConditionFalse,
 			wantReadyWhy:  reasonInvalidInterval,
 			wantReachable: metav1.ConditionTrue,
@@ -137,7 +137,7 @@ func TestSummarizeGroup(t *testing.T) {
 			name:     "Event fires again when the InvalidInterval message changes",
 			interval: badInterval,
 			priorReady: &metav1.Condition{
-				Type: v1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse,
+				Type: v1beta1.ConditionTypeReady, Status: metav1.ConditionFalse,
 				Reason: reasonInvalidInterval, Message: "spec.retryInterval: something else",
 			},
 			wantReady:     metav1.ConditionFalse,
@@ -151,7 +151,7 @@ func TestSummarizeGroup(t *testing.T) {
 			name:     "no Event when the interval is fixed",
 			interval: "5m",
 			priorReady: &metav1.Condition{
-				Type: v1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse,
+				Type: v1beta1.ConditionTypeReady, Status: metav1.ConditionFalse,
 				Reason: reasonInvalidInterval, Message: "old",
 			},
 			wantReady:     metav1.ConditionTrue,
@@ -163,10 +163,10 @@ func TestSummarizeGroup(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fg := &v1alpha1.FeedGroup{
+			fg := &v1beta1.FeedGroup{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "fg", Generation: 3},
-				Spec:       v1alpha1.FeedGroupSpec{Interval: tc.interval},
-				Status:     v1alpha1.FeedGroupStatus{Feeds: tc.feeds},
+				Spec:       v1beta1.FeedGroupSpec{Interval: tc.interval},
+				Status:     v1beta1.FeedGroupStatus{Feeds: tc.feeds},
 			}
 			wantMessage := ""
 			if err := cadenceOf(&fg.Spec).err; err != nil {
@@ -192,11 +192,11 @@ func TestSummarizeGroup(t *testing.T) {
 				t.Errorf("warning = %q, want empty", warning)
 			}
 
-			ready := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeReady)
+			ready := apimeta.FindStatusCondition(fg.Status.Conditions, v1beta1.ConditionTypeReady)
 			if ready == nil || ready.Status != tc.wantReady || ready.Reason != tc.wantReadyWhy {
 				t.Errorf("Ready = %+v, want status %s reason %s", ready, tc.wantReady, tc.wantReadyWhy)
 			}
-			reachable := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeFeedReachable)
+			reachable := apimeta.FindStatusCondition(fg.Status.Conditions, v1beta1.ConditionTypeFeedReachable)
 			if reachable == nil || reachable.Status != tc.wantReachable || reachable.Reason != tc.wantReachWhy {
 				t.Errorf("FeedReachable = %+v, want status %s reason %s", reachable, tc.wantReachable, tc.wantReachWhy)
 			}
@@ -236,24 +236,24 @@ func conditionsEqual(a, b []metav1.Condition) bool {
 // but yields to WebhookUnresolved (no feed was processed, so the webhook
 // failure is the more fundamental problem).
 func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
-	intervalErr := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: overflowingInterval}).err
+	intervalErr := cadenceOf(&v1beta1.FeedGroupSpec{Interval: overflowingInterval}).err
 	webhookErr := errors.New("secret missing")
 
-	readyReason := func(fg *v1alpha1.FeedGroup) string {
-		c := apimeta.FindStatusCondition(fg.Status.Conditions, v1alpha1.ConditionTypeReady)
+	readyReason := func(fg *v1beta1.FeedGroup) string {
+		c := apimeta.FindStatusCondition(fg.Status.Conditions, v1beta1.ConditionTypeReady)
 		if c == nil {
 			t.Fatal("Ready condition not set")
 		}
 		return c.Reason
 	}
 
-	failing := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u", LastError: testBoom}}}}
+	failing := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{RSSUrl: "u", LastError: testBoom}}}}
 	setReadyCondition(failing, nil, intervalErr)
 	if got := readyReason(failing); got != reasonInvalidInterval {
 		t.Fatalf("with a failing feed and a bad interval: reason = %q, want %q", got, reasonInvalidInterval)
 	}
 
-	both := &v1alpha1.FeedGroup{}
+	both := &v1beta1.FeedGroup{}
 	setReadyCondition(both, webhookErr, intervalErr)
 	if got := readyReason(both); got != "WebhookUnresolved" {
 		t.Fatalf("with a webhook failure and a bad interval: reason = %q, want WebhookUnresolved", got)
@@ -261,12 +261,12 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 
 	// A feed that panicked before handling anything was restored without a
 	// failure, so the feeds alone would read healthy: the panic decides Ready.
-	panicked := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{{RSSUrl: "u"}}}}
+	panicked := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{RSSUrl: "u"}}}}
 	setReadyCondition(panicked, &feedPanic{url: "u", value: testBoom, stack: []byte("goroutine 1")}, intervalErr)
 	if got := readyReason(panicked); got != reasonReconcilePanicked {
 		t.Fatalf("after a feed panicked: reason = %q, want %q", got, reasonReconcilePanicked)
 	}
-	if msg := apimeta.FindStatusCondition(panicked.Status.Conditions, v1alpha1.ConditionTypeReady).Message; strings.Contains(msg, testBoom) || strings.Contains(msg, "goroutine") {
+	if msg := apimeta.FindStatusCondition(panicked.Status.Conditions, v1beta1.ConditionTypeReady).Message; strings.Contains(msg, testBoom) || strings.Contains(msg, "goroutine") {
 		t.Fatalf("Ready message %q carries the panic value or stack", msg)
 	}
 

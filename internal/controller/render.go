@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/msgtemplate"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
@@ -43,7 +43,7 @@ const defaultMessageFormat = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.L
 // feed per reconcile, instead of reparsing it for every entry sent.
 // A blank feed format falls back to the group format, then defaultMessageFormat.
 // Template parse errors are returned to the caller.
-func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*msgtemplate.Template, error) {
+func compileMessageTemplate(feedGroup *v1beta1.FeedGroup, feed *v1beta1.FeedSpec) (*msgtemplate.Template, error) {
 	tmplText := cmp.Or(strings.TrimSpace(feed.Format), strings.TrimSpace(feedGroup.Spec.Format), defaultMessageFormat)
 	return msgtemplate.Compile("discordMessage", tmplText, defaultMessageFormat)
 }
@@ -51,7 +51,7 @@ func compileMessageTemplate(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSp
 // resolveEmbedSpec returns the feed's embed config if it set one, otherwise
 // falling back to the FeedGroup's. Returns nil if neither configured one,
 // meaning the feed sends plain-text content.
-func resolveEmbedSpec(feedGroup *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) *v1alpha1.EmbedSpec {
+func resolveEmbedSpec(feedGroup *v1beta1.FeedGroup, feed *v1beta1.FeedSpec) *v1beta1.EmbedSpec {
 	return cmp.Or(feed.Embed, feedGroup.Spec.Embed)
 }
 
@@ -88,9 +88,9 @@ func renderTemplate(tmpl *msgtemplate.Template, entry displayEntry) (string, err
 // enabled embed with no description template). Build one with newFeedRenderer
 // once per processFeed.
 type feedRenderer struct {
-	group                            *v1alpha1.FeedGroup
-	feed                             *v1alpha1.FeedSpec
-	embed                            *v1alpha1.EmbedSpec
+	group                            *v1beta1.FeedGroup
+	feed                             *v1beta1.FeedSpec
+	embed                            *v1beta1.EmbedSpec
 	content, description, threadName *msgtemplate.Template
 	filter                           entryFilter
 }
@@ -100,7 +100,7 @@ type feedRenderer struct {
 // description template if the embed is enabled or the content template if not,
 // plus the forum thread-name template when one is set. The first config error
 // is returned unwrapped, checked in that order.
-func newFeedRenderer(group *v1alpha1.FeedGroup, feed *v1alpha1.FeedSpec) (*feedRenderer, error) {
+func newFeedRenderer(group *v1beta1.FeedGroup, feed *v1beta1.FeedSpec) (*feedRenderer, error) {
 	filter, err := compileEntryFilter(feed.Filter)
 	if err != nil {
 		return nil, err
@@ -134,7 +134,8 @@ func (fr *feedRenderer) matches(entry rss.Entry) bool {
 // be sent: an embed (colored bubble with title/description and an optional image) when
 // the resolved embed is enabled, or plain text content otherwise. It also resolves
 // forum-channel thread targeting (ForumThreadID takes precedence over a
-// rendered ForumThreadName) and group-level webhook branding.
+// rendered ForumThreadName) and webhook branding (FeedSpec overrides FeedGroupSpec,
+// which in turn overrides Discord webhook defaults).
 // ImageStyle selects a large image or, by default, a thumbnail. Template execution
 // errors and blank plain-text content or rendered thread names return an empty
 // message and an error. The message is fitted to Discord's length limits by a
@@ -145,8 +146,8 @@ func (fr *feedRenderer) matches(entry rss.Entry) bool {
 func (fr *feedRenderer) build(raw rss.Entry) (discord.Message, int, error) {
 	entry := displayOf(raw)
 	msg := discord.Message{
-		Username:  fr.group.Spec.Username,
-		AvatarURL: fr.group.Spec.AvatarURL,
+		Username:  cmp.Or(fr.feed.Username, fr.group.Spec.Username),
+		AvatarURL: cmp.Or(fr.feed.AvatarURL, fr.group.Spec.AvatarURL),
 	}
 
 	if fr.embed != nil && fr.embed.Enabled {
@@ -155,15 +156,18 @@ func (fr *feedRenderer) build(raw rss.Entry) (discord.Message, int, error) {
 			return discord.Message{}, 0, err
 		}
 		msg.Embed = &discord.Embed{
-			Title:       entry.Title,
-			Description: description,
-			URL:         entry.Link,
-			Color:       parseHexColor(fr.embed.Color),
-			Timestamp:   entry.Published,
-			AuthorName:  fr.embed.AuthorName,
-			FooterText:  fr.embed.FooterText,
+			Title:         entry.Title,
+			Description:   description,
+			URL:           entry.Link,
+			Color:         parseHexColor(fr.embed.Color),
+			Timestamp:     entry.Published,
+			AuthorName:    fr.embed.AuthorName,
+			AuthorURL:     httpURLOrEmpty(fr.embed.AuthorURL),
+			AuthorIconURL: httpURLOrEmpty(fr.embed.AuthorIconURL),
+			FooterText:    fr.embed.FooterText,
+			FooterIconURL: httpURLOrEmpty(fr.embed.FooterIconURL),
 		}
-		if image := entry.Image; fr.embed.ImageStyle == v1alpha1.EmbedImageStyleImage {
+		if image := entry.Image; fr.embed.ImageStyle == v1beta1.EmbedImageStyleImage {
 			msg.Embed.ImageURL = image
 		} else {
 			msg.Embed.ThumbnailURL = image

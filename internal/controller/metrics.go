@@ -22,7 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	v1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // Metric label names, shared across the vectors below and
@@ -241,7 +241,7 @@ type groupMetrics struct {
 }
 
 // metricsFor returns the handle for feedGroup.
-func metricsFor(feedGroup *v1alpha1.FeedGroup) groupMetrics {
+func metricsFor(feedGroup *v1beta1.FeedGroup) groupMetrics {
 	return groupMetrics{namespace: feedGroup.Namespace, name: feedGroup.Name}
 }
 
@@ -309,10 +309,11 @@ func (m groupMetrics) forgetFeed(rssURL string) {
 // series are dropped (a feed paused while broken would otherwise alert
 // forever), and an empty or unparsable LastChecked yields no timestamp series
 // so a feed that simply hasn't been checked yet can't look 50 years stale.
-func (m groupMetrics) syncFeedState(feedGroup *v1alpha1.FeedGroup) {
+func (m groupMetrics) syncFeedState(feedGroup *v1beta1.FeedGroup) {
 	paused := make(map[string]bool, len(feedGroup.Spec.Feeds))
+	suspended := feedGroup.Spec.Suspend
 	for _, feed := range feedGroup.Spec.Feeds {
-		paused[feed.RSSUrl] = paused[feed.RSSUrl] || feed.Paused
+		paused[feed.RSSUrl] = paused[feed.RSSUrl] || feed.Paused || suspended
 	}
 
 	for i := range feedGroup.Status.Feeds {

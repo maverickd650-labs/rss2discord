@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	rss2discordv1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -59,7 +59,7 @@ var _ = BeforeSuite(func() {
 	ctx, cancel = context.WithCancel(context.TODO())
 
 	var err error
-	err = rss2discordv1alpha1.AddToScheme(scheme.Scheme)
+	err = rss2discordv1beta1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

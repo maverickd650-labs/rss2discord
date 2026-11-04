@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -175,7 +175,7 @@ func TestMigratePreviousIdentities(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: maps.Clone(tc.sent)}
+			fs := &v1beta1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: maps.Clone(tc.sent)}
 			// Check both the initial migration and its idempotent second pass.
 			for pass := range 2 {
 				newDeliveryLedger(fs, tc.entries)
@@ -195,7 +195,7 @@ func TestMigratePreviousIdentities(t *testing.T) {
 func TestMigratePreviousIdentities_LongWatermark(t *testing.T) {
 	oldID := prevLinkOld + strings.Repeat("a", maxStatusTextBytes)
 	entry := changedID(prevIDNew, rss.IDFromGUID, oldID, rss.IDFromGUID)
-	fs := &v1alpha1.FeedStatus{LastSeenEntry: clampWatermark(normalizeIdentity(oldID))}
+	fs := &v1beta1.FeedStatus{LastSeenEntry: clampWatermark(normalizeIdentity(oldID))}
 
 	newDeliveryLedger(fs, []rss.Entry{entry})
 
@@ -211,7 +211,7 @@ func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(identityStateNS, "previous-identity", "{{.Title}}")
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	fs := feedStatusFor(fg, feed.RSSUrl)
-	fs.LastChecked, fs.Initialized, fs.StateVersion = "2025-12-29T00:00:00Z", true, currentStateVersion
+	fs.LastChecked, fs.Initialized, fs.StateVersion = metav1TimeRFC3339("2025-12-29T00:00:00Z"), true, currentStateVersion
 	fs.LastSeenEntry = prevIDOld
 	fs.LastSent = map[string]string{hashIdentity(prevIDOld): prevSentAt}
 
@@ -234,7 +234,7 @@ func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T) {
 	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
 	sibling := rss.Entry{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink, Title: "sibling"}
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
+	fs := &v1beta1.FeedStatus{LastSent: map[string]string{
 		hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt,
 	}}
 	newDeliveryLedger(fs, []rss.Entry{moved, sibling})
@@ -272,7 +272,7 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The full key was pruned; only the stripped key is left.
-			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
+			fs := &v1beta1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
 			newDeliveryLedger(fs, tc.entries)
 
 			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
@@ -323,7 +323,7 @@ func TestStrippedOwnership_OwnsPrevious(t *testing.T) {
 		{name: "a previous ID without a stripped form", entries: []rss.Entry{guidMover}, mover: guidMover},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := newDeliveryLedger(&v1alpha1.FeedStatus{}, tc.entries).ownsPrevious(indexOfEntry(tc.entries, tc.mover)); got != tc.want {
+			if got := newDeliveryLedger(&v1beta1.FeedStatus{}, tc.entries).ownsPrevious(indexOfEntry(tc.entries, tc.mover)); got != tc.want {
 				t.Errorf("ownsPrevious = %v, want %v", got, tc.want)
 			}
 		})
@@ -346,7 +346,7 @@ func TestMigratePreviousIdentities_SharedPreviousStrippedIdentityWithUniqueTarge
 		{name: "a current entry claims the previous stripped identity", entries: []rss.Entry{movedA, claimant}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{
+			fs := &v1beta1.FeedStatus{LastSent: map[string]string{
 				strippedKey(prevLinkOld): prevSentAt,
 			}}
 			ledger := newDeliveryLedger(fs, tc.entries)
@@ -374,7 +374,7 @@ func TestMigratePreviousIdentities_SharedPreviousStrippedIdentityWithUniqueTarge
 // stripped identity and remains marked as sent across scans.
 func TestMigratePreviousIdentities_UnchangedStrippedIdentityRemainsSent(t *testing.T) {
 	moved := changedID(prevLinkOld+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink)
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
 
 	for pass := range 2 {
 		ledger := newDeliveryLedger(fs, []rss.Entry{moved})

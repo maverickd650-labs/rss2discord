@@ -19,7 +19,7 @@ package controller
 import (
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // feedCheck is the last check of one feed, as FeedStatus records it: whether it
@@ -30,11 +30,11 @@ import (
 // while the Ready condition and the feed_healthy gauge report only what status
 // says now (failed).
 type feedCheck struct {
-	fs *v1alpha1.FeedStatus
+	fs *v1beta1.FeedStatus
 }
 
 // checkOf returns the last check of fs.
-func checkOf(fs *v1alpha1.FeedStatus) feedCheck { return feedCheck{fs: fs} }
+func checkOf(fs *v1beta1.FeedStatus) feedCheck { return feedCheck{fs: fs} }
 
 // failed reports whether the last check left an error in status. It is what
 // Ready's FeedErrors count and the feed_healthy gauge (0) mean.
@@ -51,10 +51,12 @@ func (c feedCheck) failedOrRetrying() bool {
 }
 
 // lastChecked is the time of the last successful check, and false when the feed
-// has never been checked or LastChecked does not parse.
+// has never been checked.
 func (c feedCheck) lastChecked() (time.Time, bool) {
-	last, err := time.Parse(time.RFC3339, c.fs.LastChecked)
-	return last, err == nil
+	if c.fs.LastChecked == nil || c.fs.LastChecked.IsZero() {
+		return time.Time{}, false
+	}
+	return c.fs.LastChecked.Time, true
 }
 
 // untilDue is how long until a full interval has elapsed since the last

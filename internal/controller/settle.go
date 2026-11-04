@@ -19,9 +19,10 @@ package controller
 import (
 	"context"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -32,8 +33,8 @@ import (
 // advancing ObservedGeneration when appropriate, and writing via SSA.
 type groupSync struct {
 	reconciler  *FeedGroupReconciler
-	group       *v1alpha1.FeedGroup
-	original    *v1alpha1.FeedGroupStatus
+	group       *v1beta1.FeedGroup
+	original    *v1beta1.FeedGroupStatus
 	cadence     cadence
 	specChanged bool
 }
@@ -43,7 +44,7 @@ type groupSync struct {
 // for dropped feeds, resetting permanent backoffs on a spec change so the new
 // generation gets a fresh retry cycle, snapshotting the pre-reconcile status to
 // detect no-op writes, and resolving the group's cadence.
-func (r *FeedGroupReconciler) openGroupSync(feedGroup *v1alpha1.FeedGroup) *groupSync {
+func (r *FeedGroupReconciler) openGroupSync(feedGroup *v1beta1.FeedGroup) *groupSync {
 	for _, url := range ensureFeedStatuses(feedGroup) {
 		metricsFor(feedGroup).forgetFeed(url)
 	}
@@ -86,6 +87,33 @@ func (g *groupSync) settleWebhookError(ctx context.Context, err error) (ctrl.Res
 func (g *groupSync) settlePanic(ctx context.Context, panicked *feedPanic) error {
 	_, err := g.settle(ctx, retryRequeue(g.cadence), panicked, false)
 	return err
+}
+
+// settleSuspend settles a reconcile for a suspended FeedGroup: it sets Ready=Unknown
+// with reason Suspended, advances ObservedGeneration, refreshes feed metrics (aligning
+// with paused-feed behavior), and writes the status via SSA when changed. It does not
+// schedule a periodic requeue.
+func (g *groupSync) settleSuspend(ctx context.Context) (ctrl.Result, error) {
+	g.group.Status.ObservedGeneration = g.group.Generation
+	setSemanticCondition(&g.group.Status.Conditions, metav1.Condition{
+		Type:               v1beta1.ConditionTypeReady,
+		Status:             metav1.ConditionUnknown,
+		Reason:             reasonSuspended,
+		Message:            "FeedGroup reconciliation is suspended",
+		ObservedGeneration: g.group.Generation,
+	})
+
+	metricsFor(g.group).syncFeedState(g.group)
+
+	if apiequality.Semantic.DeepEqual(g.original, &g.group.Status) {
+		return ctrl.Result{}, nil
+	}
+
+	if err := g.reconciler.applyStatus(ctx, g.group); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // settle persists feedGroup's status and requeues after decision.wait() (the

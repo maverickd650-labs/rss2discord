@@ -37,7 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -94,7 +94,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	reconcileStart := time.Now()
 
-	var feedGroup v1alpha1.FeedGroup
+	var feedGroup v1beta1.FeedGroup
 	if err := r.Get(ctx, req.NamespacedName, &feedGroup); err != nil {
 		if apierrors.IsNotFound(err) {
 			// The FeedGroup is gone; drop its metric series so a deleted
@@ -114,6 +114,11 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}()
 
 	gs := r.openGroupSync(&feedGroup)
+
+	if feedGroup.Spec.Suspend {
+		log.Info("FeedGroup is suspended; skipping reconciliation")
+		return gs.settleSuspend(ctx)
+	}
 
 	webhookURL, err := r.webhook(ctx, &feedGroup)
 	if err != nil {
@@ -145,7 +150,7 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // skipped as not yet due, and the verdict is the fold of the feeds' verdicts.
 func reconcilePass(
 	ctx context.Context,
-	feedGroup *v1alpha1.FeedGroup,
+	feedGroup *v1beta1.FeedGroup,
 	fetcher FeedFetcher,
 	sender MessageSender,
 	recorder events.EventRecorder,
@@ -181,8 +186,8 @@ func reconcilePass(
 // in one reconcile, so a caller (Reconcile, or a test) builds one value instead
 // of passing a reconciler and a string of positional arguments.
 type feedRun struct {
-	group *v1alpha1.FeedGroup
-	feed  v1alpha1.FeedSpec
+	group *v1beta1.FeedGroup
+	feed  v1beta1.FeedSpec
 	// fetched is the feed's fetch: the result and the error FetchEntries
 	// returned for it.
 	fetched fetchOutcome
@@ -291,7 +296,7 @@ func (p *feedPanic) summary() string {
 // containedPass is reconcilePass with a *feedPanic recovered and returned
 // rather than propagated, so Reconcile can still write the group's status
 // (the feeds processed before it, and the panicking feed as secured).
-func containedPass(ctx context.Context, feedGroup *v1alpha1.FeedGroup, fetcher FeedFetcher, sender MessageSender,
+func containedPass(ctx context.Context, feedGroup *v1beta1.FeedGroup, fetcher FeedFetcher, sender MessageSender,
 	recorder events.EventRecorder, cad cadence, now time.Time, force bool,
 ) (verdict attemptVerdict, plan feedPlan, panicked *feedPanic) {
 	defer func() {
@@ -326,7 +331,7 @@ func (r *FeedGroupReconciler) withDefaults() {
 // clientsFor returns the feed fetcher and message sender for one reconcile,
 // wrapped in the timing adapters, which are the only place feedRequestDuration
 // is observed -- not the fetch goroutines or entryDelivery.
-func (r *FeedGroupReconciler) clientsFor(feedGroup *v1alpha1.FeedGroup, webhookURL string) (FeedFetcher, MessageSender) {
+func (r *FeedGroupReconciler) clientsFor(feedGroup *v1beta1.FeedGroup, webhookURL string) (FeedFetcher, MessageSender) {
 	r.withDefaults()
 	return newTimedFetcher(r.RSSClient, feedGroup.Namespace, feedGroup.Name),
 		newTimedSender(r.DiscordClientBuilder(webhookURL), feedGroup.Namespace, feedGroup.Name)
@@ -350,7 +355,7 @@ type fetchOutcome struct {
 // returns -- wg.Wait() is the barrier. Everything after it (sending, status
 // updates) is single-threaded, so no locking is needed. Do not mutate the
 // FeedGroup from the fetch goroutines.
-func fetchAll(ctx context.Context, f FeedFetcher, feedGroup *v1alpha1.FeedGroup, feeds []v1alpha1.FeedSpec) []fetchOutcome {
+func fetchAll(ctx context.Context, f FeedFetcher, feedGroup *v1beta1.FeedGroup, feeds []v1beta1.FeedSpec) []fetchOutcome {
 	outcomes := make([]fetchOutcome, len(feeds))
 	sem := make(chan struct{}, maxConcurrentFetches)
 	var wg sync.WaitGroup
@@ -383,7 +388,7 @@ func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// API-round-trip speed instead of RetryInterval). Only spec changes
 		// (generation bumps), creates and deletes matter; periodic work is
 		// driven by RequeueAfter.
-		For(&v1alpha1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+		For(&v1beta1.FeedGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 	if r.WatchWebhookSecrets {
 		// A replaced webhook Secret lets a feed backed off after a permanent
 		// send failure retry right away (see noteWebhookSecretVersion).

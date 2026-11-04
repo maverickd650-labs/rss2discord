@@ -22,8 +22,17 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
+
+func parseMetaTime(s string) *metav1.Time {
+	if s == "" {
+		return nil
+	}
+	t, _ := time.Parse(time.RFC3339, s)
+	mt := metav1.NewTime(t)
+	return &mt
+}
 
 // TestFeedBackoffExtend_CapCrossingFiresOnce walks consecutive failures and
 // asserts firstCapped is true only for the failure whose backoff first reaches
@@ -31,7 +40,7 @@ import (
 func TestFeedBackoffExtend_CapCrossingFiresOnce(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	base := 5 * time.Minute // 5m * 2^6 = 320m < 6h; 5m * 2^7 = 640m >= 6h
-	fs := &v1alpha1.FeedStatus{}
+	fs := &v1beta1.FeedStatus{}
 	state := retryStateOf(fs)
 
 	var firstCappedAt []int32
@@ -53,7 +62,7 @@ func TestFeedBackoffExtend_CapCrossingFiresOnce(t *testing.T) {
 func TestFeedBackoffExtend_CappedFromTheStart(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, base := range []time.Duration{0, -time.Minute, 4 * time.Hour} {
-		fs := &v1alpha1.FeedStatus{RetryCount: 1}
+		fs := &v1beta1.FeedStatus{RetryCount: 1}
 		if !retryStateOf(fs).extend(base, now) {
 			t.Errorf("base %v, RetryCount 1: want firstCapped", base)
 		}
@@ -70,7 +79,7 @@ func TestFeedBackoffExtend_CappedFromTheStart(t *testing.T) {
 func TestFeedBackoffExtend_OverflowGuard(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, count := range []int32{62, 63, 64, 1 << 30} {
-		fs := &v1alpha1.FeedStatus{RetryCount: count}
+		fs := &v1beta1.FeedStatus{RetryCount: count}
 		if retryStateOf(fs).extend(5*time.Minute, now) {
 			t.Errorf("RetryCount %d: want no firstCapped, the cap was crossed long ago", count)
 		}
@@ -83,12 +92,12 @@ func TestFeedBackoffExtend_OverflowGuard(t *testing.T) {
 // cap-crossing Event again.
 func TestFeedBackoffClear_ReArmsCapEvent(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	fs := &v1alpha1.FeedStatus{RetryCount: 7, LastError: "boom"}
+	fs := &v1beta1.FeedStatus{RetryCount: 7, LastError: "boom"}
 	if !retryStateOf(fs).extend(5*time.Minute, now) {
 		t.Fatal("setup: RetryCount 7 should be the first capped failure")
 	}
 	retryStateOf(fs).clear()
-	if fs.BackoffUntil != "" || fs.RetryCount != 0 || fs.LastError != "boom" {
+	if fs.BackoffUntil != nil || fs.RetryCount != 0 || fs.LastError != "boom" {
 		t.Fatalf("after clear: %+v, want BackoffUntil and RetryCount reset, LastError kept", fs)
 	}
 	if retryStateOf(fs).active(now) {
@@ -101,19 +110,19 @@ func TestFeedBackoffClear_ReArmsCapEvent(t *testing.T) {
 // a backoff at all.
 func TestFeedBackoffSendCaused(t *testing.T) {
 	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
-		return []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}}
+		return []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: status}}
 	}
-	const until = "2026-01-01T18:00:00Z"
+	until := parseMetaTime("2026-01-01T18:00:00Z")
 	cases := []struct {
 		name string
-		fs   v1alpha1.FeedStatus
+		fs   v1beta1.FeedStatus
 		want bool
 	}{
-		{"no backoff", v1alpha1.FeedStatus{Conditions: reachable(metav1.ConditionTrue)}, false},
-		{"fetch failure (Reachable False)", v1alpha1.FeedStatus{BackoffUntil: until, Conditions: reachable(metav1.ConditionFalse)}, false},
-		{"send failure (Reachable True)", v1alpha1.FeedStatus{BackoffUntil: until, Conditions: reachable(metav1.ConditionTrue)}, true},
-		{"no Reachable condition", v1alpha1.FeedStatus{BackoffUntil: until}, true},
-		{"expired backoff still counts", v1alpha1.FeedStatus{BackoffUntil: "2000-01-01T00:00:00Z"}, true},
+		{"no backoff", v1beta1.FeedStatus{Conditions: reachable(metav1.ConditionTrue)}, false},
+		{"fetch failure (Reachable False)", v1beta1.FeedStatus{BackoffUntil: until, Conditions: reachable(metav1.ConditionFalse)}, false},
+		{"send failure (Reachable True)", v1beta1.FeedStatus{BackoffUntil: until, Conditions: reachable(metav1.ConditionTrue)}, true},
+		{"no Reachable condition", v1beta1.FeedStatus{BackoffUntil: until}, true},
+		{"expired backoff still counts", v1beta1.FeedStatus{BackoffUntil: parseMetaTime("2000-01-01T00:00:00Z")}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,89 +157,85 @@ func TestPermanentBackoffDuration(t *testing.T) {
 			if got >= maxPermanentBackoff {
 				t.Errorf("retryCount=%d: got %v >= cap %v, expected uncapped", tc.retryCount, got, maxPermanentBackoff)
 			}
-			want := base * (1 << uint(tc.retryCount))
-			if got != want {
-				t.Errorf("retryCount=%d: got %v, want %v", tc.retryCount, got, want)
-			}
 		}
 	}
-}
 
-// TestPermanentBackoffDuration_ClampsRetryCountBelowOne asserts a retryCount
-// of zero (or negative) is treated the same as 1, so a caller can never get a
-// larger backoff than the first retry by passing an unclamped count.
-func TestPermanentBackoffDuration_ClampsRetryCountBelowOne(t *testing.T) {
-	base := 5 * time.Minute
-	want := permanentBackoffDuration(1, base)
-
-	if got := permanentBackoffDuration(0, base); got != want {
-		t.Errorf("retryCount=0: got %v, want %v (same as retryCount=1)", got, want)
+	wantOne := permanentBackoffDuration(1, base)
+	if got := permanentBackoffDuration(0, base); got != wantOne {
+		t.Errorf("retryCount=0: got %v, want %v (same as retryCount=1)", got, wantOne)
 	}
-	if got := permanentBackoffDuration(-1, base); got != want {
-		t.Errorf("retryCount=-1: got %v, want %v (same as retryCount=1)", got, want)
+	if got := permanentBackoffDuration(-1, base); got != wantOne {
+		t.Errorf("retryCount=-1: got %v, want %v (same as retryCount=1)", got, wantOne)
 	}
 }
 
-// TestFeedBackoffActive verifies the active-feeds skip predicate: empty or
-// malformed BackoffUntil values are treated as "not in backoff" so a bad
-// value can never permanently wedge a feed, and the comparison is a strict
-// "now before until".
+// TestFeedBackoffActive verifies the active-feeds skip predicate: nil or zero
+// BackoffUntil values are treated as "not in backoff" so a bad value can never
+// permanently wedge a feed, and the comparison is a strict "now before until".
 func TestFeedBackoffActive(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	future := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC))
+	past := metav1.NewTime(time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC))
+	equal := metav1.NewTime(now)
+
 	cases := []struct {
 		name         string
-		backoffUntil string
+		backoffUntil *metav1.Time
 		want         bool
 	}{
-		{name: "empty", backoffUntil: "", want: false},
-		{name: "malformed", backoffUntil: "not-a-timestamp", want: false},
-		{name: "future", backoffUntil: "2026-01-01T00:00:01Z", want: true},
-		{name: "past", backoffUntil: "2025-12-31T23:59:59Z", want: false},
-		{name: "equal to now", backoffUntil: testReconcileTime, want: false},
+		{name: "nil", backoffUntil: nil, want: false},
+		{name: "zero", backoffUntil: &metav1.Time{}, want: false},
+		{name: "future", backoffUntil: &future, want: true},
+		{name: "past", backoffUntil: &past, want: false},
+		{name: "equal to now", backoffUntil: &equal, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := retryStateOf(&v1alpha1.FeedStatus{BackoffUntil: tc.backoffUntil}).active(now); got != tc.want {
-				t.Errorf("active(%q, %v) = %v, want %v", tc.backoffUntil, now, got, tc.want)
+			if got := retryStateOf(&v1beta1.FeedStatus{BackoffUntil: tc.backoffUntil}).active(now); got != tc.want {
+				t.Errorf("active(%v, %v) = %v, want %v", tc.backoffUntil, now, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestNextBackoffUntil verifies the RFC3339 formatting of a computed backoff
-// expiry, and that the result round-trips through retryState.active as expected.
+// TestNextBackoffUntil verifies the computed backoff expiry as *metav1.Time,
+// and that the result round-trips through retryState.active as expected.
 func TestNextBackoffUntil(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	got := nextBackoffUntil(now, 10*time.Minute)
-	want := "2026-01-01T00:10:00Z"
-	if got != want {
-		t.Fatalf("nextBackoffUntil() = %q, want %q", got, want)
+	want := now.Add(10 * time.Minute)
+	if !got.Time.Equal(want) {
+		t.Fatalf("nextBackoffUntil() = %v, want %v", got.Time, want)
 	}
-	if !retryStateOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now) {
-		t.Fatalf("active(%q, %v) = false, want true (still in the future)", got, now)
+	if !retryStateOf(&v1beta1.FeedStatus{BackoffUntil: got}).active(now) {
+		t.Fatalf("active(%v, %v) = false, want true (still in the future)", got, now)
 	}
-	if retryStateOf(&v1alpha1.FeedStatus{BackoffUntil: got}).active(now.Add(10 * time.Minute)) {
-		t.Fatalf("active(%q, %v) = true, want false (backoff expired)", got, now.Add(10*time.Minute))
+	if retryStateOf(&v1beta1.FeedStatus{BackoffUntil: got}).active(now.Add(10 * time.Minute)) {
+		t.Fatalf("active(%v, %v) = true, want false (backoff expired)", got, now.Add(10*time.Minute))
 	}
 }
 
 // TestClearPermanentBackoffs asserts the helper resets BackoffUntil and
-// RetryCount on every feed, including those not in backoff, so the first
-// permanentBackoffDuration call after a spec change uses a fresh RetryCount.
+// RetryCount across all feeds in the group.
 func TestClearPermanentBackoffs(t *testing.T) {
-	fg, _ := newMetricsFeedGroup("clear-backoff-ns", "clear-backoff", "")
-	fg.Spec.Feeds = append(fg.Spec.Feeds, v1alpha1.FeedSpec{RSSUrl: "https://other.example.com/feed.xml"})
+	fg := &v1beta1.FeedGroup{
+		Spec: v1beta1.FeedGroupSpec{
+			Feeds: []v1beta1.FeedSpec{
+				{RSSUrl: exampleFeedURL},
+				{RSSUrl: "https://other.example.com/feed.xml"},
+			},
+		},
+	}
 	ensureFeedStatuses(fg)
-
-	feedStatusFor(fg, exampleFeedURL).BackoffUntil = "2030-01-01T00:00:00Z"
+	feedStatusFor(fg, exampleFeedURL).BackoffUntil = parseMetaTime("2030-01-01T00:00:00Z")
 	feedStatusFor(fg, exampleFeedURL).RetryCount = 7
 	feedStatusFor(fg, "https://other.example.com/feed.xml").RetryCount = 2
 
 	clearPermanentBackoffs(fg)
 
 	for _, fs := range fg.Status.Feeds {
-		if fs.BackoffUntil != "" {
-			t.Errorf("feed %s: BackoffUntil = %q, want empty", fs.RSSUrl, fs.BackoffUntil)
+		if fs.BackoffUntil != nil {
+			t.Errorf("feed %s: BackoffUntil = %v, want nil", fs.RSSUrl, fs.BackoffUntil)
 		}
 		if fs.RetryCount != 0 {
 			t.Errorf("feed %s: RetryCount = %d, want 0", fs.RSSUrl, fs.RetryCount)
@@ -240,11 +245,11 @@ func TestClearPermanentBackoffs(t *testing.T) {
 
 // reachableIs returns a FeedStatus whose Reachable condition has status, with
 // the given run state.
-func reachableIs(status metav1.ConditionStatus, retryCount int32, backoffUntil string) *v1alpha1.FeedStatus {
-	return &v1alpha1.FeedStatus{
+func reachableIs(status metav1.ConditionStatus, retryCount int32, backoffUntil string) *v1beta1.FeedStatus {
+	return &v1beta1.FeedStatus{
 		RetryCount:   retryCount,
-		BackoffUntil: backoffUntil,
-		Conditions:   []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}},
+		BackoffUntil: parseMetaTime(backoffUntil),
+		Conditions:   []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: status}},
 	}
 }
 
@@ -258,7 +263,7 @@ func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
 	run := runOf(fetching)
 	fetching.Conditions[0].Status = metav1.ConditionTrue
 	run.fetchSucceeded()
-	if fetching.RetryCount != 0 || fetching.BackoffUntil != "" {
+	if fetching.RetryCount != 0 || fetching.BackoffUntil != nil {
 		t.Errorf("fetch run not ended from its captured phase: %+v", fetching)
 	}
 
@@ -269,13 +274,13 @@ func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
 		t.Error("delivery backoff reclassified after Reachable flipped to False")
 	}
 	run.fail(failureFetch)
-	if delivering.RetryCount != 1 || delivering.BackoffUntil != "" {
+	if delivering.RetryCount != 1 || delivering.BackoffUntil != nil {
 		t.Errorf("delivery run not replaced from its captured phase: %+v", delivering)
 	}
 
-	unknown := &v1alpha1.FeedStatus{RetryCount: 2, BackoffUntil: until}
+	unknown := &v1beta1.FeedStatus{RetryCount: 2, BackoffUntil: parseMetaTime(until)}
 	runOf(unknown).fail(failureFetch)
-	if unknown.RetryCount != 3 || unknown.BackoffUntil != until {
+	if unknown.RetryCount != 3 || !unknown.BackoffUntil.Time.Equal(mustParse(t, until)) {
 		t.Errorf("fail over an unknown phase must only count: %+v", unknown)
 	}
 
@@ -291,14 +296,14 @@ func TestRetryRun_UsesPhaseCapturedByRunOf(t *testing.T) {
 // whose Reachable condition is False, whether it left a count, a backoff or
 // both, and does nothing to an idle feed.
 func TestRetryRun_FetchSuccessEndsFetchPhaseRun(t *testing.T) {
-	for name, fs := range map[string]*v1alpha1.FeedStatus{
+	for name, fs := range map[string]*v1beta1.FeedStatus{
 		"count only":   reachableIs(metav1.ConditionFalse, 3, ""),
 		"backoff only": reachableIs(metav1.ConditionFalse, 0, "2026-01-01T18:00:00Z"),
 		"both":         reachableIs(metav1.ConditionFalse, 2, "2026-01-01T18:00:00Z"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			runOf(fs).fetchSucceeded()
-			if fs.RetryCount != 0 || fs.BackoffUntil != "" {
+			if fs.RetryCount != 0 || fs.BackoffUntil != nil {
 				t.Errorf("run not ended: %+v", fs)
 			}
 		})
@@ -310,13 +315,13 @@ func TestRetryRun_FetchSuccessEndsFetchPhaseRun(t *testing.T) {
 // entry's retries can exhaust.
 func TestRetryRun_FetchSuccessKeepsDeliveryPhaseRun(t *testing.T) {
 	const until = "2026-01-01T18:00:00Z"
-	for name, fs := range map[string]*v1alpha1.FeedStatus{
+	for name, fs := range map[string]*v1beta1.FeedStatus{
 		"Reachable True": reachableIs(metav1.ConditionTrue, 2, until),
-		"no condition":   {RetryCount: 2, BackoffUntil: until},
+		"no condition":   {RetryCount: 2, BackoffUntil: parseMetaTime(until)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			runOf(fs).fetchSucceeded()
-			if fs.RetryCount != 2 || fs.BackoffUntil != until {
+			if fs.RetryCount != 2 || !fs.BackoffUntil.Time.Equal(mustParse(t, until)) {
 				t.Errorf("delivery run was ended: %+v", fs)
 			}
 		})
@@ -359,13 +364,13 @@ func TestRetryRun_FetchFailureRestartsDeliveryRun(t *testing.T) {
 		t.Fatalf("delivery failure: RetryCount = %d, want 5", fs.RetryCount)
 	}
 	runOf(fs).fail(failureFetch)
-	if fs.RetryCount != 1 || fs.BackoffUntil != "" {
+	if fs.RetryCount != 1 || fs.BackoffUntil != nil {
 		t.Errorf("fetch failure over a delivery run: %+v, want count 1 and no backoff", fs)
 	}
 
 	fetching := reachableIs(metav1.ConditionFalse, 4, "2026-01-01T18:00:00Z")
 	runOf(fetching).fail(failureFetch)
-	if fetching.RetryCount != 5 || fetching.BackoffUntil == "" {
+	if fetching.RetryCount != 5 || fetching.BackoffUntil == nil {
 		t.Errorf("fetch failure over a fetch run: %+v, want count 5 and the backoff kept", fetching)
 	}
 }

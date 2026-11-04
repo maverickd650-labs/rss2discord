@@ -614,6 +614,710 @@ spec:
                 type: string
             type: object
         type: object
+    served: false
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='FeedReachable')].status
+      name: Reachable
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='FeedReachable')].reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: FeedGroup is the Schema for the feedgroups API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec is the desired state of the FeedGroup.
+            properties:
+              avatarURL:
+                description: |-
+                  avatarURL overrides the webhook's default avatar for messages sent
+                  from this group.
+                maxLength: 2048
+                minLength: 1
+                pattern: ^https?://
+                type: string
+              catchUpLimit:
+                default: 5
+                description: |-
+                  catchUpLimit caps how many entries are sent to Discord when a feed has
+                  no usable watermark: the first time it is synced (no recorded
+                  LastSeenEntry), or when its recorded LastSeenEntry has scrolled out of
+                  the feed's window. A normal fetch that finds the watermark is never
+                  capped. Without this, adding a feed with a long history floods the
+                  webhook with every existing entry at once. Entries beyond the limit are
+                  treated as already seen and are not sent.
+
+                  Set to 0 to send no backlog: the first non-empty sync records the feed's
+                  newest entry and only entries published afterwards are delivered. A feed
+                  that was empty on its first sync has no watermark yet, so with 0
+                  everything that appears later is delivered uncapped; if a recorded
+                  watermark later scrolls out of the window, 0 falls back to the default
+                  cap of 5. Omitting the field uses the default of 5.
+                format: int32
+                maximum: 100
+                minimum: 0
+                type: integer
+              discordWebhookSecretRef:
+                description: |-
+                  discordWebhookSecretRef points to the Secret containing the Discord webhook URL.
+                  The secret must contain the webhook URL under the specified key.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
+              embed:
+                description: |-
+                  embed configures Discord embed rendering, used as the default for all
+                  feeds in this group unless a feed sets its own Embed.
+                minProperties: 1
+                properties:
+                  authorIconURL:
+                    description: authorIconURL is the avatar icon URL displayed beside
+                      the author name.
+                    maxLength: 2048
+                    minLength: 1
+                    pattern: ^https?://
+                    type: string
+                  authorName:
+                    description: authorName is shown on the embed's author line.
+                    maxLength: 256
+                    minLength: 1
+                    type: string
+                  authorURL:
+                    description: authorURL is the URL linked from the embed author
+                      name.
+                    maxLength: 2048
+                    minLength: 1
+                    pattern: ^https?://
+                    type: string
+                  color:
+                    description: |-
+                      color is the embed's side-bar color, as a hex string (e.g. "#5865F2"
+                      or "5865F2").
+                    maxLength: 7
+                    minLength: 1
+                    pattern: ^#?[0-9a-fA-F]{6}$
+                    type: string
+                  descriptionFormat:
+                    description: |-
+                      descriptionFormat is the template used to render the embed's
+                      description. Supports the same placeholders as Format. Defaults to
+                      "{{.Description}}".
+                    maxLength: 4096
+                    minLength: 1
+                    type: string
+                  enabled:
+                    default: false
+                    description: |-
+                      enabled switches a feed's messages from plain text content to a
+                      Discord embed.
+                    type: boolean
+                  footerIconURL:
+                    description: footerIconURL is the small icon displayed beside
+                      the footer text.
+                    maxLength: 2048
+                    minLength: 1
+                    pattern: ^https?://
+                    type: string
+                  footerText:
+                    description: footerText is shown in the embed's footer.
+                    maxLength: 2048
+                    minLength: 1
+                    type: string
+                  imageStyle:
+                    description: |-
+                      imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+                      image beside the description, the default) or "image" (a large image
+                      below the description).
+                    enum:
+                    - thumbnail
+                    - image
+                    type: string
+                type: object
+              feeds:
+                description: |-
+                  feeds is the list of RSS feed configurations in this group. Capped at
+                  maxConcurrentFetches (see feedgroup_controller.go) so a single
+                  reconcile can't fan out an unbounded number of simultaneous outbound
+                  fetches. RSS URLs must be unique within a group, since all per-feed
+                  status (LastSeenEntry, LastSent, ETag, ...) is keyed by URL: two feeds
+                  sharing a URL would silently clobber each other's status.
+                items:
+                  description: FeedSpec defines the configuration for a single RSS
+                    feed.
+                  properties:
+                    avatarURL:
+                      description: |-
+                        avatarURL overrides the webhook's default avatar for messages sent
+                        from this feed, overriding the group-level AvatarURL if set.
+                      maxLength: 2048
+                      minLength: 1
+                      pattern: ^https?://
+                      type: string
+                    embed:
+                      description: |-
+                        embed configures Discord embed rendering for this feed. Overrides the
+                        group-level Embed config if set.
+                      minProperties: 1
+                      properties:
+                        authorIconURL:
+                          description: authorIconURL is the avatar icon URL displayed
+                            beside the author name.
+                          maxLength: 2048
+                          minLength: 1
+                          pattern: ^https?://
+                          type: string
+                        authorName:
+                          description: authorName is shown on the embed's author line.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        authorURL:
+                          description: authorURL is the URL linked from the embed
+                            author name.
+                          maxLength: 2048
+                          minLength: 1
+                          pattern: ^https?://
+                          type: string
+                        color:
+                          description: |-
+                            color is the embed's side-bar color, as a hex string (e.g. "#5865F2"
+                            or "5865F2").
+                          maxLength: 7
+                          minLength: 1
+                          pattern: ^#?[0-9a-fA-F]{6}$
+                          type: string
+                        descriptionFormat:
+                          description: |-
+                            descriptionFormat is the template used to render the embed's
+                            description. Supports the same placeholders as Format. Defaults to
+                            "{{.Description}}".
+                          maxLength: 4096
+                          minLength: 1
+                          type: string
+                        enabled:
+                          default: false
+                          description: |-
+                            enabled switches a feed's messages from plain text content to a
+                            Discord embed.
+                          type: boolean
+                        footerIconURL:
+                          description: footerIconURL is the small icon displayed beside
+                            the footer text.
+                          maxLength: 2048
+                          minLength: 1
+                          pattern: ^https?://
+                          type: string
+                        footerText:
+                          description: footerText is shown in the embed's footer.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        imageStyle:
+                          description: |-
+                            imageStyle chooses how an entry's image is shown: "thumbnail" (a small
+                            image beside the description, the default) or "image" (a large image
+                            below the description).
+                          enum:
+                          - thumbnail
+                          - image
+                          type: string
+                      type: object
+                    filter:
+                      description: filter defines how to filter entries from this
+                        feed.
+                      minProperties: 1
+                      properties:
+                        excludeKeywords:
+                          description: |-
+                            excludeKeywords is a list of keywords to exclude (case-insensitive OR logic).
+                            Matching entries are rejected even if they match positive filter criteria.
+                          items:
+                            maxLength: 200
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        excludeRegex:
+                          description: |-
+                            excludeRegex is a regular expression to exclude matching entry title/description.
+                            Matching entries are rejected even if they match positive filter criteria.
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                        keywords:
+                          description: keywords is a list of keywords to match (OR
+                            logic).
+                          items:
+                            maxLength: 200
+                            minLength: 1
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        regex:
+                          description: regex is a regular expression to match against
+                            entry title/description.
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                      type: object
+                    format:
+                      description: |-
+                        format is the template for Discord messages for this feed.
+                        Overrides the group-level format if set.
+                      maxLength: 4096
+                      minLength: 1
+                      type: string
+                    forumThreadID:
+                      description: |-
+                        forumThreadID posts messages into an existing forum thread/post
+                        instead of creating a new one. Takes precedence over ForumThreadName.
+                      maxLength: 32
+                      minLength: 1
+                      pattern: ^[0-9]+$
+                      type: string
+                    forumThreadName:
+                      description: |-
+                        forumThreadName creates a new forum post for each message, named from
+                        this template, when DiscordWebhookSecretRef points at a forum
+                        channel's webhook. Supports the same placeholders as Format. Leave
+                        unset for regular text channels.
+                      maxLength: 100
+                      minLength: 1
+                      type: string
+                    name:
+                      description: |-
+                        name is an optional DNS-1123 label uniquely identifying this feed within
+                        the group. When set, status, delivery watermarks, and metrics track this
+                        identity across rssUrl updates.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    paused:
+                      default: false
+                      description: paused stops processing this feed if set to true.
+                      type: boolean
+                    rssUrl:
+                      description: rssUrl is the URL of the RSS feed to fetch. Only
+                        http:// and https:// are supported.
+                      maxLength: 2048
+                      minLength: 1
+                      pattern: ^https?://
+                      type: string
+                    username:
+                      description: |-
+                        username overrides the webhook's default display name for messages
+                        sent from this feed, overriding the group-level Username if set.
+                      maxLength: 80
+                      minLength: 1
+                      type: string
+                      x-kubernetes-validations:
+                      - message: username must not contain "clyde" or "discord" (Discord
+                          rejects these)
+                        rule: '!self.lowerAscii().contains(''clyde'') && !self.lowerAscii().contains(''discord'')'
+                  required:
+                  - rssUrl
+                  type: object
+                maxItems: 50
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+                x-kubernetes-validations:
+                - message: each feed's rssUrl must be unique within a FeedGroup
+                  rule: self.all(f, self.exists_one(g, g.rssUrl == f.rssUrl))
+                - message: each feed's name must be unique within a FeedGroup when
+                    specified
+                  rule: self.all(f, !has(f.name) || self.exists_one(g, has(g.name)
+                    && g.name == f.name))
+              format:
+                default: |-
+                  **{{.Title}}**
+                  {{.Description}}
+                  [Read more]({{.Link}})
+                description: |-
+                  format is the default template for Discord messages.
+                  Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
+                  {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
+                  functions truncate, default, lower, upper, trim, replace and discordTime.
+                maxLength: 4096
+                minLength: 1
+                type: string
+              interval:
+                default: 30m
+                description: |-
+                  interval is the duration between feed checks (e.g., "30m", "1h"),
+                  parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
+                  interval would requeue the FeedGroup in a tight reconcile loop,
+                  hammering every feed host on each pass.
+                maxLength: 32
+                minLength: 1
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: interval must be at least 1m
+                  rule: duration(self) >= duration('1m')
+              retries:
+                default: 3
+                description: retries is the number of times to retry failed operations
+                  (fetch/send).
+                format: int32
+                maximum: 100
+                minimum: 0
+                type: integer
+              retryInterval:
+                default: 5m
+                description: |-
+                  retryInterval is the duration between retries (e.g., "5m"), parsed by
+                  Go's time.ParseDuration. Must be at least 10s: a shorter interval
+                  would requeue the FeedGroup in a tight reconcile loop, hammering every
+                  feed host on each pass.
+                maxLength: 32
+                minLength: 1
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: retryInterval must be at least 10s
+                  rule: duration(self) >= duration('10s')
+              suspend:
+                default: false
+                description: |-
+                  suspend pauses reconciliation for the entire group without modifying
+                  individual feeds. Preserves delivery history and watermarks.
+                type: boolean
+              username:
+                description: |-
+                  username overrides the webhook's default display name for messages
+                  sent from this group. Discord rejects names containing "clyde" or
+                  "discord" (case-insensitive) or over 80 characters, so both
+                  constraints are enforced here at admission rather than surfacing only
+                  as a runtime send failure.
+                maxLength: 80
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: username must not contain "clyde" or "discord" (Discord
+                    rejects these)
+                  rule: '!self.lowerAscii().contains(''clyde'') && !self.lowerAscii().contains(''discord'')'
+            required:
+            - discordWebhookSecretRef
+            - feeds
+            type: object
+          status:
+            description: status is the observed state of the FeedGroup.
+            properties:
+              conditions:
+                description: |-
+                  conditions represent the latest available observations of the FeedGroup's
+                  overall state, following the standard Kubernetes condition conventions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 20
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              feeds:
+                description: |-
+                  feeds is the observed status of every feed in Spec.Feeds, keyed by
+                  RSSUrl.
+                items:
+                  description: |-
+                    FeedStatus is the observed state of a single feed within a FeedGroup,
+                    keyed by RSSUrl. Consolidating what used to be seven parallel
+                    map[string]... fields on FeedGroupStatus (all keyed by the same URL) into
+                    one struct per feed means a feed's full health -- timestamps, retry
+                    count, and *why* it's failing -- reads as one coherent block in `kubectl
+                    get feedgroup -o yaml` instead of requiring cross-referencing seven maps
+                    by hand.
+                  properties:
+                    backoffUntil:
+                      description: |-
+                        backoffUntil is a timestamp before which this feed should not be fetched
+                        again. Set on permanent fetch failures using exponential backoff starting
+                        from Spec.RetryInterval, capped at 6h.
+                      format: date-time
+                      type: string
+                    conditions:
+                      description: |-
+                        conditions report this feed's health along the two independent
+                        stages a delivery passes through: FeedConditionTypeReachable (was the
+                        feed itself fetchable) and FeedConditionTypeDelivered (did rendering
+                        and sending to Discord succeed). Each carries a machine-readable
+                        Reason (e.g. "HTTP404", "Timeout", "WebhookInvalid") set by
+                        internal/controller/classify.go, so a feed stuck on a permanent 404
+                        is distinguishable at a glance from a misconfigured webhook, without
+                        parsing LastError's free text.
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      maxItems: 20
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - type
+                      x-kubernetes-list-type: map
+                    etag:
+                      description: |-
+                        etag is the ETag header from this feed's last fetch. Sent back as
+                        If-None-Match on the next fetch so an unchanged feed costs a 304
+                        response instead of a full re-download and re-parse.
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                    initialized:
+                      description: |-
+                        initialized records that this feed has been fetched successfully with a
+                        usable configuration, even if it had no entries, so entries that appear
+                        later are new rather than an initial backlog. It is left false when a
+                        filter or template error stops processing, and reads as false on
+                        statuses written before this field existed.
+                      type: boolean
+                    lastChecked:
+                      description: |-
+                        lastChecked is the last time this feed was successfully checked.
+                        A 304 or a fetch with no new entries still counts as a successful check;
+                        a failed fetch does not advance it.
+                      format: date-time
+                      type: string
+                    lastError:
+                      description: |-
+                        lastError is the last error message encountered for this feed, from
+                        whichever of fetch/render/send most recently failed. See Conditions
+                        for a structured, machine-readable breakdown of which stage failed
+                        and why. Truncated to fit the field limit.
+                      maxLength: 2048
+                      minLength: 1
+                      type: string
+                    lastModified:
+                      description: |-
+                        lastModified is the Last-Modified header from this feed's last fetch.
+                        Sent back as If-Modified-Since on the next fetch, alongside ETag.
+                      maxLength: 64
+                      minLength: 1
+                      type: string
+                    lastSeenEntry:
+                      description: |-
+                        lastSeenEntry is the last seen entry identifier (GUID or Link) for
+                        this feed. Used to fetch only new entries after restarts. Identifiers
+                        longer than the field limit are stored as "sha256:<hex digest>".
+                      maxLength: 2048
+                      minLength: 1
+                      type: string
+                    lastSent:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        lastSent is a map of entry hash to timestamp (RFC3339), tracking
+                        which entries have been sent to Discord to avoid duplicates.
+                      minProperties: 1
+                      type: object
+                    name:
+                      description: name is the optional stable identifier of this
+                        feed from FeedSpec.Name.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    retryCount:
+                      description: |-
+                        retryCount is the number of consecutive retries since this feed last
+                        succeeded.
+                      format: int32
+                      type: integer
+                    rssUrl:
+                      description: |-
+                        rssUrl identifies which feed (in FeedGroupSpec.Feeds) this status
+                        corresponds to. Acts as the list-map merge key.
+                      maxLength: 2048
+                      minLength: 1
+                      type: string
+                    stateVersion:
+                      description: |-
+                        stateVersion is the format of this feed's lastSeenEntry and lastSent
+                        identities. The controller sets it to 1; a status without it (0) was
+                        written before releases that understood it, and is no longer migrated.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                  required:
+                  - rssUrl
+                  type: object
+                maxItems: 50
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - rssUrl
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  observedGeneration is the most recent generation observed for this FeedGroup
+                  by the controller.
+                format: int64
+                type: integer
+              webhookSecretResourceVersion:
+                description: |-
+                  webhookSecretResourceVersion is the resourceVersion of the webhook
+                  Secret the controller last read. When the Secret changes (e.g. a deleted
+                  webhook is replaced), feeds backed off after a permanent send failure
+                  get an immediate fresh attempt instead of waiting out their backoff.
+                maxLength: 128
+                type: string
+            type: object
+        type: object
     served: true
     storage: true
     subresources:

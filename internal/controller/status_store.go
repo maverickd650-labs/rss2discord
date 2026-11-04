@@ -20,12 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"unicode/utf8"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
-	acv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1/applyconfiguration/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
+	acv1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1/applyconfiguration/api/v1beta1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,8 +64,11 @@ func errText(err error) string {
 
 // ensureFeedStatuses rebuilds feedGroup.Status.Feeds to have exactly one
 // entry per feed in feedGroup.Spec.Feeds, in spec order: existing entries are
-// matched up by RSSUrl, new feeds get an entry with their RSSUrl, and entries
-// for feeds no longer in the spec are dropped. That one pass both initializes
+// matched up by Name (when specified) first, falling back to RSSUrl. If a named
+// feed's RSSUrl has changed, its existing status is updated in-place with the new
+// RSSUrl while preserving its delivery history (LastSeenEntry), LastSent ledger,
+// and conditional-GET validators. New feeds get an entry with their RSSUrl/Name,
+// and entries for feeds no longer in the spec are dropped. That one pass both initializes
 // status on a fresh FeedGroup and prunes the stale entries an edited or removed
 // feed leaves behind (the same unbounded-growth problem maxLastSentPerFeed
 // guards against one level down), so this is the only place that needs to know
@@ -79,18 +81,43 @@ func errText(err error) string {
 // bounded, and oversized LastSeenEntry values replaced by clampWatermark
 // digests. It returns the RSSUrls it pruned so the caller can drop their
 // metric series; it does not touch Prometheus.
-func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) []string {
-	existing := make(map[string]v1alpha1.FeedStatus, len(feedGroup.Status.Feeds))
+func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
+	existingByUrl := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
+	existingByName := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
-		existing[fs.RSSUrl] = fs
+		existingByUrl[fs.RSSUrl] = fs
+		if fs.Name != "" {
+			existingByName[fs.Name] = fs
+		}
 	}
 
-	rebuilt := make([]v1alpha1.FeedStatus, 0, len(feedGroup.Spec.Feeds))
+	rebuilt := make([]v1beta1.FeedStatus, 0, len(feedGroup.Spec.Feeds))
+
 	for _, feed := range feedGroup.Spec.Feeds {
-		fs, ok := existing[feed.RSSUrl]
-		if !ok {
-			fs = v1alpha1.FeedStatus{RSSUrl: feed.RSSUrl}
+		var fs v1beta1.FeedStatus
+		var matched bool
+
+		if feed.Name != "" {
+			if existing, ok := existingByName[feed.Name]; ok {
+				fs = existing
+				matched = true
+			}
 		}
+
+		if !matched {
+			if existing, ok := existingByUrl[feed.RSSUrl]; ok {
+				fs = existing
+				matched = true
+			}
+		}
+
+		if !matched {
+			fs = v1beta1.FeedStatus{RSSUrl: feed.RSSUrl, Name: feed.Name}
+		} else {
+			fs.RSSUrl = feed.RSSUrl
+			fs.Name = feed.Name
+		}
+
 		if fs.LastSent == nil {
 			fs.LastSent = map[string]string{}
 		}
@@ -99,21 +126,31 @@ func ensureFeedStatuses(feedGroup *v1alpha1.FeedGroup) []string {
 		fs.LastError = clampText(fs.LastError, maxStatusTextBytes)
 		fs.LastSeenEntry = clampWatermark(fs.LastSeenEntry)
 		rebuilt = append(rebuilt, fs)
-		delete(existing, feed.RSSUrl)
 	}
 	feedGroup.Status.Feeds = rebuilt
 
-	// Whatever is left in existing was dropped from the spec.
-	return slices.Sorted(maps.Keys(existing))
+	// Collect pruned URLs: existing entries whose RSSUrl is no longer present in rebuilt feeds
+	activeUrls := make(map[string]bool, len(rebuilt))
+	for _, fs := range rebuilt {
+		activeUrls[fs.RSSUrl] = true
+	}
+	var pruned []string
+	for oldURL := range existingByUrl {
+		if !activeUrls[oldURL] {
+			pruned = append(pruned, oldURL)
+		}
+	}
+	slices.Sort(pruned)
+	return pruned
 }
 
-// feedStatusFor returns a pointer to the FeedStatus for url, or nil if absent
-// (ensureFeedStatuses runs once at the start of every Reconcile and creates
-// an entry for every feed in Spec.Feeds, so any url drawn from Spec.Feeds is
-// guaranteed to be found).
-func feedStatusFor(feedGroup *v1alpha1.FeedGroup, url string) *v1alpha1.FeedStatus {
+// feedStatusFor returns a pointer to the FeedStatus for ident (matching RSSUrl
+// or Name), or nil if absent (ensureFeedStatuses runs once at the start of every
+// Reconcile and creates an entry for every feed in Spec.Feeds, so any url drawn
+// from Spec.Feeds is guaranteed to be found).
+func feedStatusFor(feedGroup *v1beta1.FeedGroup, ident string) *v1beta1.FeedStatus {
 	for i := range feedGroup.Status.Feeds {
-		if feedGroup.Status.Feeds[i].RSSUrl == url {
+		if feedGroup.Status.Feeds[i].RSSUrl == ident || (feedGroup.Status.Feeds[i].Name != "" && feedGroup.Status.Feeds[i].Name == ident) {
 			return &feedGroup.Status.Feeds[i]
 		}
 	}
@@ -138,7 +175,7 @@ func setSemanticCondition(conditions *[]metav1.Condition, condition metav1.Condi
 // literal at every place a fetch/render/send outcome updates Reachable or Delivered.
 // It reports semantic changes (Status, Reason or Message), allowing a config error
 // to emit a one-time Event without treating an ObservedGeneration update as a transition.
-func setFeedCondition(fs *v1alpha1.FeedStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64) bool {
+func setFeedCondition(fs *v1beta1.FeedStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64) bool {
 	return setSemanticCondition(&fs.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
@@ -166,7 +203,7 @@ const statusFieldOwner = "feedgroup-controller"
 // is safe here: there's no other field manager whose fields could be
 // clobbered.
 //
-// The request body is a generated ApplyConfiguration (api/v1alpha1/
+// The request body is a generated ApplyConfiguration (api/v1beta1/
 // applyconfiguration, from `mise run generate`) carrying only name,
 // namespace, apiVersion/kind and status. Unlike patching with the typed
 // object, it never sends managedFields or a resourceVersion, so there's
@@ -174,13 +211,13 @@ const statusFieldOwner = "feedgroup-controller"
 // trip: field-ownership merging, not "did anything else change first", is
 // what decides whether this write succeeds.
 // Status conversion errors and errors from the API write are returned unchanged.
-func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1alpha1.FeedGroup) error {
+func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1beta1.FeedGroup) error {
 	status, err := statusApplyConfiguration(&feedGroup.Status)
 	if err != nil {
 		return err
 	}
 	return r.Status().Apply(ctx,
-		acv1alpha1.FeedGroup(feedGroup.Name, feedGroup.Namespace).WithStatus(status),
+		acv1beta1.FeedGroup(feedGroup.Name, feedGroup.Namespace).WithStatus(status),
 		client.FieldOwner(statusFieldOwner), client.ForceOwnership)
 }
 
@@ -197,8 +234,8 @@ func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1alph
 // has no failing input today (every FeedGroupStatus field is a plain string,
 // number, bool or time), so both steps share one error path rather than
 // keeping a branch no input can reach.
-func statusApplyConfiguration(status *v1alpha1.FeedGroupStatus) (*acv1alpha1.FeedGroupStatusApplyConfiguration, error) {
-	ac := &acv1alpha1.FeedGroupStatusApplyConfiguration{}
+func statusApplyConfiguration(status *v1beta1.FeedGroupStatus) (*acv1beta1.FeedGroupStatusApplyConfiguration, error) {
+	ac := &acv1beta1.FeedGroupStatusApplyConfiguration{}
 	raw, err := json.Marshal(status)
 	if err == nil {
 		err = json.Unmarshal(raw, ac)

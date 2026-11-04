@@ -22,7 +22,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -40,11 +40,11 @@ import (
 // that condition's message and emit is true exactly on the transition into it
 // (or a change of its message). groupErr outranks the interval problem on
 // Ready, so while it is set no Event is emitted here.
-func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) (warning string, emit bool) {
+func summarizeGroup(feedGroup *v1beta1.FeedGroup, cad cadence, groupErr error) (warning string, emit bool) {
 	readyChanged := setReadyCondition(feedGroup, groupErr, cad.err)
 	setFeedReachableCondition(feedGroup)
 
-	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1alpha1.ConditionTypeReady)
+	ready := apimeta.FindStatusCondition(feedGroup.Status.Conditions, v1beta1.ConditionTypeReady)
 	if readyChanged && ready != nil && ready.Reason == reasonInvalidInterval {
 		return ready.Message, true
 	}
@@ -69,7 +69,7 @@ func summarizeGroup(feedGroup *v1alpha1.FeedGroup, cad cadence, groupErr error) 
 // condition clears on its own the reconcile after the spec is corrected.
 // It reports whether Status, Reason or Message changed, excluding an
 // ObservedGeneration-only update.
-func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr error) bool {
+func setReadyCondition(feedGroup *v1beta1.FeedGroup, groupErr, intervalErr error) bool {
 	if groupErr != nil {
 		// A pass a feed panicked in did not get through the group, whatever
 		// the feeds' own statuses say (one restored after the panic carries
@@ -80,7 +80,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 			reason, message = reasonReconcilePanicked, fp.summary()
 		}
 		return setSemanticCondition(&feedGroup.Status.Conditions, metav1.Condition{
-			Type:               v1alpha1.ConditionTypeReady,
+			Type:               v1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             reason,
 			Message:            message,
@@ -90,7 +90,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 
 	if intervalErr != nil {
 		return setSemanticCondition(&feedGroup.Status.Conditions, metav1.Condition{
-			Type:               v1alpha1.ConditionTypeReady,
+			Type:               v1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             reasonInvalidInterval,
 			Message:            intervalErr.Error(),
@@ -110,7 +110,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 	}
 
 	return setSemanticCondition(&feedGroup.Status.Conditions, metav1.Condition{
-		Type:               v1alpha1.ConditionTypeReady,
+		Type:               v1beta1.ConditionTypeReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -119,7 +119,7 @@ func setReadyCondition(feedGroup *v1alpha1.FeedGroup, groupErr, intervalErr erro
 }
 
 // countFailingFeeds reports how many feeds' last check failed (checkOf.failed).
-func countFailingFeeds(feeds []v1alpha1.FeedStatus) int {
+func countFailingFeeds(feeds []v1beta1.FeedStatus) int {
 	count := 0
 	for i := range feeds {
 		if checkOf(&feeds[i]).failed() {
@@ -137,10 +137,10 @@ func countFailingFeeds(feeds []v1alpha1.FeedStatus) int {
 // (fetch failures), not Discord send/render failures (Delivered), so a
 // feed-side outage is distinguishable from a webhook misconfiguration.
 // Missing or Unknown Reachable conditions are not counted as failures.
-func setFeedReachableCondition(feedGroup *v1alpha1.FeedGroup) {
+func setFeedReachableCondition(feedGroup *v1beta1.FeedGroup) {
 	unreachable := map[string]string{}
 	for _, fs := range feedGroup.Status.Feeds {
-		cond := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeReachable)
+		cond := apimeta.FindStatusCondition(fs.Conditions, v1beta1.FeedConditionTypeReachable)
 		if cond != nil && cond.Status == metav1.ConditionFalse {
 			unreachable[fs.RSSUrl] = cond.Reason
 		}
@@ -148,7 +148,7 @@ func setFeedReachableCondition(feedGroup *v1alpha1.FeedGroup) {
 
 	if len(unreachable) == 0 {
 		apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
-			Type:               v1alpha1.ConditionTypeFeedReachable,
+			Type:               v1beta1.ConditionTypeFeedReachable,
 			Status:             metav1.ConditionTrue,
 			Reason:             reasonAllFeedsReachable,
 			Message:            "All feeds were reachable on their last check",
@@ -159,7 +159,7 @@ func setFeedReachableCondition(feedGroup *v1alpha1.FeedGroup) {
 
 	reason := dominantErrorReason(unreachable)
 	apimeta.SetStatusCondition(&feedGroup.Status.Conditions, metav1.Condition{
-		Type:   v1alpha1.ConditionTypeFeedReachable,
+		Type:   v1beta1.ConditionTypeFeedReachable,
 		Status: metav1.ConditionFalse,
 		Reason: reason,
 		Message: fmt.Sprintf("%d feed(s) unreachable; most common reason: %s",

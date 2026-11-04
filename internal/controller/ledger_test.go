@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -32,7 +32,7 @@ func computeEntryKey(entry rss.Entry) string {
 // ledgerResumes reports whether watermark, as stored in LastSeenEntry, stands
 // for any of entries.
 func ledgerResumes(entries []rss.Entry, watermark string) bool {
-	fs := &v1alpha1.FeedStatus{LastSeenEntry: watermark}
+	fs := &v1beta1.FeedStatus{LastSeenEntry: watermark}
 	return newDeliveryLedger(fs, entries).resume().state == watermarkFound
 }
 
@@ -57,7 +57,7 @@ func TestDeliveryLedger_Resume(t *testing.T) {
 		{name: "clamped long identity", entries: []rss.Entry{a, {ID: longID}}, watermark: clampWatermark(longID), wantState: watermarkFound, wantIndex: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{LastSeenEntry: tc.watermark}
+			fs := &v1beta1.FeedStatus{LastSeenEntry: tc.watermark}
 			got := newDeliveryLedger(fs, tc.entries).resume()
 			if got != (watermarkLookup{tc.wantState, tc.wantIndex}) {
 				t.Fatalf("resume = %+v, want {state %d, index %d}", got, tc.wantState, tc.wantIndex)
@@ -97,7 +97,7 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 		{name: "unrelated entry is not sent", fetch: []rss.Entry{guid, other}, handled: guid, probe: other, wantResume: true, wantKeys: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+			fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
 			ledger := newDeliveryLedger(fs, tc.fetch)
 			if ledger.sent(tc.handled) {
 				t.Fatal("entry reads as sent before being handled")
@@ -132,7 +132,7 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 
 func TestDeliveryLedger_MarkHandledClampsLongIdentity(t *testing.T) {
 	long := rss.Entry{ID: strings.Repeat("y", maxStatusTextBytes*2)}
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
 	ledger := newDeliveryLedger(fs, []rss.Entry{long})
 	ledger.markHandled(long, ledgerTestNow)
 	if len(fs.LastSeenEntry) > maxStatusTextBytes {
@@ -145,7 +145,7 @@ func TestDeliveryLedger_MarkHandledClampsLongIdentity(t *testing.T) {
 
 func TestDeliveryLedger_MarkNewest(t *testing.T) {
 	entries := []rss.Entry{{ID: "guid-old"}, {ID: "guid-new"}}
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
 	newDeliveryLedger(fs, entries).markNewest()
 	if fs.LastSeenEntry != "guid-new" {
 		t.Fatalf("LastSeenEntry = %q, want guid-new", fs.LastSeenEntry)
@@ -162,7 +162,7 @@ func TestDeliveryLedger_CountsCoverWholeFetch(t *testing.T) {
 	siblingA := linkEntry(identityURLPrefix+"index/post?ref=c", 0)
 	siblingB := linkEntry(identityURLPrefix+"index/post?ref=d", 1)
 	fetch := []rss.Entry{siblingA, siblingB}
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
 	ledger := newDeliveryLedger(fs, fetch)
 	ledger.markHandled(siblingB, ledgerTestNow) // as if only the trimmed tail were scanned
 	if ledger.sent(siblingA) {
@@ -254,7 +254,7 @@ func TestComputeEntryKey_IgnoresLinkAndTitleChurn(t *testing.T) {
 // unsent.
 func TestDeliveryLedger_EntriesWithoutIDAreToldApartByContent(t *testing.T) {
 	a, b := rss.Entry{Description: "first"}, rss.Entry{Description: "second"}
-	fs := &v1alpha1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
 	ledger := newDeliveryLedger(fs, []rss.Entry{a, b})
 	ledger.markHandled(a, ledgerTestNow)
 	if !ledger.sent(a) || ledger.sent(b) {

@@ -28,7 +28,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	v1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -42,12 +42,12 @@ const (
 // newMetricsFeedGroup builds a minimal FeedGroup (status maps initialized)
 // keyed by a unique namespace/name so each test's metric series starts from
 // zero, avoiding cross-test accumulation in the shared registry.
-func newMetricsFeedGroup(namespace, name, format string) (*v1alpha1.FeedGroup, v1alpha1.FeedSpec) {
-	feed := v1alpha1.FeedSpec{RSSUrl: exampleFeedURL, Format: format}
-	fg := &v1alpha1.FeedGroup{}
+func newMetricsFeedGroup(namespace, name, format string) (*v1beta1.FeedGroup, v1beta1.FeedSpec) {
+	feed := v1beta1.FeedSpec{RSSUrl: exampleFeedURL, Format: format}
+	fg := &v1beta1.FeedGroup{}
 	fg.Namespace = namespace
 	fg.Name = name
-	fg.Spec.Feeds = []v1alpha1.FeedSpec{feed}
+	fg.Spec.Feeds = []v1beta1.FeedSpec{feed}
 	// Match the API server's default for an omitted catchUpLimit.
 	fg.Spec.CatchUpLimit = new(int32(defaultCatchUpLimit))
 	ensureFeedStatuses(fg)
@@ -293,7 +293,7 @@ func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	feed.Embed = &v1alpha1.EmbedSpec{
+	feed.Embed = &v1beta1.EmbedSpec{
 		Enabled:    true,
 		AuthorName: strings.Repeat("a", discord.MaxEmbedAuthorNameLength),
 		FooterText: strings.Repeat("f", discord.MaxEmbedFooterTextLength),
@@ -521,10 +521,10 @@ func TestEnsureFeedStatuses_ReportsPrunedFeeds(t *testing.T) {
 		feedLastCheckedTimestamp.WithLabelValues(ns, name, url).Set(123)
 	}
 
-	feedGroup := &v1alpha1.FeedGroup{
+	feedGroup := &v1beta1.FeedGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec:       v1alpha1.FeedGroupSpec{Feeds: []v1alpha1.FeedSpec{{RSSUrl: exampleFeedURL}}},
-		Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{
+		Spec:       v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{{RSSUrl: exampleFeedURL}}},
+		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{
 			{RSSUrl: exampleFeedURL},
 			{RSSUrl: removedURL},
 		}},
@@ -595,28 +595,28 @@ func feedGaugeValue(vec *prometheus.GaugeVec, namespace, name, rssURL string) (f
 // are omitted -- not zeroed -- when there is nothing truthful to report.
 func TestRecordFeedStateMetrics(t *testing.T) {
 	const (
-		healthyURL   = "https://example.com/healthy.xml"
-		backoffURL   = "https://example.com/backoff.xml"
-		neverURL     = "https://example.com/never.xml"
-		badStampURL  = "https://example.com/badstamp.xml"
-		pausedURL    = "https://example.com/paused.xml"
-		checkedStamp = "2026-03-04T05:06:07Z"
+		healthyURL  = "https://example.com/healthy.xml"
+		backoffURL  = "https://example.com/backoff.xml"
+		neverURL    = "https://example.com/never.xml"
+		badStampURL = "https://example.com/badstamp.xml"
+		pausedURL   = "https://example.com/paused.xml"
 	)
+	checkedStamp := metav1TimeRFC3339("2026-03-04T05:06:07Z")
 	ns, name := "metrics-feedstate", "fg-feedstate"
 	forgetMetricsAfter(t, ns, name)
 
-	fg := &v1alpha1.FeedGroup{
+	fg := &v1beta1.FeedGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec: v1alpha1.FeedGroupSpec{Feeds: []v1alpha1.FeedSpec{
+		Spec: v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{
 			{RSSUrl: healthyURL}, {RSSUrl: backoffURL}, {RSSUrl: neverURL},
 			{RSSUrl: badStampURL}, {RSSUrl: pausedURL, Paused: true},
 		}},
-		Status: v1alpha1.FeedGroupStatus{Feeds: []v1alpha1.FeedStatus{
+		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{
 			{RSSUrl: healthyURL, LastChecked: checkedStamp},
-			{RSSUrl: backoffURL, LastChecked: checkedStamp, LastError: "http 404", RetryCount: 9, BackoffUntil: "2099-01-01T00:00:00Z"},
+			{RSSUrl: backoffURL, LastChecked: checkedStamp, LastError: "http 404", RetryCount: 9, BackoffUntil: metav1TimeRFC3339("2099-01-01T00:00:00Z")},
 			// Never checked: LastChecked is optional and empty.
 			{RSSUrl: neverURL},
-			{RSSUrl: badStampURL, LastChecked: "not-a-time"},
+			{RSSUrl: badStampURL, LastChecked: &metav1.Time{}},
 			{RSSUrl: pausedURL, LastChecked: checkedStamp, LastError: "http 404"},
 		}},
 	}
@@ -662,6 +662,16 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 	if got, _ := feedGaugeValue(feedHealthy, ns, name, backoffURL); got != 1 {
 		t.Errorf("feedHealthy after recovery = %v, want 1", got)
 	}
+
+	// Group suspension drops per-feed metrics like paused feeds
+	fg.Spec.Suspend = true
+	metricsFor(fg).syncFeedState(fg)
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, healthyURL); ok {
+		t.Error("feedHealthy series present for suspended group, want none")
+	}
+	if _, ok := feedGaugeValue(feedLastCheckedTimestamp, ns, name, healthyURL); ok {
+		t.Error("feedLastCheckedTimestamp series present for suspended group, want none")
+	}
 }
 
 // TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile asserts the per-feed
@@ -674,7 +684,7 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 
 	fg, _ := newMetricsFeedGroup(ns, name, "")
 	fg.Status.Feeds[0].LastError = "http 410"
-	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:08Z"
+	fg.Status.Feeds[0].LastChecked = metav1TimeRFC3339("2026-03-04T05:06:08Z")
 	// Apply the idempotent condition/generation updates groupSync settlement makes
 	// up front so the snapshot openGroupSync captures equals the final status and no API write
 	// (and therefore no client) is needed.
@@ -719,7 +729,7 @@ func TestSyncFeedState_SkipsStatusWithoutURL(t *testing.T) {
 	fg, _ := newMetricsFeedGroup(ns, name, "")
 	// Set before the copy, so the empty-url entry has a valid timestamp too and
 	// the timestamp assertion below would see a series if the skip were gone.
-	fg.Status.Feeds[0].LastChecked = "2026-03-04T05:06:07Z"
+	fg.Status.Feeds[0].LastChecked = metav1TimeRFC3339("2026-03-04T05:06:07Z")
 	fg.Status.Feeds = append(fg.Status.Feeds, fg.Status.Feeds[0])
 	fg.Status.Feeds[1].RSSUrl = ""
 

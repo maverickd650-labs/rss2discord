@@ -25,7 +25,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -57,7 +57,7 @@ const currentStateVersion = 1
 // the verdict can't be forgotten, doubled or mismatched; close's settlement
 // table is unit-tested per verdict (see the settlement tests).
 type feedSync struct {
-	fs    *v1alpha1.FeedStatus
+	fs    *v1beta1.FeedStatus
 	fetch rss.FetchResult
 	spec  feedSyncSpec
 
@@ -88,7 +88,7 @@ type feedSyncSpec struct {
 }
 
 // feedSyncSpecFor derives the spec of a sync of one of group's feeds.
-func feedSyncSpecFor(group *v1alpha1.FeedGroup, now time.Time) feedSyncSpec {
+func feedSyncSpecFor(group *v1beta1.FeedGroup, now time.Time) feedSyncSpec {
 	return feedSyncSpec{catchUpLimit: catchUpLimitOf(group.Spec), now: now}
 }
 
@@ -135,7 +135,7 @@ func (v syncVerdict) String() string {
 
 // openFeedSync opens the sync of fetch into fs. It only reads fs: nothing
 // changes until begin or close.
-func openFeedSync(fs *v1alpha1.FeedStatus, fetch rss.FetchResult, spec feedSyncSpec) *feedSync {
+func openFeedSync(fs *v1beta1.FeedStatus, fetch rss.FetchResult, spec feedSyncSpec) *feedSync {
 	return &feedSync{
 		fs:             fs,
 		fetch:          fetch,
@@ -325,7 +325,7 @@ func (s *feedSync) markHandled(entry rss.Entry) {
 //     nothing is written.)
 //   - Panicked inside close: close only settles what its verdict allows, and
 //     every step of it is safe to persist on its own, so fs is left as it is.
-func (s *feedSync) secureAfterPanic(before *v1alpha1.FeedStatus, attempt feedAttempt, err error) {
+func (s *feedSync) secureAfterPanic(before *v1beta1.FeedStatus, attempt feedAttempt, err error) {
 	switch {
 	case s.closing:
 	case s.handled == 0:

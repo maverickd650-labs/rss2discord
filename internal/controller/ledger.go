@@ -24,7 +24,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -213,7 +213,7 @@ type watermarkLookup struct {
 // previous-identity migration, the watermark lookup -- goes through it, and
 // every "is this identity unique" rule is decided here.
 type deliveryLedger struct {
-	fs *v1alpha1.FeedStatus
+	fs *v1beta1.FeedStatus
 	// entries is the whole fetch, sorted oldest-to-newest. The ledger never
 	// changes it.
 	entries []rss.Entry
@@ -234,7 +234,7 @@ type deliveryLedger struct {
 // newDeliveryLedger builds the ledger for fs over entries, the whole fetch
 // sorted oldest-to-newest and before any catch-up trim. It returns with previous
 // identities migrated, so callers never need a separate migration step.
-func newDeliveryLedger(fs *v1alpha1.FeedStatus, entries []rss.Entry) *deliveryLedger {
+func newDeliveryLedger(fs *v1beta1.FeedStatus, entries []rss.Entry) *deliveryLedger {
 	l := &deliveryLedger{
 		fs:                 fs,
 		entries:            entries,

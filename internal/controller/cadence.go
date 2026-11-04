@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // minParsedInterval floors any interval/retryInterval a cadence parses. The
@@ -69,7 +69,7 @@ type cadence struct {
 // cadenceOf resolves spec's timing. A blank (whitespace-only) duration takes
 // its fallback without error; an unparsable one takes its fallback and sets err;
 // a parsed one is floored at minParsedInterval (the fallbacks are not floored).
-func cadenceOf(spec *v1alpha1.FeedGroupSpec) cadence {
+func cadenceOf(spec *v1beta1.FeedGroupSpec) cadence {
 	c := cadence{maxRetries: max(spec.Retries, 1)}
 	var intervalErr, retryErr error
 	c.poll, intervalErr = parseDurationWithDefault(spec.Interval, fallbackInterval)

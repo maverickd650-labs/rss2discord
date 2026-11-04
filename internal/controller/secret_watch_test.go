@@ -39,7 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // testSecretName names the Secret in the tests that don't need a real one.
@@ -47,17 +47,17 @@ const testSecretName = "webhook-url"
 
 // sendBackedOff and fetchBackedOff are feeds in permanent backoff after a
 // send failure (fetch still Reachable) and after a fetch failure.
-func sendBackedOff(url string) v1alpha1.FeedStatus {
-	return v1alpha1.FeedStatus{
-		RSSUrl: url, BackoffUntil: "2026-01-01T18:00:00Z", RetryCount: 3,
-		Conditions: []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: metav1.ConditionTrue}},
+func sendBackedOff(url string) v1beta1.FeedStatus {
+	return v1beta1.FeedStatus{
+		RSSUrl: url, BackoffUntil: metav1TimeRFC3339("2026-01-01T18:00:00Z"), RetryCount: 3,
+		Conditions: []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: metav1.ConditionTrue}},
 	}
 }
 
-func fetchBackedOff(url string) v1alpha1.FeedStatus {
-	return v1alpha1.FeedStatus{
-		RSSUrl: url, BackoffUntil: "2026-01-01T18:00:00Z", RetryCount: 3,
-		Conditions: []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: metav1.ConditionFalse}},
+func fetchBackedOff(url string) v1beta1.FeedStatus {
+	return v1beta1.FeedStatus{
+		RSSUrl: url, BackoffUntil: metav1TimeRFC3339("2026-01-01T18:00:00Z"), RetryCount: 3,
+		Conditions: []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: metav1.ConditionFalse}},
 	}
 }
 
@@ -74,9 +74,9 @@ func TestNoteWebhookSecretVersion(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fg := &v1alpha1.FeedGroup{Status: v1alpha1.FeedGroupStatus{
+			fg := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{
 				WebhookSecretResourceVersion: tc.recorded,
-				Feeds:                        []v1alpha1.FeedStatus{sendBackedOff("send"), fetchBackedOff("fetch")},
+				Feeds:                        []v1beta1.FeedStatus{sendBackedOff("send"), fetchBackedOff("fetch")},
 			}}
 			noteWebhookSecretVersion(fg, tc.observed)
 
@@ -84,10 +84,10 @@ func TestNoteWebhookSecretVersion(t *testing.T) {
 				t.Errorf("recorded version = %q, want %q", got, tc.observed)
 			}
 			send, fetch := fg.Status.Feeds[0], fg.Status.Feeds[1]
-			if cleared := send.BackoffUntil == "" && send.RetryCount == 0; cleared != tc.wantCleared {
+			if cleared := send.BackoffUntil == nil && send.RetryCount == 0; cleared != tc.wantCleared {
 				t.Errorf("send backoff cleared = %v, want %v (%+v)", cleared, tc.wantCleared, send)
 			}
-			if fetch.BackoffUntil == "" || fetch.RetryCount != 3 {
+			if fetch.BackoffUntil == nil || fetch.RetryCount != 3 {
 				t.Errorf("a fetch-failure backoff must survive a Secret change: %+v", fetch)
 			}
 		})
@@ -113,7 +113,7 @@ func TestStripMetadataOnlyAnnotations(t *testing.T) {
 		t.Errorf("name/labels must survive: %+v", meta.ObjectMeta)
 	}
 
-	full := &v1alpha1.FeedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"keep": "me"}}}
+	full := &v1beta1.FeedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"keep": "me"}}}
 	if _, err := transform(full); err != nil {
 		t.Fatal(err)
 	}
@@ -190,9 +190,9 @@ var _ = Describe("Webhook Secret watch", func() {
 		}), withRetries("5m", 3))
 		discordServer.FailNextRequests(100, http.StatusNotFound)
 
-		feedStatus := func() v1alpha1.FeedStatus {
+		feedStatus := func() v1beta1.FeedStatus {
 			GinkgoHelper()
-			fg := &v1alpha1.FeedGroup{}
+			fg := &v1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, fg)).To(Succeed())
 			return fg.Status.Feeds[0]
 		}
@@ -200,13 +200,13 @@ var _ = Describe("Webhook Secret watch", func() {
 		By("Backing off after the webhook 404s")
 		_, err := reconcileFeedGroup(ctx, r, feedGroupName)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(feedStatus().BackoffUntil).NotTo(BeEmpty())
+		Expect(feedStatus().BackoffUntil).NotTo(BeNil())
 		attempts := discordServer.DeliveryAttempts()
 
 		By("Staying backed off while the Secret is unchanged")
 		_, err = reconcileFeedGroup(ctx, r, feedGroupName)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(feedStatus().BackoffUntil).NotTo(BeEmpty())
+		Expect(feedStatus().BackoffUntil).NotTo(BeNil())
 		Expect(discordServer.DeliveryAttempts()).To(Equal(attempts))
 
 		By("Replacing the webhook URL in the Secret")
@@ -220,7 +220,7 @@ var _ = Describe("Webhook Secret watch", func() {
 		_, err = reconcileFeedGroupNow(ctx, r, feedGroupName)
 		Expect(err).NotTo(HaveOccurred())
 		fs := feedStatus()
-		Expect(fs.BackoffUntil).To(BeEmpty())
+		Expect(fs.BackoffUntil).To(BeNil())
 		Expect(fs.RetryCount).To(BeZero())
 		Expect(discordServer.MessageCount()).To(Equal(1))
 	})
@@ -301,14 +301,14 @@ var _ = Describe("Webhook Secret watch", func() {
 		fg.Namespace = watchNamespace
 		Expect(k8sClient.Create(ctx, fg)).To(Succeed())
 
-		feedStatus := func() v1alpha1.FeedStatus {
-			var got v1alpha1.FeedGroup
+		feedStatus := func() v1beta1.FeedStatus {
+			var got v1beta1.FeedGroup
 			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(fg), &got); err != nil || len(got.Status.Feeds) == 0 {
-				return v1alpha1.FeedStatus{}
+				return v1beta1.FeedStatus{}
 			}
 			return got.Status.Feeds[0]
 		}
-		Eventually(func() string { return feedStatus().BackoffUntil }, 10*time.Second, 100*time.Millisecond).ShouldNot(BeEmpty())
+		Eventually(func() *metav1.Time { return feedStatus().BackoffUntil }, 10*time.Second, 100*time.Millisecond).ShouldNot(BeNil())
 		Expect(delivered.Load()).To(BeZero())
 
 		By("Replacing the webhook URL in the Secret")
@@ -320,11 +320,11 @@ var _ = Describe("Webhook Secret watch", func() {
 		if !watchWebhookSecrets {
 			Consistently(delivered.Load, 3*time.Second, 100*time.Millisecond).Should(BeZero(),
 				"without --watch-webhook-secrets a Secret change must not wake the FeedGroup")
-			Expect(feedStatus().BackoffUntil).NotTo(BeEmpty())
+			Expect(feedStatus().BackoffUntil).NotTo(BeNil())
 			return
 		}
 		Eventually(delivered.Load, 10*time.Second, 100*time.Millisecond).Should(BeNumerically("==", 1))
-		Eventually(func() string { return feedStatus().BackoffUntil }, 10*time.Second, 100*time.Millisecond).Should(BeEmpty())
+		Eventually(func() *metav1.Time { return feedStatus().BackoffUntil }, 10*time.Second, 100*time.Millisecond).Should(BeNil())
 	}
 
 	It("is woken by a Secret change under a running manager with --watch-webhook-secrets", func() {

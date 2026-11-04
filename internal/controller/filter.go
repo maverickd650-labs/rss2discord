@@ -22,7 +22,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -32,15 +32,17 @@ import (
 // entries are all blank (which deliberately matches nothing). The zero value
 // matches every entry.
 type entryFilter struct {
-	regex       *regexp.Regexp
-	keywords    []string
-	hasKeywords bool
+	regex           *regexp.Regexp
+	keywords        []string
+	hasKeywords     bool
+	excludeRegex    *regexp.Regexp
+	excludeKeywords []string
 }
 
-// compileEntryFilter compiles filter's regex and normalizes its keywords
+// compileEntryFilter compiles filter's regexes and normalizes its keywords
 // (trimmed, lowercased, blanks dropped). A nil filter or a blank regex compiles
 // to no regex; an invalid regex is an error.
-func compileEntryFilter(filter *v1alpha1.Filter) (entryFilter, error) {
+func compileEntryFilter(filter *v1beta1.Filter) (entryFilter, error) {
 	if filter == nil {
 		return entryFilter{}, nil
 	}
@@ -60,14 +62,43 @@ func compileEntryFilter(filter *v1alpha1.Filter) (entryFilter, error) {
 			f.keywords = append(f.keywords, keyword)
 		}
 	}
+
+	if strings.TrimSpace(filter.ExcludeRegex) != "" {
+		re, err := regexp.Compile(filter.ExcludeRegex)
+		if err != nil {
+			return entryFilter{}, fmt.Errorf("invalid filter excludeRegex %q: %w", filter.ExcludeRegex, err)
+		}
+		f.excludeRegex = re
+	}
+
+	for _, keyword := range filter.ExcludeKeywords {
+		if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" {
+			f.excludeKeywords = append(f.excludeKeywords, keyword)
+		}
+	}
+
 	return f, nil
 }
 
-// matches reports whether entry passes the filter: its compiled regex (if
-// any) must match the title and description, and, when keywords are set, at
-// least one of them must appear (case-insensitively) in them. The zero value
-// matches every entry.
+// matches reports whether entry passes the filter:
+// 1. Any matching excludeRegex or excludeKeywords vetoes the entry (returns false).
+// 2. If positive criteria are configured (regex or keywords), the entry must match them.
+// The zero value matches every entry.
 func (f entryFilter) matches(entry rss.Entry) bool {
+	content := entry.Title + "\n" + entry.Description
+
+	if f.excludeRegex != nil && f.excludeRegex.MatchString(content) {
+		return false
+	}
+	if len(f.excludeKeywords) > 0 {
+		contentLower := strings.ToLower(strings.TrimSpace(content))
+		if slices.ContainsFunc(f.excludeKeywords, func(keyword string) bool {
+			return strings.Contains(contentLower, keyword)
+		}) {
+			return false
+		}
+	}
+
 	if f.hasKeywords && len(f.keywords) == 0 {
 		return false
 	}
@@ -75,7 +106,6 @@ func (f entryFilter) matches(entry rss.Entry) bool {
 		return true
 	}
 
-	content := entry.Title + "\n" + entry.Description
 	if f.regex != nil && !f.regex.MatchString(content) {
 		return false
 	}
@@ -83,8 +113,8 @@ func (f entryFilter) matches(entry rss.Entry) bool {
 		return true
 	}
 
-	content = strings.ToLower(strings.TrimSpace(content))
+	contentLower := strings.ToLower(strings.TrimSpace(content))
 	return slices.ContainsFunc(f.keywords, func(keyword string) bool {
-		return strings.Contains(content, keyword)
+		return strings.Contains(contentLower, keyword)
 	})
 }

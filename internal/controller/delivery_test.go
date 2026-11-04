@@ -23,7 +23,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -42,7 +42,7 @@ func deliveryEntry(n int, title string) rss.Entry {
 
 // newTestDelivery opens and begins a feedSync over entries the way processFeed
 // does and returns an entryDelivery over it, with the feed's status.
-func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender MessageSender, retryCount int32) (entryDelivery, *v1alpha1.FeedStatus) {
+func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender MessageSender, retryCount int32) (entryDelivery, *v1beta1.FeedStatus) {
 	t.Helper()
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title}}")
 	fg.Spec.Retries = 3

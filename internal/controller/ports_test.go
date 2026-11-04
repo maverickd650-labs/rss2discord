@@ -28,7 +28,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -243,8 +243,8 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
-	if fs.BackoffUntil != "" {
-		t.Fatalf("BackoffUntil = %q, want none for a transient failure", fs.BackoffUntil)
+	if fs.BackoffUntil != nil {
+		t.Fatalf("BackoffUntil = %v, want none for a transient failure", fs.BackoffUntil)
 	}
 	if len(fs.LastSent) != 0 {
 		t.Fatalf("LastSent = %v, want the entry left unsent", fs.LastSent)
@@ -273,8 +273,8 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
 	// RetryCount 1 backs off 5m * 2^1 = 10m from the run's clock.
-	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); fs.BackoffUntil != want {
-		t.Fatalf("BackoffUntil = %q, want %q", fs.BackoffUntil, want)
+	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); !fs.BackoffUntil.Equal(want) {
+		t.Fatalf("BackoffUntil = %v, want %v", fs.BackoffUntil, want)
 	}
 	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, sendErrorOutcome(classClientError))); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=send_error_client_error} = %v, want 1", got)
@@ -377,8 +377,8 @@ func (f *concurrencyFetcher) FetchEntries(_ context.Context, url string, _ rss.C
 
 func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 	const n = maxConcurrentFetches*3 + 1
-	fg := &v1alpha1.FeedGroup{}
-	feeds := make([]v1alpha1.FeedSpec, n)
+	fg := &v1beta1.FeedGroup{}
+	feeds := make([]v1beta1.FeedSpec, n)
 	for i := range feeds {
 		feeds[i].RSSUrl = fmt.Sprintf("https://example.com/feed-%d.xml", i)
 	}
@@ -427,7 +427,7 @@ func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 }
 
 func TestFetchAll_NoFeeds(t *testing.T) {
-	if got := fetchAll(t.Context(), &fakeFetcher{}, &v1alpha1.FeedGroup{}, nil); len(got) != 0 {
+	if got := fetchAll(t.Context(), &fakeFetcher{}, &v1beta1.FeedGroup{}, nil); len(got) != 0 {
 		t.Fatalf("got %d outcomes, want none", len(got))
 	}
 }

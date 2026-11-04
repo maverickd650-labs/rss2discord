@@ -245,6 +245,23 @@ func TestEmbedToPayload_OmitsUnsetMedia(t *testing.T) {
 	}
 }
 
+func TestEmbedToPayload_AuthorAndFooterDetails(t *testing.T) {
+	e := Embed{
+		AuthorName:    "Author",
+		AuthorURL:     "https://example.com/author",
+		AuthorIconURL: "https://example.com/author.png",
+		FooterText:    "Footer",
+		FooterIconURL: "https://example.com/footer.png",
+	}
+	p := embedToPayload(e)
+	if p.Author == nil || p.Author.Name != e.AuthorName || p.Author.URL != e.AuthorURL || p.Author.IconURL != e.AuthorIconURL {
+		t.Fatalf("unexpected Author: %+v", p.Author)
+	}
+	if p.Footer == nil || p.Footer.Text != e.FooterText || p.Footer.IconURL != e.FooterIconURL {
+		t.Fatalf("unexpected Footer: %+v", p.Footer)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	const (
 		short      = "short"
