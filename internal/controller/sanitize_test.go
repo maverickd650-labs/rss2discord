@@ -18,6 +18,8 @@ const (
 	prefixedScriptStartTag              = "<x:script>"
 	prefixedScriptEndTag                = "</x:script>"
 	prefixedStyleEndTag                 = "</x:style>"
+	scriptStartTag                      = "<script>"
+	scriptEndTagHit                     = "x</script>"
 	beforeAfterText                     = "beforeafter"
 	beforeOuterTailAfterText            = "beforeouter-tailafter"
 )
@@ -98,11 +100,11 @@ func TestStripHTMLMarkupEdgeCases(t *testing.T) {
 
 func TestRawTextEndTagLookaheadDoesNotCacheScriptMissesAcrossEscapedStates(t *testing.T) {
 	input := `<!--<script></script>--!><script></x:script>leaked</script></x:script>`
-	secondScript := strings.LastIndex(input, "<script>")
+	secondScript := strings.LastIndex(input, scriptStartTag)
 	if secondScript < 0 {
 		t.Fatal("test input is missing its second script start tag")
 	}
-	afterSecondScript := secondScript + len("<script>")
+	afterSecondScript := secondScript + len(scriptStartTag)
 	lookahead := rawTextEndTagLookahead{input: input}
 
 	if lookahead.hasEndTagAt(0, scriptTagName) {
@@ -134,11 +136,11 @@ func TestRawTextEndTagLookaheadCachesMissingTags(t *testing.T) {
 // uncacheable script misses from rescanning the input once per nested tag.
 func TestRawTextEndTagLookaheadBoundsScriptMisses(t *testing.T) {
 	const tags = 1000
-	input := strings.Repeat("<script>", tags)
+	input := strings.Repeat(scriptStartTag, tags)
 	lookahead := rawTextEndTagLookahead{input: input}
 
 	for i := range tags {
-		if lookahead.hasEndTagAt(i*len("<script>"), scriptTagName) {
+		if lookahead.hasEndTagAt(i*len(scriptStartTag), scriptTagName) {
 			t.Fatalf("hasEndTagAt(%d) = true for an input without an end tag", i)
 		}
 	}
@@ -151,11 +153,11 @@ func TestRawTextEndTagLookaheadBoundsScriptMisses(t *testing.T) {
 // are never charged: the tokenizer consumes the scanned span anyway, so only
 // misses can make the lookahead's total work superlinear.
 func TestRawTextEndTagLookaheadScriptHitsSpendNoBudget(t *testing.T) {
-	input := strings.Repeat("x</script>", 100)
+	input := strings.Repeat(scriptEndTagHit, 100)
 	lookahead := rawTextEndTagLookahead{input: input}
 
 	for i := range 100 {
-		if !lookahead.hasEndTagAt(i*len("x</script>"), scriptTagName) {
+		if !lookahead.hasEndTagAt(i*len(scriptEndTagHit), scriptTagName) {
 			t.Fatalf("hasEndTagAt(%d) = false, want a matching end tag", i)
 		}
 	}
@@ -167,7 +169,7 @@ func TestRawTextEndTagLookaheadScriptHitsSpendNoBudget(t *testing.T) {
 // TestStripHTMLManyUnclosedNestedScripts covers the input shape the script
 // budget exists for: it must stay linear and keep the outer boundary.
 func TestStripHTMLManyUnclosedNestedScripts(t *testing.T) {
-	for _, unit := range []string{"<script>", "<!----!><script>"} {
+	for _, unit := range []string{scriptStartTag, "<!----!>" + scriptStartTag} {
 		input := prefixedScriptStartTag + strings.Repeat(unit, 20000) + prefixedScriptEndTag + visibleText
 		if got := stripHTML(input); got != visibleText {
 			t.Fatalf("stripHTML(%q...) = %q, want %q", input[:64], got, visibleText)
@@ -260,7 +262,7 @@ func stripHTMLBenchInputs() map[string]string {
 		`<p class="para">Lorem <b>ipsum</b> dolor sit amet, <a href="https://example.com/x?a=1&amp;b=2" title="t">consectetur</a> `+
 			`adipiscing elit &amp; sed do eiusmod.</p><ul><li>one</li><li>two</li></ul><br/>`, 20)
 	large := strings.Repeat(article, 40)
-	const unit = "<!----!><script>"
+	unit := "<!----!>" + scriptStartTag
 	nestedScripts := prefixedScriptStartTag + strings.Repeat(unit, 10<<20/len(unit)) + prefixedScriptEndTag
 	return map[string]string{"short": short, "article": article, "large": large, "nested-scripts": nestedScripts}
 }
