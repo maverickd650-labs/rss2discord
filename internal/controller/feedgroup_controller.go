@@ -83,10 +83,11 @@ type FeedGroupReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state. For one
-// FeedGroup it normalizes status (prepareStatus), resolves the webhook
-// (webhook), builds the timed clients (clientsFor), runs the pure middle
-// (reconcilePass: planFeeds, fetchAll, the processFeed fold), and writes status
-// and the next requeue (settleGroup). The Kubernetes I/O stays here.
+// FeedGroup it opens the status lifecycle (openGroupSync), resolves the
+// webhook (webhook), builds the timed clients (clientsFor), runs the pure middle
+// (reconcilePass: planFeeds, fetchAll, the processFeed fold), and settles
+// status and the next requeue (settlePass/settleWebhookError/settlePanic). The
+// Kubernetes I/O stays here.
 func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("feedgroup", req.NamespacedName)
 	ctx = logf.IntoContext(ctx, log)
@@ -112,73 +113,28 @@ func (r *FeedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		groupMetrics{namespace: req.Namespace, name: req.Name}.reconcileDuration(time.Since(reconcileStart))
 	}()
 
-	// Prune the metric series of feeds dropped from the spec, so editing a
-	// group's feed list doesn't leave stale series behind until the whole
-	// FeedGroup is deleted.
-	prep := prepareStatus(&feedGroup)
-	for _, url := range prep.pruned {
-		metricsFor(&feedGroup).forgetFeed(url)
-	}
-	statusSnapshot := prep.snapshot
-
-	cad := cadenceOf(&feedGroup.Spec)
+	gs := r.openGroupSync(&feedGroup)
 
 	webhookURL, err := r.webhook(ctx, &feedGroup)
 	if err != nil {
-		return r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), err)
+		return gs.settleWebhookError(ctx, err)
 	}
 
 	rssClient, discordClient := r.clientsFor(&feedGroup, webhookURL)
 
-	// An unparsable Interval is reported by settleGroup below; the pass only
-	// uses the cadence's default for the due check.
-	verdict, plan, panicked := containedPass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, cad, time.Now().UTC(), prep.specChanged)
+	// An unparsable Interval is reported by groupSync settlement below; the
+	// pass only uses the cadence's default for the due check.
+	verdict, plan, panicked := containedPass(ctx, &feedGroup, rssClient, discordClient, r.Recorder, gs.cadence, time.Now().UTC(), gs.specChanged)
 	if panicked != nil {
 		// Write what the pass got done, then fail the reconcile as the panic
 		// would have: controller-runtime logs it and requeues with backoff.
 		// The pass stopped at the panicking feed, so the feeds after it are
 		// not observed at this generation: ObservedGeneration stays put, and
 		// a spec change still forces them due on the retry.
-		if _, err := r.settle(ctx, &feedGroup, statusSnapshot, cad, retryRequeue(cad), panicked, false); err != nil {
-			return ctrl.Result{}, errors.Join(panicked, err)
-		}
-		return ctrl.Result{}, panicked
+		return ctrl.Result{}, errors.Join(panicked, gs.settlePanic(ctx, panicked))
 	}
 
-	decision := plan.requeue(cad, verdict.retry, verdict.retryAfter)
-	return r.settleGroup(ctx, &feedGroup, statusSnapshot, cad, decision, nil)
-}
-
-// statusPrep is the group's status as the reconcile starts from it.
-type statusPrep struct {
-	// snapshot is the status after normalization but before anything that
-	// reflects this reconcile's outcome, so settleGroup can skip the API write
-	// entirely when nothing actually changed.
-	snapshot *v1alpha1.FeedGroupStatus
-	// specChanged is whether the spec changed since the last reconcile
-	// (generation bump), which forces every feed due.
-	specChanged bool
-	// pruned are the RSSUrls of feeds dropped from the spec, whose metric
-	// series the caller should drop.
-	pruned []string
-}
-
-// prepareStatus normalizes feedGroup.Status to its spec (ensureFeedStatuses),
-// and on a spec change lets a feed in permanent backoff retry right away
-// instead of waiting out its BackoffUntil: it clears BackoffUntil and
-// RetryCount for every feed so the new generation gets a fresh retry cycle;
-// without resetting RetryCount the first retry after clearing BackoffUntil
-// would compute a backoff of base*2^oldRetryCount, which would immediately jump
-// back to maxPermanentBackoff. The snapshot is taken after both (they only
-// normalize existing state) and before the webhook lookup or any feed work.
-func prepareStatus(feedGroup *v1alpha1.FeedGroup) statusPrep {
-	prep := statusPrep{pruned: ensureFeedStatuses(feedGroup)}
-	prep.specChanged = feedGroup.Generation > feedGroup.Status.ObservedGeneration
-	if prep.specChanged {
-		clearPermanentBackoffs(feedGroup)
-	}
-	prep.snapshot = feedGroup.Status.DeepCopy()
-	return prep
+	return gs.settlePass(ctx, plan, verdict)
 }
 
 // reconcilePass is the pure middle of a reconcile, once the webhook is

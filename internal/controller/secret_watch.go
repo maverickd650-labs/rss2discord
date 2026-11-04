@@ -38,7 +38,7 @@ import (
 // is an error; the Secret's resourceVersion is then recorded with
 // noteWebhookSecretVersion (so a replaced Secret is noticed even when its new
 // value is unusable); and a blank value is an error. Errors are logged here and
-// returned for Reconcile to surface through settleGroup.
+// returned for Reconcile to surface through groupSync settlement.
 func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
 	log := logf.FromContext(ctx)
 	secret := &corev1.Secret{}

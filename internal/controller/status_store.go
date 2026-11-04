@@ -73,7 +73,7 @@ func errText(err error) string {
 // about every per-feed status field. Paused feeds still get an entry, since
 // they're still part of the spec. Rebuilding in spec order also keeps
 // Status.Feeds' order stable across reconciles whenever the spec doesn't
-// change, which apiequality.Semantic.DeepEqual (used by settleGroup to skip
+// change, which apiequality.Semantic.DeepEqual (used by groupSync settlement to skip
 // no-op writes) needs to avoid seeing a reordered-but-otherwise-identical slice
 // as a change. Retained entries have nil LastSent maps initialized, LastError
 // bounded, and oversized LastSeenEntry values replaced by clampWatermark

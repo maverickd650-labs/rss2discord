@@ -29,7 +29,7 @@ import (
 
 // summarizeGroup sets the group-level Ready and FeedReachable conditions from
 // the group's spec and per-feed status, and decides whether the change warrants
-// a Warning Event. It does no I/O, so settleGroup only has to emit the
+// a Warning Event. It does no I/O, so groupSync settlement only has to emit the
 // Event it reports.
 //
 // The Event is gated on a semantic change to Ready (Status, Reason or Message,
@@ -174,7 +174,7 @@ func setFeedReachableCondition(feedGroup *v1alpha1.FeedGroup) {
 // condition rather than an arbitrary one. Ties are broken by sort order
 // (rather than Go's randomized map iteration) so the result -- and thus
 // whether the condition's Message actually changed -- is deterministic
-// across reconciles of the same status, which settleGroup relies on to
+// across reconciles of the same status, which groupSync settlement relies on to
 // skip no-op status writes.
 // reasons must be non-empty.
 func dominantErrorReason(reasons map[string]string) string {
