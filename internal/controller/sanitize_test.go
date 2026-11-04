@@ -9,15 +9,13 @@ import (
 const (
 	scriptHiddenMarker                  = "rss2discord-script-hidden"
 	styleHiddenMarker                   = "rss2discord-style-hidden"
-	scriptTagName                       = "script"
-	styleTagName                        = "style"
-	textareaTagName                     = "textarea"
 	visibleText                         = "visible"
 	decodedScriptComparisonInput        = "<script>if(a<b){x++}</script>visible"
 	prefixedScriptMismatchedEndTagInput = `<x:script>hidden</script>still-hidden</x:script>visible`
 	prefixedStyleMismatchedEndTagInput  = `<x:style>hidden</style>still-hidden</x:style>visible`
 	prefixedScriptNestedRawTextInput    = `<x:script><script>hidden</x:script>visible`
 	prefixedStyleNestedRawTextInput     = `<x:style><style>hidden</x:style>visible`
+	prefixedScriptStartTag              = "<x:script>"
 	prefixedScriptEndTag                = "</x:script>"
 	prefixedStyleEndTag                 = "</x:style>"
 	beforeAfterText                     = "beforeafter"
@@ -129,6 +127,51 @@ func TestRawTextEndTagLookaheadCachesMissingTags(t *testing.T) {
 	}
 	if lookahead.hasEndTagAt(len(lookahead.input), textareaTagName) {
 		t.Fatal("hasEndTagAt() = true for a later suffix after a cached miss")
+	}
+}
+
+// TestRawTextEndTagLookaheadBoundsScriptMisses pins the budget that keeps
+// uncacheable script misses from rescanning the input once per nested tag.
+func TestRawTextEndTagLookaheadBoundsScriptMisses(t *testing.T) {
+	const tags = 1000
+	input := strings.Repeat("<script>", tags)
+	lookahead := rawTextEndTagLookahead{input: input}
+
+	for i := range tags {
+		if lookahead.hasEndTagAt(i*len("<script>"), scriptTagName) {
+			t.Fatalf("hasEndTagAt(%d) = true for an input without an end tag", i)
+		}
+	}
+	if limit := scriptLookaheadBudgetFactor * len(input); lookahead.scriptMissBytes > limit {
+		t.Fatalf("scanned %d bytes for script misses, want at most %d", lookahead.scriptMissBytes, limit)
+	}
+}
+
+// TestRawTextEndTagLookaheadScriptHitsSpendNoBudget checks that script hits
+// are never charged: the tokenizer consumes the scanned span anyway, so only
+// misses can make the lookahead's total work superlinear.
+func TestRawTextEndTagLookaheadScriptHitsSpendNoBudget(t *testing.T) {
+	input := strings.Repeat("x</script>", 100)
+	lookahead := rawTextEndTagLookahead{input: input}
+
+	for i := range 100 {
+		if !lookahead.hasEndTagAt(i*len("x</script>"), scriptTagName) {
+			t.Fatalf("hasEndTagAt(%d) = false, want a matching end tag", i)
+		}
+	}
+	if lookahead.scriptMissBytes != 0 {
+		t.Fatalf("script hits charged %d bytes, want 0", lookahead.scriptMissBytes)
+	}
+}
+
+// TestStripHTMLManyUnclosedNestedScripts covers the input shape the script
+// budget exists for: it must stay linear and keep the outer boundary.
+func TestStripHTMLManyUnclosedNestedScripts(t *testing.T) {
+	for _, unit := range []string{"<script>", "<!----!><script>"} {
+		input := prefixedScriptStartTag + strings.Repeat(unit, 20000) + prefixedScriptEndTag + visibleText
+		if got := stripHTML(input); got != visibleText {
+			t.Fatalf("stripHTML(%q...) = %q, want %q", input[:64], got, visibleText)
+		}
 	}
 }
 

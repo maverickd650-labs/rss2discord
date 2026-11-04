@@ -28,11 +28,25 @@ import (
 // schemeHTTP/schemeHTTPS are the only URL schemes normalizeIdentity and
 // httpURLOrEmpty treat as a URL rather than opaque text.
 const (
-	schemeHTTP           = "http"
-	schemeHTTPS          = "https"
-	plaintextTagName     = "plaintext"
-	scriptRawTextTagName = "script"
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
 )
+
+// Tag names stripHTML treats specially: script/style bodies are dropped, and
+// plaintext is the one raw-text element that never has an end tag.
+const (
+	scriptTagName    = "script"
+	styleTagName     = "style"
+	textareaTagName  = "textarea"
+	plaintextTagName = "plaintext"
+)
+
+// scriptLookaheadBudgetFactor bounds the bytes rawTextEndTagLookahead may scan
+// for script end tags it doesn't find, as a multiple of the input length.
+// Script misses can't be cached (see rawTextEndTagLookahead), so without a
+// bound a prefixed body holding many unclosed <script> tags rescans the rest
+// of the input once per tag: quadratic in a feed body that can reach 10MB.
+const scriptLookaheadBudgetFactor = 4
 
 // httpURLOrEmpty returns rawURL unchanged if it parses with an http or https
 // scheme, or "" otherwise. It does not require a host or check reachability.
@@ -133,7 +147,7 @@ func stripHTML(input string) string {
 						}
 					}
 				}
-			case localTag == scriptRawTextTagName || localTag == "style":
+			case localTag == scriptTagName || localTag == styleTagName:
 				// Keep the full tag name so only its matching qualified end
 				// tag can terminate a prefixed Atom XHTML body.
 				if tokenType == html.StartTagToken {
@@ -153,7 +167,7 @@ func stripHTML(input string) string {
 func isRawTextElement(tag string) bool {
 	switch tag {
 	case "iframe", "noembed", "noframes", "noscript", plaintextTagName,
-		scriptRawTextTagName, "style", "textarea", "title", "xmp":
+		scriptTagName, styleTagName, textareaTagName, "title", "xmp":
 		return true
 	}
 	return false
@@ -164,9 +178,17 @@ func isRawTextElement(tag string) bool {
 // their closing tag independently of prior content. Script data has escaped
 // and double-escaped states, so a later suffix can have a matching end tag
 // even when an earlier scan from the same input returned no match.
+//
+// Script misses are instead charged to scriptMissBytes, bounded by
+// scriptLookaheadBudgetFactor. Hits need no budget: the tokenizer then
+// consumes the same span the scan read. Once the budget is spent, script
+// lookups report no end tag without scanning. That keeps the outer prefixed
+// boundary visible while the nested body stays hidden; at worst, an outer end
+// tag quoted inside a nested script exposes the rest of that body.
 type rawTextEndTagLookahead struct {
-	input     string
-	noEndTags map[string]struct{}
+	input           string
+	noEndTags       map[string]struct{}
+	scriptMissBytes int
 }
 
 // hasEndTagAt reports whether input after offset contains a matching end tag
@@ -178,10 +200,16 @@ func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
 	if _, knownMissing := l.noEndTags[tag]; knownMissing {
 		return false
 	}
-	if hasRawTextEndTag(strings.NewReader(l.input[offset:]), tag) {
+	suffix := l.input[offset:]
+	if tag == scriptTagName && l.scriptMissBytes+len(suffix) > scriptLookaheadBudgetFactor*len(l.input) {
+		return false
+	}
+	if hasRawTextEndTag(strings.NewReader(suffix), tag) {
 		return true
 	}
-	if tag != scriptRawTextTagName {
+	if tag == scriptTagName {
+		l.scriptMissBytes += len(suffix)
+	} else {
 		if l.noEndTags == nil {
 			l.noEndTags = make(map[string]struct{})
 		}
