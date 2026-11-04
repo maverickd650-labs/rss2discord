@@ -17,15 +17,15 @@ limitations under the License.
 package msgtemplate
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/maverickd650-labs/rss2discord/internal/testutil"
 )
 
 // sandboxDir is the only production directory allowed to import the template
@@ -43,6 +43,26 @@ const (
 // Execute's output cap.
 var templateEngines = []string{"text/template", "text/template/parse", "html/template"}
 
+// checkForbiddenImports returns the template-engine imports in file, a parsed Go
+// file at rel (slash-separated, relative to the module root), or nil when rel
+// is inside the sandbox.
+func checkForbiddenImports(rel string, file *ast.File) []string {
+	if strings.HasPrefix(rel, sandboxDir) {
+		return nil
+	}
+	var problems []string
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		if slices.Contains(templateEngines, path) {
+			problems = append(problems, rel+": imports "+path+"; message templates must go through internal/msgtemplate")
+		}
+	}
+	return problems
+}
+
 // forbiddenImports returns the template-engine imports in src, a Go source
 // file at rel (slash-separated, relative to the module root), or nil when rel
 // is inside the sandbox.
@@ -55,57 +75,16 @@ func forbiddenImports(t *testing.T, rel, src string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var problems []string
-	for _, spec := range file.Imports {
-		path, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if slices.Contains(templateEngines, path) {
-			problems = append(problems, rel+": imports "+path+"; message templates must go through internal/msgtemplate")
-		}
-	}
-	return problems
+	return checkForbiddenImports(rel, file)
 }
 
 // Only the sandbox may import a template engine, so every message template is
 // compiled by Compile and run by Execute. Mirrors
 // TestProductionCallersKeepTheSSRFGuard in internal/rss.
 func TestOnlyTheSandboxImportsTextTemplate(t *testing.T) {
-	root := moduleRoot(t)
-	skipDirs := []string{".git", ".claude", "bin", "vendor", "testdata", "dist", "node_modules"}
 	var problems []string
-	files := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path != root && slices.Contains(skipDirs, d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		files++
-		problems = append(problems, forbiddenImports(t, filepath.ToSlash(rel), string(src))...)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if files == 0 {
-		t.Fatal("no production Go files found; the walk is broken")
+	for rel, file := range testutil.ProductionFiles(t, nil) {
+		problems = append(problems, checkForbiddenImports(rel, file)...)
 	}
 	for _, p := range problems {
 		t.Error(p)
@@ -135,25 +114,5 @@ func TestForbiddenImports(t *testing.T) {
 				t.Fatalf("got %d problems, want %d: %q", len(got), tc.want, got)
 			}
 		})
-	}
-}
-
-// moduleRoot walks up from the test's working directory to the directory
-// holding go.mod.
-func moduleRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("go.mod not found above the test directory")
-		}
-		dir = parent
 	}
 }

@@ -54,11 +54,11 @@ func (f *urlFetcher) FetchEntries(_ context.Context, url string, _ rss.CacheVali
 // passGroup is a two-feed FeedGroup (feed-a, feed-b) with ensured statuses.
 func passGroup(t *testing.T, name string) *v1alpha1.FeedGroup {
 	t.Helper()
-	fg, _ := newMetricsFeedGroup("reconcile-pass", name, "{{.Title}}")
+	fg, _ := newMetricsFeedGroup("reconcile-pass", name, tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	fg.Spec.Feeds = []v1alpha1.FeedSpec{
-		{RSSUrl: passFeedA, Format: "{{.Title}}"},
-		{RSSUrl: passFeedB, Format: "{{.Title}}"},
+		{RSSUrl: passFeedA, Format: tmplTitle},
+		{RSSUrl: passFeedB, Format: tmplTitle},
 	}
 	ensureFeedStatuses(fg)
 	return fg
@@ -119,10 +119,18 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 		name        string
 		force       bool
 		prepare     func(a, b *v1alpha1.FeedStatus)
+		mutate      func(fg *v1alpha1.FeedGroup)
 		wantFetched []string
 		wantNextDue bool
 	}{
 		{name: "never checked feeds are fetched", wantFetched: []string{passFeedA, passFeedB}},
+		{
+			name: "a paused feed is skipped",
+			mutate: func(fg *v1alpha1.FeedGroup) {
+				fg.Spec.Feeds[0].Paused = true
+			},
+			wantFetched: []string{passFeedB},
+		},
 		{
 			name: "recently checked feed waits for its interval",
 			prepare: func(a, _ *v1alpha1.FeedStatus) {
@@ -153,6 +161,9 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 			fg := passGroup(t, "fg-plan")
 			if tc.prepare != nil {
 				tc.prepare(feedStatusFor(fg, passFeedA), feedStatusFor(fg, passFeedB))
+			}
+			if tc.mutate != nil {
+				tc.mutate(fg)
 			}
 			fetcher := &urlFetcher{result: rss.FetchResult{}}
 
