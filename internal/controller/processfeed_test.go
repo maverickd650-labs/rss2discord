@@ -1755,6 +1755,15 @@ func TestProcessFeed_PermanentSendFailureBackoff(t *testing.T) {
 		t.Fatalf("unexpected event before backoff cap: %s", ev)
 	default:
 	}
+
+	r := &FeedGroupReconciler{Client: fakeApplyClient()}
+	res, err := r.openGroupSync(fg).settlePass(t.Context(), feedPlan{active: []v1alpha1.FeedSpec{feed}}, verdict)
+	if err != nil {
+		t.Fatalf("settlePass error: %v", err)
+	}
+	if res.RequeueAfter < 30*time.Minute || res.RequeueAfter > 33*time.Minute {
+		t.Fatalf("settlePass RequeueAfter = %v, want within [30m, 33m]", res.RequeueAfter)
+	}
 }
 
 func TestProcessFeed_RateLimitStopsRemainingEntries(t *testing.T) {

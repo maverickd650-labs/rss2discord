@@ -90,6 +90,15 @@ func TestReconcilePass_RateLimitStopsLaterFeeds(t *testing.T) {
 	if len(plan.active) != 2 {
 		t.Errorf("plan.active = %d feeds, want both planned", len(plan.active))
 	}
+
+	r := &FeedGroupReconciler{Client: fakeApplyClient()}
+	res, err := r.openGroupSync(fg).settlePass(t.Context(), plan, verdict)
+	if err != nil {
+		t.Fatalf("settlePass error: %v", err)
+	}
+	if res.RequeueAfter != 7*time.Second {
+		t.Errorf("settlePass RequeueAfter = %v, want 7s", res.RequeueAfter)
+	}
 }
 
 func TestReconcilePass_WithoutRateLimitEveryFeedIsProcessed(t *testing.T) {
