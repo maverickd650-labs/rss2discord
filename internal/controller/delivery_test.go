@@ -104,7 +104,7 @@ func TestEntryDelivery_SendFailureStopsTheScan(t *testing.T) {
 	forgetMetricsAfter(t, ns, name)
 
 	entries := []rss.Entry{deliveryEntry(1, "one"), deliveryEntry(2, "two"), deliveryEntry(3, "three")}
-	boom := &discord.HTTPStatusError{StatusCode: 500, Status: "500 Internal Server Error"}
+	boom := errInternalServer
 	sender := &fakeSender{results: []error{nil, boom}}
 	d, fs := newTestDelivery(t, ns, name, entries, sender, 0)
 

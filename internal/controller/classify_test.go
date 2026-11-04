@@ -102,7 +102,7 @@ func TestClassifySendError(t *testing.T) {
 		{reasonRateLimited, &discord.RateLimitError{RetryAfter: time.Second}, classRateLimited},
 		{reasonWebhookInvalid, &discord.HTTPStatusError{StatusCode: 404, Status: http404Status}, classWebhookInvalid},
 		{reasonHTTP410, &discord.HTTPStatusError{StatusCode: 410, Status: "410 Gone"}, classGone},
-		{reasonServerError, &discord.HTTPStatusError{StatusCode: 500, Status: "500 Internal Server Error"}, classServerError},
+		{reasonServerError, &discord.HTTPStatusError{StatusCode: 500, Status: http500Status}, classServerError},
 		{reasonTimeout, fmt.Errorf("send: %w", timeoutError{}), classTimeout},
 		{"TLSCertificateVerification", doError(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, false), classTLSError},
 		{"TLSHostname", doError(x509.HostnameError{Host: "discord.com"}, false), classTLSError},

@@ -1,9 +1,20 @@
 package controller
 
-import "errors"
+import (
+	"net/http"
+
+	"github.com/maverickd650-labs/rss2discord/internal/discord"
+)
+
+// http500Status is the HTTP status string for a 500 Internal Server Error response,
+// shared across test cases to satisfy goconst.
+const http500Status = "500 Internal Server Error"
 
 // errInternalServer is a common 500 error used in fakeSender setups.
-var errInternalServer = errors.New("500 internal server error")
+var errInternalServer = &discord.HTTPStatusError{
+	StatusCode: http.StatusInternalServerError,
+	Status:     http500Status,
+}
 
 // overflowingInterval passes the CRD's Pattern and MaxLength yet is rejected
 // by time.ParseDuration (overflow); notParsable is rejected outright.

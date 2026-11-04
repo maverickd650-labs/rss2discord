@@ -1645,6 +1645,10 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	default:
 		t.Fatal("expected SendFailed event once retries exhausted")
 	}
+	delivered := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if delivered == nil || delivered.Reason != reasonServerError {
+		t.Fatalf("Delivered condition = %v, want Reason %s", delivered, reasonServerError)
+	}
 
 	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
 	if verdict.retry {
