@@ -45,7 +45,7 @@ var limitTestFormats = []struct {
 		entry:    `<entry>%s</entry>`,
 		category: `<category term=" %s "/>`,
 	},
- {
+	{
 		name:     "atom without xmlns",
 		document: `<feed xmlns:media="http://search.yahoo.com/mrss/">%s<title>After entries</title></feed>`,
 		entry:    `<entry>%s</entry>`,
