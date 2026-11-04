@@ -1418,8 +1418,9 @@ func TestProcessFeed_EmbedRendering(t *testing.T) {
 	if embed.Title != embedTitle {
 		t.Fatalf("embed.Title = %q, want %q", embed.Title, embedTitle)
 	}
-	if embed.Color != 65280 { // 0x00FF00
-		t.Fatalf("embed.Color = %d, want 65280", embed.Color)
+	const wantColor = 0x00FF00 // EmbedSpec.Color "#00FF00"
+	if embed.Color != wantColor {
+		t.Fatalf("embed.Color = %#06x, want %#06x", embed.Color, wantColor)
 	}
 	if embed.ThumbnailURL != "https://example.com/pic.jpg" {
 		t.Fatalf("embed.ThumbnailURL = %q, want https://example.com/pic.jpg", embed.ThumbnailURL)
