@@ -1279,3 +1279,514 @@ func TestProcessFeed_DeliveryRunSurvivesSuccessfulFetches(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessFeed_Filter(t *testing.T) {
+	tests := []struct {
+		name         string
+		filter       *v1alpha1.Filter
+		entries      []rss.Entry
+		wantContent  string
+		wantLastSeen string
+	}{
+		{
+			name:   "regex match",
+			filter: &v1alpha1.Filter{Regex: "Kubernetes|K8s"},
+			entries: []rss.Entry{
+				{ID: "k8s-1", Title: "Kubernetes Release v1.30", Description: "New Kubernetes version released", Seq: 1},
+				{ID: "python-conf", Title: "Python Conference Schedule", Description: "Python conference talks announced", Seq: 0},
+			},
+			wantContent:  "Kubernetes Release v1.30",
+			wantLastSeen: "k8s-1",
+		},
+		{
+			name:   "keyword match in title",
+			filter: &v1alpha1.Filter{Keywords: []string{"Python", "Django"}},
+			entries: []rss.Entry{
+				{ID: "python-1", Title: "Python Tutorial", Description: "Learn Python basics", Seq: 1},
+				{ID: "js-1", Title: "JavaScript Best Practices", Description: "Advanced JS patterns", Seq: 0},
+			},
+			wantContent:  "Python Tutorial",
+			wantLastSeen: "python-1",
+		},
+		{
+			name:   "keyword match in description",
+			filter: &v1alpha1.Filter{Keywords: []string{"Django"}},
+			entries: []rss.Entry{
+				{ID: "web-frameworks", Title: "Web Frameworks", Description: "Deep dive into Django internals", Seq: 1},
+				{ID: "unrelated", Title: "Rust Updates", Description: "Rust 2026 edition", Seq: 0},
+			},
+			wantContent:  "Web Frameworks",
+			wantLastSeen: "web-frameworks",
+		},
+		{
+			name:   "zero matches does not send or advance watermark",
+			filter: &v1alpha1.Filter{Keywords: []string{"Nomatch"}},
+			entries: []rss.Entry{
+				{ID: "filtered-1", Title: "Article 1", Description: "Desc 1", Seq: 1},
+				{ID: "filtered-2", Title: "Article 2", Description: "Desc 2", Seq: 0},
+			},
+			wantContent:  "",
+			wantLastSeen: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, feed := newMetricsFeedGroup("processfeed-filter", "fg-filter", "")
+			feed.Filter = tc.filter
+			fg.Spec.Feeds[0] = feed
+			sender := &fakeSender{}
+
+			processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: tc.entries}, nil, sender))
+
+			if tc.wantContent == "" {
+				if len(sender.sent) != 0 {
+					t.Fatalf("sender called %d times, want 0", len(sender.sent))
+				}
+			} else {
+				if len(sender.sent) != 1 {
+					t.Fatalf("sender called %d times, want 1", len(sender.sent))
+				}
+				if !strings.Contains(sender.sent[0].Content, tc.wantContent) {
+					t.Fatalf("sent content = %q, want %q", sender.sent[0].Content, tc.wantContent)
+				}
+			}
+			fs := feedStatusFor(fg, feed.RSSUrl)
+			if fs.LastSeenEntry != tc.wantLastSeen {
+				t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, tc.wantLastSeen)
+			}
+		})
+	}
+}
+
+func TestProcessFeed_StripHTMLFromDescription(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-strip-html", "fg-strip-html", defaultDescriptionFormat)
+	sender := &fakeSender{}
+
+	fetch := rss.FetchResult{Entries: []rss.Entry{{
+		ID:          "html-article",
+		Title:       "HTML Article",
+		Description: "<p>First paragraph.</p><ul><li>One</li></ul>",
+		Link:        "https://example.com/html-article",
+	}}}
+
+	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
+
+	if len(sender.sent) != 1 {
+		t.Fatalf("sender called %d times, want 1", len(sender.sent))
+	}
+	body := sender.sent[0].Content
+	if strings.Contains(body, "<p>") || strings.Contains(body, "<li>") {
+		t.Fatalf("sent content contains HTML tags: %q", body)
+	}
+	if !strings.Contains(body, "First paragraph.") || !strings.Contains(body, "One") {
+		t.Fatalf("sent content missing text: %q", body)
+	}
+}
+
+func TestProcessFeed_EmbedRendering(t *testing.T) {
+	const embedTitle = "Embed Article"
+	fg, feed := newMetricsFeedGroup("processfeed-embed", "fg-embed", "")
+	fg.Spec.Embed = &v1alpha1.EmbedSpec{
+		Enabled: true,
+		Color:   "#00FF00",
+	}
+	feed.ForumThreadName = tmplTitle
+	fg.Spec.Feeds[0] = feed
+	sender := &fakeSender{}
+
+	fetch := rss.FetchResult{Entries: []rss.Entry{{
+		ID:          "embed-article",
+		Title:       embedTitle,
+		Description: "Embed body text",
+		Link:        "https://example.com/embed-article",
+		Image:       "https://example.com/pic.jpg",
+	}}}
+
+	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
+
+	if len(sender.sent) != 1 {
+		t.Fatalf("sender called %d times, want 1", len(sender.sent))
+	}
+	msg := sender.sent[0]
+	if msg.ThreadName != embedTitle {
+		t.Fatalf("ThreadName = %q, want %q", msg.ThreadName, embedTitle)
+	}
+	if msg.Embed == nil {
+		t.Fatal("msg.Embed is nil")
+	}
+	embed := msg.Embed
+	if embed.Title != embedTitle {
+		t.Fatalf("embed.Title = %q, want %q", embed.Title, embedTitle)
+	}
+	const wantColor = 0x00FF00 // EmbedSpec.Color "#00FF00"
+	if embed.Color != wantColor {
+		t.Fatalf("embed.Color = %#06x, want %#06x", embed.Color, wantColor)
+	}
+	if embed.ThumbnailURL != "https://example.com/pic.jpg" {
+		t.Fatalf("embed.ThumbnailURL = %q, want https://example.com/pic.jpg", embed.ThumbnailURL)
+	}
+}
+
+func TestProcessFeed_EmbedDropsUnsafeURLs(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-embed-unsafe", "fg-embed-unsafe", "")
+	fg.Spec.Embed = &v1alpha1.EmbedSpec{Enabled: true}
+	fg.Spec.Feeds[0] = feed
+	sender := &fakeSender{}
+
+	fetch := rss.FetchResult{Entries: []rss.Entry{{
+		ID:          "unsafe-url-article",
+		Title:       "Unsafe URL Article",
+		Description: "Body",
+		Link:        jsAlertURL,
+		Image:       "data:image/png;base64,AAAA",
+	}}}
+
+	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
+
+	if len(sender.sent) != 1 {
+		t.Fatalf("sender called %d times, want 1", len(sender.sent))
+	}
+	embed := sender.sent[0].Embed
+	if embed == nil {
+		t.Fatal("sender.sent[0].Embed is nil")
+	}
+	if embed.URL != "" {
+		t.Fatalf("embed.URL = %q, want empty for unsafe URL", embed.URL)
+	}
+	if embed.ThumbnailURL != "" {
+		t.Fatalf("embed.ThumbnailURL = %q, want empty for unsafe enclosure", embed.ThumbnailURL)
+	}
+}
+
+func TestProcessFeed_NoDateCatchUpAndAdvance(t *testing.T) {
+	const (
+		articleB = "Article B"
+		articleC = "Article C"
+	)
+	fg, feed := newMetricsFeedGroup("processfeed-nodate", "fg-nodate", tmplTitle)
+	fg.Spec.CatchUpLimit = new(int32(2))
+	fg.Spec.Feeds[0] = feed
+
+	entries := []rss.Entry{
+		{ID: "c", Title: articleC, Seq: 0},
+		{ID: "b", Title: articleB, Seq: 1},
+		{ID: "a", Title: "Article A", Seq: 2},
+	}
+
+	sender := &fakeSender{}
+	processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: slices.Clone(entries)}, nil, sender))
+
+	if len(sender.sent) != 2 {
+		t.Fatalf("sent %d messages, want 2 (newest B and C)", len(sender.sent))
+	}
+	if sender.sent[0].Content != articleB || sender.sent[1].Content != articleC {
+		t.Fatalf("sent = [%q, %q], want [%s, %s]", sender.sent[0].Content, sender.sent[1].Content, articleB, articleC)
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.LastSeenEntry != "c" {
+		t.Fatalf("LastSeenEntry = %q, want 'c'", fs.LastSeenEntry)
+	}
+
+	fresh := []rss.Entry{
+		{ID: "d", Title: "Article D", Seq: 0},
+		{ID: "c", Title: articleC, Seq: 1},
+		{ID: "b", Title: articleB, Seq: 2},
+		{ID: "a", Title: "Article A", Seq: 3},
+	}
+	sender2 := &fakeSender{}
+	processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: fresh}, nil, sender2))
+
+	if len(sender2.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1 (only fresh entry D)", len(sender2.sent))
+	}
+	if sender2.sent[0].Content != "Article D" {
+		t.Fatalf("sent = %q, want Article D", sender2.sent[0].Content)
+	}
+	if fs.LastSeenEntry != "d" {
+		t.Fatalf("LastSeenEntry = %q, want 'd'", fs.LastSeenEntry)
+	}
+}
+
+func TestProcessFeed_ScrolledOutWatermarkFallsBackToCatchUp(t *testing.T) {
+	const rep2ID = "replacement-2"
+	fg, feed := newMetricsFeedGroup("processfeed-stale-watermark", "fg-stale-watermark", tmplTitle)
+	fg.Spec.CatchUpLimit = new(int32(5))
+	fg.Spec.Feeds[0] = feed
+
+	sender := &fakeSender{}
+	firstFetch := rss.FetchResult{Entries: []rss.Entry{
+		{ID: "original-article", Title: "Original Article", Seq: 0},
+	}}
+	processFeed(t.Context(), testRun(t, fg, feed, firstFetch, nil, sender))
+
+	if len(sender.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(sender.sent))
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.LastSeenEntry != "original-article" {
+		t.Fatalf("LastSeenEntry = %q, want original-article", fs.LastSeenEntry)
+	}
+
+	sender2 := &fakeSender{}
+	secondFetch := rss.FetchResult{Entries: []rss.Entry{
+		{ID: rep2ID, Title: "Replacement Article 2", Seq: 0},
+		{ID: "replacement-1", Title: "Replacement Article 1", Seq: 1},
+	}}
+	processFeed(t.Context(), testRun(t, fg, feed, secondFetch, nil, sender2))
+
+	if len(sender2.sent) != 2 {
+		t.Fatalf("sent %d messages, want 2 replacements", len(sender2.sent))
+	}
+	if fs.LastSeenEntry != rep2ID {
+		t.Fatalf("LastSeenEntry = %q, want %s", fs.LastSeenEntry, rep2ID)
+	}
+
+	sender3 := &fakeSender{}
+	thirdFetch := rss.FetchResult{Entries: []rss.Entry{
+		{ID: "replacement-3", Title: "Replacement Article 3", Seq: 0},
+		{ID: rep2ID, Title: "Replacement Article 2", Seq: 1},
+		{ID: "replacement-1", Title: "Replacement Article 1", Seq: 2},
+	}}
+	processFeed(t.Context(), testRun(t, fg, feed, thirdFetch, nil, sender3))
+
+	if len(sender3.sent) != 1 || sender3.sent[0].Content != "Replacement Article 3" {
+		t.Fatalf("sent %v, want exactly Replacement Article 3", sender3.sent)
+	}
+	if fs.LastSeenEntry != "replacement-3" {
+		t.Fatalf("LastSeenEntry = %q, want replacement-3", fs.LastSeenEntry)
+	}
+}
+
+func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-render-event", "fg-render-event", "{{.Bogus}}")
+	fg.Spec.Retries = 2
+	fg.Spec.Feeds[0] = feed
+	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "e1", Title: "Title 1"}}}
+	recorder := events.NewFakeRecorder(10)
+	sender := &fakeSender{}
+
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if !verdict.retry {
+		t.Fatal("verdict.retry = false, want true")
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.RetryCount != 1 {
+		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
+	}
+	if len(recorder.Events) != 0 {
+		t.Fatalf("unexpected event before retries exhausted: %d", len(recorder.Events))
+	}
+
+	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false once retries are exhausted")
+	}
+	if fs.RetryCount != 2 {
+		t.Fatalf("RetryCount = %d, want 2", fs.RetryCount)
+	}
+	select {
+	case ev := <-recorder.Events:
+		if !strings.Contains(ev, eventReasonRenderFailed) {
+			t.Fatalf("event = %q, want reason %s", ev, eventReasonRenderFailed)
+		}
+	default:
+		t.Fatal("expected RenderFailed event once retries exhausted")
+	}
+
+	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false once retries are exhausted")
+	}
+	if fs.RetryCount != 3 {
+		t.Fatalf("RetryCount = %d, want 3", fs.RetryCount)
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("unexpected duplicate event: %s", ev)
+	default:
+	}
+	if fs.LastSeenEntry != "" {
+		t.Fatalf("LastSeenEntry = %q, want empty (entry held)", fs.LastSeenEntry)
+	}
+}
+
+func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-send-event", "fg-send-event", "")
+	fg.Spec.Retries = 2
+	fg.Spec.Feeds[0] = feed
+	fetch := oneEntryFetch()
+	recorder := events.NewFakeRecorder(10)
+	sender := &fakeSender{results: []error{errInternalServer}}
+
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if !verdict.retry {
+		t.Fatal("verdict.retry = false, want true")
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.RetryCount != 1 {
+		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
+	}
+	if len(recorder.Events) != 0 {
+		t.Fatalf("unexpected event before retries exhausted: %d", len(recorder.Events))
+	}
+
+	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false once retries are exhausted")
+	}
+	if fs.RetryCount != 2 {
+		t.Fatalf("RetryCount = %d, want 2", fs.RetryCount)
+	}
+	select {
+	case ev := <-recorder.Events:
+		if !strings.Contains(ev, eventReasonSendFailed) {
+			t.Fatalf("event = %q, want reason %s", ev, eventReasonSendFailed)
+		}
+	default:
+		t.Fatal("expected SendFailed event once retries exhausted")
+	}
+	delivered := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	if delivered == nil || delivered.Reason != reasonServerError {
+		t.Fatalf("Delivered condition = %v, want Reason %s", delivered, reasonServerError)
+	}
+
+	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false once retries are exhausted")
+	}
+	if fs.RetryCount != 3 {
+		t.Fatalf("RetryCount = %d, want 3", fs.RetryCount)
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("unexpected duplicate event: %s", ev)
+	default:
+	}
+}
+
+func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-send-halt", "fg-send-halt", tmplTitle)
+	fg.Spec.Retries = 3
+	fg.Spec.Feeds[0] = feed
+	fetch := rss.FetchResult{Entries: []rss.Entry{
+		{ID: "older-article", Title: "Older Article", Seq: 1},
+		{ID: "newer-article", Title: "Newer Article", Seq: 0},
+	}}
+
+	sender := &fakeSender{results: []error{errInternalServer}}
+	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
+
+	if len(sender.sent) != 1 {
+		t.Fatalf("sender called %d times, want 1 (newer must not be attempted)", len(sender.sent))
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.LastSeenEntry != "" {
+		t.Fatalf("LastSeenEntry = %q, want empty (must not advance past failed entry)", fs.LastSeenEntry)
+	}
+
+	sender2 := &fakeSender{}
+	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender2))
+
+	if len(sender2.sent) != 2 {
+		t.Fatalf("sender called %d times, want 2", len(sender2.sent))
+	}
+	if sender2.sent[0].Content != "Older Article" || sender2.sent[1].Content != "Newer Article" {
+		t.Fatalf("sent = [%q, %q], want [Older Article, Newer Article]", sender2.sent[0].Content, sender2.sent[1].Content)
+	}
+	if fs.LastSeenEntry != "newer-article" {
+		t.Fatalf("LastSeenEntry = %q, want newer-article", fs.LastSeenEntry)
+	}
+}
+
+func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-send-etag", "fg-send-etag", "")
+	fg.Spec.Retries = 2
+	fg.Spec.Feeds[0] = feed
+	fetch := oneEntryFetch()
+	fetch.ETag = `"v1"`
+
+	sender := &fakeSender{results: []error{errInternalServer}}
+	for range 2 {
+		processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
+	}
+
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.RetryCount != 2 {
+		t.Fatalf("RetryCount = %d, want 2", fs.RetryCount)
+	}
+	if fs.ETag != "" {
+		t.Fatalf("ETag = %q, want empty while entry is unsent", fs.ETag)
+	}
+
+	sender2 := &fakeSender{}
+	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender2))
+
+	if len(sender2.sent) != 1 {
+		t.Fatalf("sender called %d times, want 1", len(sender2.sent))
+	}
+	if fs.ETag != `"v1"` {
+		t.Fatalf("ETag = %q, want \"v1\"", fs.ETag)
+	}
+}
+
+func TestProcessFeed_PermanentSendFailureBackoff(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-perm-send", "fg-perm-send", "")
+	fg.Spec.Retries = 3
+	fg.Spec.RetryInterval = "5m"
+	fg.Spec.Feeds[0] = feed
+
+	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 404, Status: "404 Not Found"}}}
+	recorder := events.NewFakeRecorder(10)
+
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender).withRecorder(recorder))
+
+	if verdict.retry {
+		t.Fatal("verdict.retry = true, want false for permanent send failure")
+	}
+	fs := feedStatusFor(fg, feed.RSSUrl)
+	if fs.RetryCount != 1 {
+		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
+	}
+	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); fs.BackoffUntil != want {
+		t.Fatalf("BackoffUntil = %q, want %q", fs.BackoffUntil, want)
+	}
+	select {
+	case ev := <-recorder.Events:
+		t.Fatalf("unexpected event before backoff cap: %s", ev)
+	default:
+	}
+
+	r := &FeedGroupReconciler{Client: fakeApplyClient()}
+	res, err := r.openGroupSync(fg).settlePass(t.Context(), feedPlan{active: []v1alpha1.FeedSpec{feed}}, verdict)
+	if err != nil {
+		t.Fatalf("settlePass error: %v", err)
+	}
+	if res.RequeueAfter < 30*time.Minute || res.RequeueAfter > 33*time.Minute {
+		t.Fatalf("settlePass RequeueAfter = %v, want within [30m, 33m]", res.RequeueAfter)
+	}
+}
+
+func TestProcessFeed_RateLimitStopsRemainingEntries(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("processfeed-rl-stop", "fg-rl-stop", "")
+	fg.Spec.CatchUpLimit = new(int32(5))
+	fg.Spec.Feeds[0] = feed
+
+	entries := make([]rss.Entry, 5)
+	for i := range entries {
+		id := fmt.Sprintf("guid-%d", i)
+		entries[i] = rss.Entry{ID: id, Title: id, Seq: 4 - i}
+	}
+
+	sender := &fakeSender{results: []error{&discord.RateLimitError{RetryAfter: 2 * time.Second}}}
+	verdict := processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: entries}, nil, sender))
+
+	if len(sender.sent) != 1 {
+		t.Fatalf("sender called %d times, want exactly 1 attempt before rate-limit stop", len(sender.sent))
+	}
+	if verdict.retryAfter != 2*time.Second {
+		t.Fatalf("verdict.retryAfter = %v, want 2s", verdict.retryAfter)
+	}
+	if !verdict.retry {
+		t.Fatal("verdict.retry = false, want true")
+	}
+}

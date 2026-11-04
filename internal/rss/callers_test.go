@@ -5,13 +5,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/maverickd650-labs/rss2discord/internal/testutil"
 )
 
 const (
@@ -165,65 +164,14 @@ func isNilIdent(e ast.Expr) bool {
 	return ok && id.Name == "nil"
 }
 
-// moduleRoot walks up from the test's working directory to the directory
-// holding go.mod.
-func moduleRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("go.mod not found above the test directory")
-		}
-		dir = parent
-	}
-}
-
 // Every production caller in the module must get its feed client through the
 // SSRF guard; see checkHTTPClientUse. This keeps a future custom *http.Client
 // or transport in a caller from escaping the guard in internal/rss/transport.go.
 func TestProductionCallersKeepTheSSRFGuard(t *testing.T) {
-	root := moduleRoot(t)
-	skipDirs := []string{".git", ".claude", "bin", "vendor", "testdata", "dist", "node_modules"}
 	fset := token.NewFileSet()
 	var problems []string
-	files := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path != root && slices.Contains(skipDirs, d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		files++
-		problems = append(problems, checkHTTPClientUse(fset, file, filepath.ToSlash(rel))...)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if files == 0 {
-		t.Fatal("no production Go files found; the walk is broken")
+	for rel, file := range testutil.ProductionFiles(t, fset) {
+		problems = append(problems, checkHTTPClientUse(fset, file, rel)...)
 	}
 	for _, p := range problems {
 		t.Error(p)

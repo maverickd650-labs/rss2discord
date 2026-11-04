@@ -79,7 +79,7 @@ func TestRenderTemplate_LinkSchemeFiltered(t *testing.T) {
 	}
 	for link, want := range map[string]string{
 		"https://example.com/b":         "[https://example.com/b]",
-		"javascript:alert(1)":           "[]",
+		jsAlertURL:                      "[]",
 		"data:text/html,x":              "[]",
 		"http://example.com/a?q=1#part": "[http://example.com/a?q=1#part]",
 		"HTTPS://example.com/a":         "[HTTPS://example.com/a]",
