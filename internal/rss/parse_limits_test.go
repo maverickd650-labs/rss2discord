@@ -15,7 +15,7 @@ import (
 // Literals repeated across the limit tests below; constants keep goconst quiet.
 const (
 	formatAtomWithoutXMLNS = "atom without xmlns"
-	hrefArticle     = "article"
+	hrefArticle            = "article"
 	blogBaseURL     = "https://example.com/blog/"
 	blogPostArticle = "https://example.com/blog/posts/article"
 	postsDir        = "posts/"
