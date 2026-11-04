@@ -299,8 +299,12 @@ func TestOpenGroupSync(t *testing.T) {
 	if syncUnchanged.specChanged {
 		t.Error("expected specChanged to be false when Generation == ObservedGeneration")
 	}
-	if retained.BackoffUntil != testBackoffUntil || retained.RetryCount != 5 {
-		t.Errorf("expected backoff preserved when spec unchanged, got BackoffUntil=%q RetryCount=%d", retained.BackoffUntil, retained.RetryCount)
+	gotRetained := feedStatusFor(fg, retainedURL)
+	if gotRetained == nil {
+		t.Fatalf("expected retained feed %q to exist after unchanged-generation openGroupSync", retainedURL)
+	}
+	if gotRetained.BackoffUntil != testBackoffUntil || gotRetained.RetryCount != 5 {
+		t.Errorf("expected backoff preserved when spec unchanged, got BackoffUntil=%q RetryCount=%d", gotRetained.BackoffUntil, gotRetained.RetryCount)
 	}
 }
 
