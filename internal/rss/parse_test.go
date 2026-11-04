@@ -544,13 +544,6 @@ func TestParseFeed_AtomAuthorAndCategories(t *testing.T) {
 	}
 }
 
-func TestTrimCategories(t *testing.T) {
-	got := trimCategories([]string{"  a  ", "", "b", "   "})
-	if want := []string{"a", "b"}; !slices.Equal(got, want) {
-		t.Fatalf("trimCategories() = %v, want %v", got, want)
-	}
-}
-
 func TestParseFeed_UnknownRootReturnsUnrecognizedFormatError(t *testing.T) {
 	// Root element is none of rss/feed/RDF; this must surface as a distinct,
 	// permanent error rather than silently falling through to Atom (which

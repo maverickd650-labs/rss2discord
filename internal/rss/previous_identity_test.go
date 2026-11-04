@@ -26,21 +26,17 @@ import (
 // a test can run the second reading with or without its pre-check.
 func atomReading(t *testing.T, data []byte) (entries []Entry, items []atomItem, feedBase string) {
 	t.Helper()
-	entries, _, err := parseAtom(data)
+	var (
+		title nsTexts
+		err   error
+	)
+	items, title, feedBase, err = decodeAtomItems(data, atomNamespace)
 	if err != nil {
-		t.Fatalf("parseAtom: %v", err)
+		t.Fatalf("decodeAtomItems: %v", err)
 	}
-	var feed atomFeed
-	if err := unmarshalXML(data, &feed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	for _, e := range feed.Entries {
-		items = append(items, atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published})
-	}
-	for i := range entries {
-		entries[i].PreviousID, entries[i].PreviousIDSource = "", 0
-	}
-	return entries, items, strings.TrimSpace(feed.Base)
+	_ = title
+	entries = atomItemsToEntries(items, feedBase)
+	return entries, items, feedBase
 }
 
 func anyPreviousID(entries []Entry) bool {

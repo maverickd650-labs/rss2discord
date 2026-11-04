@@ -28,18 +28,6 @@ import (
 // namespace on a conforming <feed>.
 const atomNamespace = "http://www.w3.org/2005/Atom"
 
-// entryList collects a feed's <entry> elements but, like rssItems, stops
-// decoding after maxFeedEntries.
-type entryList[E any] []E
-
-// UnmarshalXML retains the first maxFeedEntries entries. XML decoding errors are
-// returned; excess entries are ignored.
-func (c *entryList[E]) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
-	var err error
-	*c, err = appendBounded(d, start, *c, maxFeedEntries)
-	return err
-}
-
 // atomEntryCore is everything an Atom entry carries that doesn't decide its
 // identity, link or dates. The fields that do are declared per vocabulary (see
 // atomEntry and looseAtomEntry).
@@ -99,26 +87,22 @@ type atomAuthor struct {
 	Name string `xml:"name"`
 }
 
-// atomCategory is Atom's <category term="..."/>; Term is the human-readable
-// label (RSS's <category> has no separate machine label, so RSS and Atom
-// categories are normalized to the same []string on Entry).
-type atomCategory struct {
-	Term string `xml:"term,attr"`
-}
+// atomCategories collects an entry's <category term="..."/> elements, keeping
+// the trimmed text of the first maxCategories non-blank terms.
+type atomCategories []string
 
-// atomCategories collects an entry's <category> elements, keeping the first
-// maxCategories with a non-blank term.
-type atomCategories []atomCategory
-
-// UnmarshalXML retains categories with a non-blank term up to maxCategories.
-// XML decoding errors are returned; blank or excess categories are ignored.
+// UnmarshalXML retains the trimmed attribute value of non-blank category terms up
+// to maxCategories. XML decoding errors are returned; blank or excess categories
+// are ignored.
 func (c *atomCategories) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
-	var cat atomCategory
+	var cat struct {
+		Term string `xml:"term,attr"`
+	}
 	if err := d.DecodeElement(&cat, &start); err != nil {
 		return err
 	}
-	if strings.TrimSpace(cat.Term) != "" && len(*c) < maxCategories {
-		*c = append(*c, cat)
+	if term := strings.TrimSpace(cat.Term); term != "" && len(*c) < maxCategories {
+		*c = append(*c, term)
 	}
 	return nil
 }
@@ -292,27 +276,19 @@ func (item atomItem) identityFields(base, id, updated, published string, links a
 	return f
 }
 
-// parseAtom returns entries in document order and the feed title, or nil entries
-// and an empty title on an XML decoding error. Identity falls back from ID to
-// resolved link to title to ContentID. XHTML
-// text constructs retain their inner markup. Description falls back from summary
-// to content to the Media RSS group description. Invalid or missing dates become
-// zero times after trying published and then updated.
-func parseAtom(data []byte) ([]Entry, string, error) {
-	root, err := rootElement(data)
-	if err != nil {
-		return nil, "", err
-	}
-
+// decodeAtomItems decodes data into its atomItems, feed title, and feedBase
+// attribute, selecting strict Atom 1.0 or loose Atom based on whether rootSpace
+// matches atomNamespace.
+func decodeAtomItems(data []byte, rootSpace string) ([]atomItem, nsTexts, string, error) {
 	var (
 		items        []atomItem
 		title        nsTexts
 		feedBaseAttr string
 	)
-	if root.Space == atomNamespace {
+	if rootSpace == atomNamespace {
 		var feed atomFeed
 		if err := unmarshalXML(data, &feed); err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		items = make([]atomItem, len(feed.Entries))
 		for i, e := range feed.Entries {
@@ -322,7 +298,7 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 	} else {
 		var feed looseAtomFeed
 		if err := unmarshalXML(data, &feed); err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		items = make([]atomItem, len(feed.Entries))
 		for i, e := range feed.Entries {
@@ -331,8 +307,11 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		title, feedBaseAttr = feed.Title, feed.Base
 	}
 
-	feedBase := strings.TrimSpace(feedBaseAttr)
+	return items, title, strings.TrimSpace(feedBaseAttr), nil
+}
 
+// atomItemsToEntries converts Atom items in document order into Entries.
+func atomItemsToEntries(items []atomItem, feedBase string) []Entry {
 	entries := make([]Entry, 0, len(items))
 	for i, item := range items {
 		base := item.effectiveBase(feedBase)
@@ -345,11 +324,6 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 		content := atomText(item.Content)
 		description := cmp.Or(atomText(item.Summary), content, item.MediaGroup.description())
 
-		categoryTerms := make([]string, len(item.Categories))
-		for i, c := range item.Categories {
-			categoryTerms[i] = c.Term
-		}
-
 		entry := Entry{
 			ID:          current.id,
 			IDSource:    current.idSource,
@@ -359,16 +333,32 @@ func parseAtom(data []byte) ([]Entry, string, error) {
 			Content:     content,
 			Image:       current.image,
 			Author:      strings.TrimSpace(item.Author.Name),
-			Categories:  trimCategories(categoryTerms),
+			Categories:  item.Categories,
 			Published:   current.published,
 			Seq:         i,
 		}
 		entries = append(entries, withContentID(entry))
 	}
+	return entries
+}
+
+// parseAtom returns entries in document order and the feed title, or nil entries
+// and an empty title on an XML decoding error. Identity falls back from ID to
+// resolved link to title to ContentID. XHTML
+// text constructs retain their inner markup. Description falls back from summary
+// to content to the Media RSS group description. Invalid or missing dates become
+// zero times after trying published and then updated.
+func parseAtom(data []byte, rootSpace string) ([]Entry, string, error) {
+	items, title, feedBase, err := decodeAtomItems(data, rootSpace)
+	if err != nil {
+		return nil, "", err
+	}
+
+	entries := atomItemsToEntries(items, feedBase)
 
 	// Only an Atom 1.0 document is read by namespace, so only there can an
 	// earlier release's local-name reading have picked another identity.
-	if root.Space == atomNamespace {
+	if rootSpace == atomNamespace {
 		entries = withPreviousIDs(entries, items, feedBase, data)
 	}
 
