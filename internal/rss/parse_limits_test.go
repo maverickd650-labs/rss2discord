@@ -284,7 +284,7 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 				image := fmt.Sprintf(`<media:content medium="image" url="https://example.com/%s.png"/>`, name)
 				links := ""
 				if format.name == formatAtom || format.name == "atom without xmlns" {
-					// Fill all three retained link roles on each Atom entry.
+					// Exercise retained Atom links on each entry.
 					links = fmt.Sprintf(`<link rel="self" href="self"/><link href="https://example.com/%s"/>`, name)
 					if format.name == formatAtom {
 						image = fmt.Sprintf(`<link rel="enclosure" type="image/png" href="https://example.com/%s.png"/>`, name)
@@ -307,7 +307,7 @@ func TestParseFeed_MediaAndLinkLimitsResetPerEntry(t *testing.T) {
 				if want := "https://example.com/" + name + ".png"; entries[i].Image != want {
 					t.Fatalf("entry[%d] image = %q, want %q", i, entries[i].Image, want)
 				}
-				if want := "https://example.com/" + name; format.name == formatAtom && entries[i].Link != want {
+				if want := "https://example.com/" + name; (format.name == formatAtom || format.name == "atom without xmlns") && entries[i].Link != want {
 					t.Fatalf("entry[%d] link = %q, want %q", i, entries[i].Link, want)
 				}
 			}
