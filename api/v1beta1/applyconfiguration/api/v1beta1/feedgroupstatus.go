@@ -30,7 +30,7 @@ type FeedGroupStatusApplyConfiguration struct {
 	// overall state, following the standard Kubernetes condition conventions.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 	// feeds is the observed status of every feed in Spec.Feeds, keyed by
-	// RSSUrl.
+	// name.
 	Feeds []FeedStatusApplyConfiguration `json:"feeds,omitempty"`
 	// observedGeneration is the most recent generation observed for this FeedGroup
 	// by the controller.

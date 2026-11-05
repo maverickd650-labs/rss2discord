@@ -49,14 +49,14 @@ const testSecretName = "webhook-url"
 // send failure (fetch still Reachable) and after a fetch failure.
 func sendBackedOff(url string) v1beta1.FeedStatus {
 	return v1beta1.FeedStatus{
-		RSSUrl: url, BackoffUntil: metav1TimeRFC3339("2026-01-01T18:00:00Z"), RetryCount: 3,
+		Name: testFeedName(url), URL: url, BackoffUntil: metav1TimeRFC3339("2026-01-01T18:00:00Z"), RetryCount: 3,
 		Conditions: []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: metav1.ConditionTrue}},
 	}
 }
 
 func fetchBackedOff(url string) v1beta1.FeedStatus {
 	return v1beta1.FeedStatus{
-		RSSUrl: url, BackoffUntil: metav1TimeRFC3339("2026-01-01T18:00:00Z"), RetryCount: 3,
+		Name: testFeedName(url), URL: url, BackoffUntil: metav1TimeRFC3339("2026-01-01T18:00:00Z"), RetryCount: 3,
 		Conditions: []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: metav1.ConditionFalse}},
 	}
 }

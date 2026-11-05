@@ -146,34 +146,70 @@ type Embed struct {
 
 // Message is a single Discord webhook delivery. Content is sent as a plain
 // message; Embed, if set, renders as a colored bubble alongside it. Setting
-// ThreadName posts the message as a new thread in a forum channel; ThreadID
-// posts into an existing thread/forum post instead.
+// ThreadName posts the message as a new thread in a forum channel (tagged with
+// AppliedTags); ThreadID posts into an existing thread/forum post instead.
+//
+// MentionRoleIDs and MentionUserIDs are the only roles and users the message
+// may ping (allowed_mentions); putting the matching <@&id>/<@id> text in
+// Content is the caller's job. Silent suppresses notifications and
+// SuppressEmbeds suppresses link previews (which also hides Embed).
 type Message struct {
-	Content    string
-	Embed      *Embed
-	ThreadName string
-	ThreadID   string
-	Username   string
-	AvatarURL  string
+	Content        string
+	Embed          *Embed
+	ThreadName     string
+	ThreadID       string
+	AppliedTags    []string
+	Username       string
+	AvatarURL      string
+	MentionRoleIDs []string
+	MentionUserIDs []string
+	Silent         bool
+	SuppressEmbeds bool
+}
+
+// Message flags a webhook may set.
+const (
+	// flagSuppressEmbeds is SUPPRESS_EMBEDS: no link previews (or embeds).
+	flagSuppressEmbeds = 1 << 2
+	// flagSuppressNotifications is SUPPRESS_NOTIFICATIONS (@silent).
+	flagSuppressNotifications = 1 << 12
+)
+
+// flags is msg's message flags field.
+func (msg Message) flags() int {
+	var flags int
+	if msg.SuppressEmbeds {
+		flags |= flagSuppressEmbeds
+	}
+	if msg.Silent {
+		flags |= flagSuppressNotifications
+	}
+	return flags
 }
 
 type discordPayload struct {
 	Content         string                 `json:"content,omitempty"`
 	Embeds          []discordEmbed         `json:"embeds,omitempty"`
 	ThreadName      string                 `json:"thread_name,omitempty"`
+	AppliedTags     []string               `json:"applied_tags,omitempty"`
 	Username        string                 `json:"username,omitempty"`
 	AvatarURL       string                 `json:"avatar_url,omitempty"`
 	AllowedMentions discordAllowedMentions `json:"allowed_mentions"`
+	Flags           int                    `json:"flags,omitempty"`
 }
 
 // discordAllowedMentions with an empty Parse list suppresses all @everyone,
-// @here, role, and user mentions. Feed entry titles/descriptions are
-// untrusted external text that ends up in the plain-content path, so
-// without this a feed containing "@everyone" would actually ping the
-// channel. Embeds are unaffected either way: Discord never parses mentions
-// out of embed fields.
+// @here, role, and user mentions, except for the IDs explicitly listed in
+// Roles and Users (the configured Mentions). Feed entry titles/descriptions
+// are untrusted external text that ends up in the plain-content path, so
+// without this a feed containing "@everyone" -- or any role or user mention
+// -- would actually ping. Parse never lists "roles" or "users", so an ID can
+// only ping when it was configured. Embeds are unaffected either way: Discord
+// never parses mentions out of embed fields.
 type discordAllowedMentions struct {
 	Parse []string `json:"parse"`
+	Roles []string `json:"roles,omitempty"`
+	Users []string `json:"users,omitempty"`
 }
 
 type discordEmbed struct {
@@ -326,7 +362,12 @@ func prepareRequest(webhookURL string, msg Message) (preparedRequest, error) {
 		ThreadName:      msg.ThreadName,
 		Username:        msg.Username,
 		AvatarURL:       msg.AvatarURL,
-		AllowedMentions: discordAllowedMentions{Parse: []string{}},
+		AllowedMentions: discordAllowedMentions{Parse: []string{}, Roles: msg.MentionRoleIDs, Users: msg.MentionUserIDs},
+		Flags:           msg.flags(),
+	}
+	if msg.ThreadName != "" {
+		// applied_tags only applies to a new forum post.
+		payload.AppliedTags = msg.AppliedTags
 	}
 	if msg.Embed != nil {
 		payload.Embeds = []discordEmbed{embedToPayload(*msg.Embed)}

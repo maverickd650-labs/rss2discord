@@ -142,7 +142,7 @@ func setFeedReachableCondition(feedGroup *v1beta1.FeedGroup) {
 	for _, fs := range feedGroup.Status.Feeds {
 		cond := apimeta.FindStatusCondition(fs.Conditions, v1beta1.FeedConditionTypeReachable)
 		if cond != nil && cond.Status == metav1.ConditionFalse {
-			unreachable[fs.RSSUrl] = cond.Reason
+			unreachable[fs.Name] = cond.Reason
 		}
 	}
 

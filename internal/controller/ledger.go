@@ -26,6 +26,7 @@ import (
 
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // maxLastSentPerFeed bounds how many sent-entry hashes are retained per feed
@@ -34,7 +35,7 @@ import (
 //
 // The cap is kept deliberately modest because the whole status object lives in
 // etcd, which has a ~1MB object soft limit: at Feeds.MaxItems (50) this cap
-// bounds LastSent at 50*maxLastSentPerFeed {64-hex-hash: RFC3339} pairs, so the
+// bounds LastSent at 50*maxLastSentPerFeed {64-hex-hash: timestamp} pairs, so the
 // product is the real budget to watch, not this number alone. LastSent is only
 // a dedup backstop -- LastSeenEntry is the primary watermark -- so it just needs
 // to cover the entries currently in a feed's window (typically 10-50), not its
@@ -68,9 +69,9 @@ func hashIdentity(identity string) string {
 }
 
 // pruneLastSent caps a feed's sent-entry dedup map at max entries, dropping
-// the oldest (by recorded RFC3339 send timestamp, which sorts lexically;
-// ties broken by key) first. Without this, LastSent grows by one key per sent message forever.
-func pruneLastSent(sent map[string]string, max int) {
+// the oldest (by recorded send time; ties broken by key) first. Without this,
+// LastSent grows by one key per sent message forever.
+func pruneLastSent(sent map[string]metav1.Time, max int) {
 	if len(sent) <= max {
 		return
 	}
@@ -78,7 +79,7 @@ func pruneLastSent(sent map[string]string, max int) {
 	keys := slices.SortedFunc(maps.Keys(sent), func(a, b string) int {
 		// Timestamps have one-second resolution, so ties are common; break
 		// them on the key so the dropped subset is deterministic.
-		return cmp.Or(strings.Compare(sent[a], sent[b]), strings.Compare(a, b))
+		return cmp.Or(sent[a].Compare(sent[b].Time), strings.Compare(a, b))
 	})
 
 	for _, key := range keys[:len(keys)-max] {
@@ -98,7 +99,7 @@ func strippedKey(stripped string) string {
 
 // moveSentKey renames a LastSent key, keeping its send time, or just drops it
 // when to is empty. A key already recorded under to is not overwritten.
-func moveSentKey(lastSent map[string]string, from, to string) {
+func moveSentKey(lastSent map[string]metav1.Time, from, to string) {
 	sentAt, ok := lastSent[from]
 	if !ok {
 		return
@@ -422,13 +423,13 @@ func (l *deliveryLedger) setWatermark(i int) {
 }
 
 // sentAtKey returns when LastSent recorded key as sent.
-func (l *deliveryLedger) sentAtKey(key string) (string, bool) {
+func (l *deliveryLedger) sentAtKey(key string) (metav1.Time, bool) {
 	sentAt, ok := l.fs.LastSent[key]
 	return sentAt, ok
 }
 
 // recordKey writes key to LastSent at sentAt, overwriting what was there.
-func (l *deliveryLedger) recordKey(key, sentAt string) {
+func (l *deliveryLedger) recordKey(key string, sentAt metav1.Time) {
 	l.fs.LastSent[key] = sentAt
 }
 
@@ -480,7 +481,7 @@ func (l *deliveryLedger) sent(entry rss.Entry) bool {
 // watermark to it. It is recorded under its own key and, when it is unique in
 // the fetch, its stripped identity's too, so a later rotation of its fragment or
 // ref still finds it.
-func (l *deliveryLedger) markHandled(entry rss.Entry, now string) {
+func (l *deliveryLedger) markHandled(entry rss.Entry, now metav1.Time) {
 	rec := l.recordOf(entry)
 	for _, key := range rec.keys {
 		l.recordKey(key, now)

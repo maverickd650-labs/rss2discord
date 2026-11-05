@@ -1,9 +1,11 @@
 package discord
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -449,4 +451,65 @@ func TestClampEmbedTotalLength_OtherFieldsAloneOverCap(t *testing.T) {
 	if _, again := clampEmbedTotalLength(got); again != 0 {
 		t.Fatalf("second clamp trimmed %d, want 0", again)
 	}
+}
+
+// preparedPayload runs msg through prepareRequest and decodes the body.
+func preparedPayload(t *testing.T, msg Message) (map[string]any, string) {
+	t.Helper()
+	p, err := prepareRequest("https://discord.com/api/webhooks/1/token", msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(p.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body, p.target
+}
+
+func TestPrepareRequest_MentionsFlagsAndTags(t *testing.T) {
+	t.Run("defaults suppress every mention and set no flags", func(t *testing.T) {
+		body, _ := preparedPayload(t, Message{Content: "x", AppliedTags: []string{"9"}})
+		if got, want := body["allowed_mentions"], map[string]any{"parse": []any{}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("allowed_mentions = %v, want %v", got, want)
+		}
+		if _, ok := body["flags"]; ok {
+			t.Fatalf("flags = %v, want omitted", body["flags"])
+		}
+		if _, ok := body["applied_tags"]; ok {
+			t.Fatal("applied_tags sent without a new forum post")
+		}
+	})
+
+	t.Run("configured mentions, flags and forum tags", func(t *testing.T) {
+		body, target := preparedPayload(t, Message{
+			Content:        "<@&1> <@2> x",
+			MentionRoleIDs: []string{"1"},
+			MentionUserIDs: []string{"2"},
+			Silent:         true,
+			SuppressEmbeds: true,
+			ThreadName:     "post",
+			AppliedTags:    []string{"7", "8"},
+		})
+		want := map[string]any{"parse": []any{}, "roles": []any{"1"}, "users": []any{"2"}}
+		if got := body["allowed_mentions"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("allowed_mentions = %v, want %v", got, want)
+		}
+		if got := body["flags"]; got != float64(flagSuppressEmbeds|flagSuppressNotifications) {
+			t.Fatalf("flags = %v, want %d", got, flagSuppressEmbeds|flagSuppressNotifications)
+		}
+		if got := body["applied_tags"]; !reflect.DeepEqual(got, []any{"7", "8"}) {
+			t.Fatalf("applied_tags = %v", got)
+		}
+		if strings.Contains(target, "thread_id") {
+			t.Fatalf("target = %q, want no thread_id for a new post", target)
+		}
+	})
+
+	t.Run("silent alone", func(t *testing.T) {
+		body, _ := preparedPayload(t, Message{Content: "x", Silent: true})
+		if got := body["flags"]; got != float64(flagSuppressNotifications) {
+			t.Fatalf("flags = %v, want %d", got, flagSuppressNotifications)
+		}
+	})
 }

@@ -74,7 +74,8 @@ func TestFeedGroup_DeepCopyTimestamps(t *testing.T) {
 		Status: FeedGroupStatus{
 			Feeds: []FeedStatus{
 				{
-					RSSUrl:       "https://example.com/feed.xml",
+					Name:         "example",
+					URL:          "https://example.com/feed.xml",
 					LastChecked:  &now,
 					BackoffUntil: &now,
 				},

@@ -57,8 +57,8 @@ func passGroup(t *testing.T, name string) *v1beta1.FeedGroup {
 	fg, _ := newMetricsFeedGroup("reconcile-pass", name, tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	fg.Spec.Feeds = []v1beta1.FeedSpec{
-		{RSSUrl: passFeedA, Format: tmplTitle},
-		{RSSUrl: passFeedB, Format: tmplTitle},
+		{Name: testFeedName(passFeedA), URL: passFeedA, Message: &v1beta1.MessageSpec{Content: tmplTitle}},
+		{Name: testFeedName(passFeedB), URL: passFeedB, Message: &v1beta1.MessageSpec{Content: tmplTitle}},
 	}
 	ensureFeedStatuses(fg)
 	return fg
@@ -81,10 +81,10 @@ func TestReconcilePass_RateLimitStopsLaterFeeds(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sender called %d times, want 1 (the second feed must not be attempted)", len(sender.sent))
 	}
-	if a := feedStatusFor(fg, passFeedA); a.LastError == "" || a.LastChecked == nil {
+	if a := feedStatusFor(fg, testFeedName(passFeedA)); a.LastError == "" || a.LastChecked == nil {
 		t.Errorf("feed-a status = %+v, want the rate limit recorded", a)
 	}
-	if b := feedStatusFor(fg, passFeedB); b.LastChecked != nil || b.LastError != "" || b.RetryCount != 0 {
+	if b := feedStatusFor(fg, testFeedName(passFeedB)); b.LastChecked != nil || b.LastError != "" || b.RetryCount != 0 {
 		t.Errorf("feed-b status = %+v, want untouched", b)
 	}
 	if len(plan.active) != 2 {
@@ -114,7 +114,7 @@ func TestReconcilePass_WithoutRateLimitEveryFeedIsProcessed(t *testing.T) {
 	if len(sender.sent) != 2 || len(fetcher.fetched) != 2 {
 		t.Fatalf("sent %d, fetched %d, want 2 each", len(sender.sent), len(fetcher.fetched))
 	}
-	if got := feedStatusFor(fg, passFeedB).LastChecked; got == nil || !got.Time.Equal(passNow) {
+	if got := feedStatusFor(fg, testFeedName(passFeedB)).LastChecked; got == nil || !got.Time.Equal(passNow) {
 		t.Errorf("LastChecked = %v, want the pass's now", got)
 	}
 }
@@ -136,7 +136,7 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 		{
 			name: "a paused feed is skipped",
 			mutate: func(fg *v1beta1.FeedGroup) {
-				fg.Spec.Feeds[0].Paused = true
+				fg.Spec.Feeds[0].Suspend = true
 			},
 			wantFetched: []string{passFeedB},
 		},
@@ -169,7 +169,7 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fg := passGroup(t, "fg-plan")
 			if tc.prepare != nil {
-				tc.prepare(feedStatusFor(fg, passFeedA), feedStatusFor(fg, passFeedB))
+				tc.prepare(feedStatusFor(fg, testFeedName(passFeedA)), feedStatusFor(fg, testFeedName(passFeedB)))
 			}
 			if tc.mutate != nil {
 				tc.mutate(fg)
@@ -189,18 +189,18 @@ func TestReconcilePass_PlansWhichFeedsAreFetched(t *testing.T) {
 	}
 }
 
-// ensureFeedStatuses rebuilds Status.Feeds to the spec and reports the URLs it
+// ensureFeedStatuses rebuilds Status.Feeds to the spec and reports the names it
 // pruned, so openGroupSync can drop their metric series.
-func TestEnsureFeedStatuses_ReturnsPrunedURLs(t *testing.T) {
+func TestEnsureFeedStatuses_ReturnsPrunedNames(t *testing.T) {
 	fg := passGroup(t, "fg-prune")
-	fg.Status.Feeds = append(fg.Status.Feeds, v1beta1.FeedStatus{RSSUrl: "https://example.com/gone"})
+	fg.Status.Feeds = append(fg.Status.Feeds, v1beta1.FeedStatus{Name: testFeedName("https://example.com/gone"), URL: "https://example.com/gone"})
 
 	pruned := ensureFeedStatuses(fg)
 
-	if !slices.Equal(pruned, []string{"https://example.com/gone"}) {
+	if !slices.Equal(pruned, []string{testFeedName("https://example.com/gone")}) {
 		t.Fatalf("pruned = %v, want the removed feed", pruned)
 	}
-	if len(fg.Status.Feeds) != 2 || fg.Status.Feeds[0].RSSUrl != passFeedA || fg.Status.Feeds[1].RSSUrl != passFeedB {
+	if len(fg.Status.Feeds) != 2 || fg.Status.Feeds[0].URL != passFeedA || fg.Status.Feeds[1].URL != passFeedB {
 		t.Fatalf("Status.Feeds = %+v, want the spec's feeds in order", fg.Status.Feeds)
 	}
 }
@@ -221,7 +221,7 @@ func TestOpenGroupSync_SpecChangeClearsPermanentBackoff(t *testing.T) {
 			fg := passGroup(t, "fg-backoff")
 			fg.Generation, fg.Status.ObservedGeneration = tc.generation, tc.observed
 			until := metav1TimeRFC3339(passNow.Add(time.Hour).Format(time.RFC3339))
-			fs := feedStatusFor(fg, passFeedA)
+			fs := feedStatusFor(fg, testFeedName(passFeedA))
 			fs.LastError, fs.RetryCount, fs.BackoffUntil = "404", 4, until
 
 			sync := (&FeedGroupReconciler{}).openGroupSync(fg)
@@ -229,7 +229,7 @@ func TestOpenGroupSync_SpecChangeClearsPermanentBackoff(t *testing.T) {
 			if sync.specChanged != tc.wantChanged {
 				t.Errorf("specChanged = %v, want %v", sync.specChanged, tc.wantChanged)
 			}
-			got := feedStatusFor(fg, passFeedA)
+			got := feedStatusFor(fg, testFeedName(passFeedA))
 			if kept := got.BackoffUntil.Equal(until) && got.RetryCount == 4; kept != tc.wantKept {
 				t.Errorf("backoff kept = %v (BackoffUntil %v, RetryCount %d), want %v", kept, got.BackoffUntil, got.RetryCount, tc.wantKept)
 			}

@@ -55,9 +55,9 @@ func TestFeedRendererBuild_OutputLimitAppliesToEveryTemplate(t *testing.T) {
 		name string
 		feed *v1beta1.FeedSpec
 	}{
-		{name: "message", feed: &v1beta1.FeedSpec{Format: authorField}},
-		{name: "embed description", feed: &v1beta1.FeedSpec{Embed: &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: authorField}}},
-		{name: "forum thread name", feed: &v1beta1.FeedSpec{Format: "safe", ForumThreadName: authorField}},
+		{name: "message", feed: &v1beta1.FeedSpec{Message: &v1beta1.MessageSpec{Content: authorField}}},
+		{name: "embed description", feed: &v1beta1.FeedSpec{Message: &v1beta1.MessageSpec{Embed: &v1beta1.EmbedSpec{Description: authorField}}}},
+		{name: "forum thread name", feed: &v1beta1.FeedSpec{Message: &v1beta1.MessageSpec{Content: "safe"}, ForumPost: &v1beta1.ForumPostSpec{Name: authorField}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := rss.Entry{Author: strings.Repeat("x", (1<<20)+1)}

@@ -70,7 +70,7 @@ reviews:
         Non-test code: status is written only via server-side apply
         (applyStatus, Status().Apply) as field owner feedgroup-controller.
         Per-feed state lives in the Status.Feeds []FeedStatus slice keyed by
-        rssUrl (rebuilt by ensureFeedStatuses, looked up by feedStatusFor),
+        feed name (rebuilt by ensureFeedStatuses, looked up by feedStatusFor),
         never new parallel maps. Metrics: feedOperationsTotal gets exactly one
         outcome label; outcomeFetchError/outcomeSendError are only label
         prefixes, never recorded raw; a new outcome needs Grafana dashboard and

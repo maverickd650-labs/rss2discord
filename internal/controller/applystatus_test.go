@@ -52,11 +52,11 @@ func TestStatusApplyConfigurationRoundTrip(t *testing.T) {
 		}},
 		Feeds: []v1beta1.FeedStatus{{
 			Name:          "test-feed",
-			RSSUrl:        "https://example.com/feed.xml",
+			URL:           "https://example.com/feed.xml",
 			LastChecked:   &transition,
 			Initialized:   true,
 			LastSeenEntry: "https://example.com/post",
-			LastSent:      map[string]string{"abc123": "2026-01-02T03:04:05Z"},
+			LastSent:      map[string]metav1.Time{"abc123": ts("2026-01-02T03:04:05Z")},
 			LastError:     "feed fetch failed: 404 Not Found",
 			ETag:          `"etag"`,
 			LastModified:  "Fri, 02 Jan 2026 03:04:05 GMT",

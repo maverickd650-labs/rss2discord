@@ -27,6 +27,7 @@ import (
 
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // currentStateVersion is the FeedStatus.StateVersion this controller writes: the
@@ -170,7 +171,7 @@ func (s *feedSync) apply(ctx context.Context, run feedRun, attempt feedAttempt) 
 		// LastChecked deliberately doesn't advance here: it tracks the last
 		// *successful* check, so a feed stuck failing shows an aging
 		// LastChecked rather than looking freshly checked every retry.
-		log.Error(err, "failed to fetch RSS feed", "url", feed.RSSUrl)
+		log.Error(err, "failed to fetch RSS feed", "url", feed.URL)
 		verdict := attempt.record(attemptOutcome{kind: attemptFetchFailed}, err)
 		s.close(syncFetchFailed)
 		return verdict
@@ -194,7 +195,7 @@ func (s *feedSync) apply(ctx context.Context, run feedRun, attempt feedAttempt) 
 	// a "feed was empty" delivery of its whole backlog.
 	renderer, err := newFeedRenderer(run.group, &feed)
 	if err != nil {
-		log.Error(err, "invalid feed render configuration", "url", feed.RSSUrl)
+		log.Error(err, "invalid feed render configuration", "url", feed.URL)
 		verdict := attempt.record(attemptOutcome{kind: attemptConfigError}, err)
 		s.close(syncConfigError)
 		return verdict
@@ -303,7 +304,9 @@ func (s *feedSync) identity(entry rss.Entry) string {
 // markHandled records entry as delivered (or given up on) at the sync's time
 // and moves the watermark to it.
 func (s *feedSync) markHandled(entry rss.Entry) {
-	s.ledger.markHandled(entry, s.spec.now.Format(time.RFC3339))
+	// LastSent is persisted at one-second resolution; truncating here keeps
+	// the in-memory status equal to what a later read returns.
+	s.ledger.markHandled(entry, metav1.NewTime(s.spec.now.UTC().Truncate(time.Second)))
 	s.handled++
 }
 

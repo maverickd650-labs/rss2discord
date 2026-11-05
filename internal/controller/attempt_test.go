@@ -436,7 +436,7 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
 	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
-	fs := &v1beta1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
+	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL, RetryCount: tc.retryCount}
 	if tc.failing {
 		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(attemptInstant, time.Hour)
 	}
@@ -512,7 +512,7 @@ func assertOutcomeMetric(t *testing.T, group, wantLabel string) {
 	t.Helper()
 	total := 0.0
 	for _, label := range expectedOutcomes() {
-		count := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(attemptNS, group, attemptURL, label))
+		count := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(attemptNS, group, testFeedName(attemptURL), label))
 		total += count
 		if want := label == wantLabel; (count == 1) != want {
 			t.Errorf("outcome %q counted %v times, want counted=%t", label, count, want)
@@ -561,7 +561,7 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 			fg := &v1beta1.FeedGroup{}
 			fg.Namespace, fg.Name = attemptNS, name
 			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
-			fs := &v1beta1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
+			fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL, RetryCount: tc.retryCount}
 			testAttempt(t, fg, fs, attemptURL, attemptInstant).record(tc.outcome, tc.err)
 		})
 	}
@@ -575,7 +575,7 @@ func TestFeedAttempt_ConfigErrorWarnsOncePerDistinctError(t *testing.T) {
 	forgetMetricsAfter(t, attemptNS, name)
 	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name = attemptNS, name
-	fs := &v1beta1.FeedStatus{RSSUrl: attemptURL}
+	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL}
 	recorder := events.NewFakeRecorder(10)
 	attempt := testAttempt(t, fg, fs, attemptURL, attemptInstant).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
@@ -703,10 +703,10 @@ func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
 	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-fg-late-clock", attemptGeneration
 	fg.Spec.Retries, fg.Spec.RetryInterval = 3, "5m"
-	fs := &v1beta1.FeedStatus{RSSUrl: attemptURL}
+	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL}
 	// Recorded two hours after the reconcile started: longer than the backoff.
 	recorded := attemptInstant.Add(2 * time.Hour)
-	attempt := testRun(t, fg, v1beta1.FeedSpec{RSSUrl: attemptURL}, rss.FetchResult{}, nil, nil).
+	attempt := testRun(t, fg, v1beta1.FeedSpec{Name: testFeedName(attemptURL), URL: attemptURL}, rss.FetchResult{}, nil, nil).
 		withNow(attemptInstant).withClock(func() time.Time { return recorded }).newAttempt(fs)
 
 	attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(classNotFound))
@@ -741,7 +741,7 @@ func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := &v1beta1.FeedStatus{
-				RSSUrl: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount,
+				Name: testFeedName(attemptURL), URL: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount,
 				BackoffUntil: tc.backoff, LastError: "earlier failure",
 			}
 			testAttempt(t, &v1beta1.FeedGroup{}, fs, attemptURL, attemptInstant).
@@ -788,7 +788,7 @@ func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := &v1beta1.FeedStatus{
-				RSSUrl: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount, BackoffUntil: tc.backoff,
+				Name: testFeedName(attemptURL), URL: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount, BackoffUntil: tc.backoff,
 			}
 			attempt := testAttempt(t, &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Retries: 3}}, fs, attemptURL, attemptInstant)
 			verdict := attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(tc.class))
@@ -816,7 +816,7 @@ func TestFeedAttempt_ConfigErrorDoesNotRepeatOnGenerationChange(t *testing.T) {
 	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-config-generation", attemptGeneration
 	fs := &v1beta1.FeedStatus{
-		RSSUrl: attemptURL,
+		Name: testFeedName(attemptURL), URL: attemptURL,
 		Conditions: []metav1.Condition{{
 			Type: v1beta1.FeedConditionTypeDelivered, Status: metav1.ConditionFalse,
 			Reason: reasonConfigError, Message: testBoom, ObservedGeneration: attemptGeneration - 1,

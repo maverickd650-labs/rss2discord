@@ -23,18 +23,25 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
 const (
-	prevIDNew     = "urn:previous-identity:new"
-	prevIDOld     = "urn:previous-identity:old"
-	prevIDOther   = "urn:previous-identity:other"
-	prevLinkNew   = "https://previous-identity.example.test/new"
-	prevLinkOld   = "https://previous-identity.example.test/old"
-	prevSentAt    = "2025-12-31T00:00:00Z"
-	prevSentLater = "2026-01-01T00:00:00Z"
+	prevIDNew         = "urn:previous-identity:new"
+	prevIDOld         = "urn:previous-identity:old"
+	prevIDOther       = "urn:previous-identity:other"
+	prevLinkNew       = "https://previous-identity.example.test/new"
+	prevLinkOld       = "https://previous-identity.example.test/old"
+	prevSentAtText    = "2025-12-31T00:00:00Z"
+	prevSentLaterText = "2026-01-01T00:00:00Z"
+)
+
+var (
+	prevSentAt    = ts(prevSentAtText)
+	prevSentLater = ts(prevSentLaterText)
 )
 
 // changedID is an entry whose ID the parser now picks differently: id is its
@@ -59,49 +66,49 @@ func TestMigratePreviousIdentities(t *testing.T) {
 		name      string
 		entries   []rss.Entry
 		watermark string
-		sent      map[string]string
+		sent      map[string]metav1.Time
 		wantMark  string
-		wantSent  map[string]string
+		wantSent  map[string]metav1.Time
 	}{
 		{
 			name:      "guid moves the watermark and its dedup key",
 			entries:   []rss.Entry{guid()},
 			watermark: prevIDOld,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDNew,
-			wantSent:  map[string]string{hashIdentity(prevIDNew): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentAt},
 		},
 		{
 			name:      "a watermark that names another entry is untouched",
 			entries:   []rss.Entry{guid()},
 			watermark: prevIDOther,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
 			wantMark:  prevIDOther,
-			wantSent:  map[string]string{hashIdentity(prevIDNew): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
 		},
 		{
 			name:      "an existing key for the new identity is not overwritten",
 			entries:   []rss.Entry{guid()},
 			watermark: prevIDOld,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDNew): prevSentLater},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDNew): prevSentLater},
 			wantMark:  prevIDNew,
-			wantSent:  map[string]string{hashIdentity(prevIDNew): prevSentLater},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentLater},
 		},
 		{
 			name:      "link to link moves the stripped key too",
 			entries:   []rss.Entry{changedID(prevLinkNew, rss.IDFromLink, prevLinkOld, rss.IDFromLink)},
 			watermark: prevLinkOld,
-			sent:      map[string]string{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
 			wantMark:  prevLinkNew,
-			wantSent:  map[string]string{hashIdentity(prevLinkNew): prevSentAt, strippedKey(prevLinkNew): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevLinkNew): prevSentAt, strippedKey(prevLinkNew): prevSentAt},
 		},
 		{
 			name:      "link fragment change preserves the stripped key when the full key is absent",
 			entries:   []rss.Entry{changedID(prevLinkOld+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink)},
 			watermark: prevLinkOld + "#x",
-			sent:      map[string]string{strippedKey(prevLinkOld): prevSentAt},
+			sent:      map[string]metav1.Time{strippedKey(prevLinkOld): prevSentAt},
 			wantMark:  prevLinkOld + "#a",
-			wantSent:  map[string]string{strippedKey(prevLinkOld): prevSentAt},
+			wantSent:  map[string]metav1.Time{strippedKey(prevLinkOld): prevSentAt},
 		},
 		{
 			name: "link to link onto a stripped identity a sibling shares drops the stripped key",
@@ -110,9 +117,9 @@ func TestMigratePreviousIdentities(t *testing.T) {
 				{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink},
 			},
 			watermark: prevLinkOld,
-			sent:      map[string]string{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
 			wantMark:  clampWatermark(entryIdentity(rss.Entry{ID: prevLinkNew + "#a", IDSource: rss.IDFromLink})),
-			wantSent: map[string]string{
+			wantSent: map[string]metav1.Time{
 				computeEntryKey(rss.Entry{ID: prevLinkNew + "#a", IDSource: rss.IDFromLink}): prevSentAt,
 			},
 		},
@@ -120,41 +127,41 @@ func TestMigratePreviousIdentities(t *testing.T) {
 			name:      "link to guid drops the old stripped key",
 			entries:   []rss.Entry{changedID(prevIDNew, rss.IDFromGUID, prevLinkOld, rss.IDFromLink)},
 			watermark: prevLinkOld,
-			sent:      map[string]string{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt},
 			wantMark:  prevIDNew,
-			wantSent:  map[string]string{hashIdentity(prevIDNew): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentAt},
 		},
 		{
 			name:      "an entry whose identity did not change is untouched",
 			entries:   []rss.Entry{{ID: prevIDNew, PreviousID: prevIDNew}},
 			watermark: prevIDNew,
-			sent:      map[string]string{hashIdentity(prevIDNew): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDNew): prevSentAt},
 			wantMark:  prevIDNew,
-			wantSent:  map[string]string{hashIdentity(prevIDNew): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentAt},
 		},
 		{
 			name:      "an entry without a previous ID is untouched",
 			entries:   []rss.Entry{{ID: prevIDNew}},
 			watermark: prevIDOld,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDOld,
-			wantSent:  map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 		},
 		{
 			name:      "an old identity two entries share is left alone",
 			entries:   []rss.Entry{guid(), changedID(prevIDOther, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)},
 			watermark: prevIDOld,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDOld,
-			wantSent:  map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 		},
 		{
 			name:      "an old identity that is another entry's current one is left alone",
 			entries:   []rss.Entry{guid(), {ID: prevIDOld}},
 			watermark: prevIDOld,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDOld,
-			wantSent:  map[string]string{hashIdentity(prevIDOld): prevSentAt},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 		},
 		{
 			name: "two entries moving onto the same new identity are left alone",
@@ -163,9 +170,9 @@ func TestMigratePreviousIdentities(t *testing.T) {
 				changedID(prevIDNew, rss.IDFromGUID, prevIDOther, rss.IDFromGUID),
 			},
 			watermark: prevIDOld,
-			sent:      map[string]string{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
+			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
 			wantMark:  prevIDOld,
-			wantSent:  map[string]string{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
+			wantSent:  map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
 		},
 		{
 			name:      "no recorded sends is fine",
@@ -210,10 +217,10 @@ func TestMigratePreviousIdentities_LongWatermark(t *testing.T) {
 func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(identityStateNS, "previous-identity", "{{.Title}}")
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	fs.LastChecked, fs.Initialized, fs.StateVersion = metav1TimeRFC3339("2025-12-29T00:00:00Z"), true, currentStateVersion
 	fs.LastSeenEntry = prevIDOld
-	fs.LastSent = map[string]string{hashIdentity(prevIDOld): prevSentAt}
+	fs.LastSent = map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt}
 
 	moved := changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)
 	moved.Published = time.Unix(1000, 0)
@@ -221,7 +228,7 @@ func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 
 	processTwice(t, fg, feed, []rss.Entry{moved, fresh}, fresh.Title)
 
-	if fs := feedStatusFor(fg, feed.RSSUrl); fs.LastSeenEntry != prevIDOther {
+	if fs := feedStatusFor(fg, feed.Name); fs.LastSeenEntry != prevIDOther {
 		t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, prevIDOther)
 	} else if _, ok := fs.LastSent[hashIdentity(prevIDNew)]; !ok {
 		t.Fatalf("the moved entry's dedup key is missing: %v", fs.LastSent)
@@ -234,7 +241,7 @@ func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T) {
 	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
 	sibling := rss.Entry{ID: prevLinkNew + "#b", IDSource: rss.IDFromLink, Title: "sibling"}
-	fs := &v1beta1.FeedStatus{LastSent: map[string]string{
+	fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{
 		hashIdentity(prevLinkOld): prevSentAt, strippedKey(prevLinkOld): prevSentAt,
 	}}
 	newDeliveryLedger(fs, []rss.Entry{moved, sibling})
@@ -272,7 +279,7 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The full key was pruned; only the stripped key is left.
-			fs := &v1beta1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
+			fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{strippedKey(prevLinkOld): prevSentAt}}
 			newDeliveryLedger(fs, tc.entries)
 
 			if _, ok := fs.LastSent[strippedKey(prevLinkOld)]; ok {
@@ -346,7 +353,7 @@ func TestMigratePreviousIdentities_SharedPreviousStrippedIdentityWithUniqueTarge
 		{name: "a current entry claims the previous stripped identity", entries: []rss.Entry{movedA, claimant}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1beta1.FeedStatus{LastSent: map[string]string{
+			fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{
 				strippedKey(prevLinkOld): prevSentAt,
 			}}
 			ledger := newDeliveryLedger(fs, tc.entries)
@@ -374,7 +381,7 @@ func TestMigratePreviousIdentities_SharedPreviousStrippedIdentityWithUniqueTarge
 // stripped identity and remains marked as sent across scans.
 func TestMigratePreviousIdentities_UnchangedStrippedIdentityRemainsSent(t *testing.T) {
 	moved := changedID(prevLinkOld+"#a", rss.IDFromLink, prevLinkOld+"#x", rss.IDFromLink)
-	fs := &v1beta1.FeedStatus{LastSent: map[string]string{strippedKey(prevLinkOld): prevSentAt}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{strippedKey(prevLinkOld): prevSentAt}}
 
 	for pass := range 2 {
 		ledger := newDeliveryLedger(fs, []rss.Entry{moved})
@@ -393,7 +400,7 @@ func TestMigratePreviousIdentities_SiblingNeverInheritsAStrippedKey(t *testing.T
 	moved := changedID(prevLinkNew+"#a", rss.IDFromLink, prevLinkOld, rss.IDFromLink)
 	sibling := ownershipLink(prevLinkNew + "#b")
 	fs := currentStatus()
-	fs.LastSent = map[string]string{strippedKey(prevLinkOld): prevSentAt}
+	fs.LastSent = map[string]metav1.Time{strippedKey(prevLinkOld): prevSentAt}
 	ledger := newDeliveryLedger(fs, []rss.Entry{moved, sibling})
 
 	if _, ok := fs.LastSent[strippedKey(normalizeIdentity(prevLinkNew))]; ok {

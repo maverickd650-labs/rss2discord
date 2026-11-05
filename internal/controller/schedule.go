@@ -51,8 +51,8 @@ type feedPlan struct {
 	nextDue time.Duration
 }
 
-// planFeeds decides, as of now, which of the group's feeds to fetch. Paused
-// feeds and feeds without a URL are skipped. A feed in permanent-failure
+// planFeeds decides, as of now, which of the group's feeds to fetch. Suspended
+// feeds are skipped. A feed in permanent-failure
 // backoff is skipped next, before the due check: backoff outranks the "failing
 // feeds are always due" rule, and a backed-off feed contributes no wake time.
 // A feed that is not yet due is skipped and bounds nextDue, so the requeue
@@ -64,10 +64,10 @@ func planFeeds(feedGroup *v1beta1.FeedGroup, cad cadence, now time.Time, force b
 	pollInterval := cad.poll
 	plan := feedPlan{active: make([]v1beta1.FeedSpec, 0, len(feedGroup.Spec.Feeds))}
 	for _, feed := range feedGroup.Spec.Feeds {
-		if feed.RSSUrl == "" || feed.Paused {
+		if feed.Suspend {
 			continue
 		}
-		fs := feedStatusFor(feedGroup, feed.RSSUrl)
+		fs := feedStatusFor(feedGroup, feed.Name)
 		if fs != nil && retryStateOf(fs).active(now) {
 			continue
 		}

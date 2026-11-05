@@ -26,7 +26,7 @@ import (
 // with apply.
 //
 // FeedStatus is the observed state of a single feed within a FeedGroup,
-// keyed by RSSUrl. Consolidating what used to be seven parallel
+// keyed by Name. Consolidating what used to be seven parallel
 // map[string]... fields on FeedGroupStatus (all keyed by the same URL) into
 // one struct per feed means a feed's full health -- timestamps, retry
 // count, and *why* it's failing -- reads as one coherent block in `kubectl
@@ -42,11 +42,12 @@ type FeedStatusApplyConfiguration struct {
 	// is distinguishable at a glance from a misconfigured webhook, without
 	// parsing LastError's free text.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	// name is the optional stable identifier of this feed from FeedSpec.Name.
+	// name is the feed's FeedSpec.Name. Acts as the list-map key.
 	Name *string `json:"name,omitempty"`
-	// rssUrl identifies which feed (in FeedGroupSpec.Feeds) this status
-	// corresponds to. Acts as the list-map merge key.
-	RSSUrl *string `json:"rssUrl,omitempty"`
+	// url is the feed URL this status was last synced from. When a feed's
+	// url changes, its delivery history is kept but its etag and
+	// lastModified are cleared, since they belong to the old URL.
+	URL *string `json:"url,omitempty"`
 	// lastChecked is the last time this feed was successfully checked.
 	// A 304 or a fetch with no new entries still counts as a successful check;
 	// a failed fetch does not advance it.
@@ -65,9 +66,9 @@ type FeedStatusApplyConfiguration struct {
 	// this feed. Used to fetch only new entries after restarts. Identifiers
 	// longer than the field limit are stored as "sha256:<hex digest>".
 	LastSeenEntry *string `json:"lastSeenEntry,omitempty"`
-	// lastSent is a map of entry hash to timestamp (RFC3339), tracking
-	// which entries have been sent to Discord to avoid duplicates.
-	LastSent map[string]string `json:"lastSent,omitempty"`
+	// lastSent maps the identity of each entry recently sent to Discord to
+	// when it was sent, so an entry is never sent twice.
+	LastSent map[string]metav1.Time `json:"lastSent,omitempty"`
 	// lastError is the last error message encountered for this feed, from
 	// whichever of fetch/render/send most recently failed. See Conditions
 	// for a structured, machine-readable breakdown of which stage failed
@@ -116,11 +117,11 @@ func (b *FeedStatusApplyConfiguration) WithName(value string) *FeedStatusApplyCo
 	return b
 }
 
-// WithRSSUrl sets the RSSUrl field in the declarative configuration to the given value
+// WithURL sets the URL field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RSSUrl field is set to the value of the last call.
-func (b *FeedStatusApplyConfiguration) WithRSSUrl(value string) *FeedStatusApplyConfiguration {
-	b.RSSUrl = &value
+// If called multiple times, the URL field is set to the value of the last call.
+func (b *FeedStatusApplyConfiguration) WithURL(value string) *FeedStatusApplyConfiguration {
+	b.URL = &value
 	return b
 }
 
@@ -160,9 +161,9 @@ func (b *FeedStatusApplyConfiguration) WithLastSeenEntry(value string) *FeedStat
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, the entries provided by each call will be put on the LastSent field,
 // overwriting an existing map entries in LastSent field with the same key.
-func (b *FeedStatusApplyConfiguration) WithLastSent(entries map[string]string) *FeedStatusApplyConfiguration {
+func (b *FeedStatusApplyConfiguration) WithLastSent(entries map[string]metav1.Time) *FeedStatusApplyConfiguration {
 	if b.LastSent == nil && len(entries) > 0 {
-		b.LastSent = make(map[string]string, len(entries))
+		b.LastSent = make(map[string]metav1.Time, len(entries))
 	}
 	for k, v := range entries {
 		b.LastSent[k] = v

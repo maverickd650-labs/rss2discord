@@ -20,18 +20,14 @@ package v1beta1
 // FilterApplyConfiguration represents a declarative configuration of the Filter type for use
 // with apply.
 //
-// Filter defines filtering rules for RSS feed entries.
+// Filter selects which entries of a feed are delivered.
 type FilterApplyConfiguration struct {
-	// regex is a regular expression to match against entry title/description.
-	Regex *string `json:"regex,omitempty"`
-	// keywords is a list of keywords to match (OR logic).
-	Keywords []string `json:"keywords,omitempty"`
-	// excludeRegex is a regular expression to exclude matching entry title/description.
-	// Matching entries are rejected even if they match positive filter criteria.
-	ExcludeRegex *string `json:"excludeRegex,omitempty"`
-	// excludeKeywords is a list of keywords to exclude (case-insensitive OR logic).
-	// Matching entries are rejected even if they match positive filter criteria.
-	ExcludeKeywords []string `json:"excludeKeywords,omitempty"`
+	// include, when set, delivers only entries that match every criterion it
+	// sets (keywords AND regex AND categories).
+	Include *FilterRulesApplyConfiguration `json:"include,omitempty"`
+	// exclude drops an entry that matches any criterion it sets (keywords OR
+	// regex OR categories), even if it matched include.
+	Exclude *FilterRulesApplyConfiguration `json:"exclude,omitempty"`
 }
 
 // FilterApplyConfiguration constructs a declarative configuration of the Filter type for use with
@@ -40,38 +36,18 @@ func Filter() *FilterApplyConfiguration {
 	return &FilterApplyConfiguration{}
 }
 
-// WithRegex sets the Regex field in the declarative configuration to the given value
+// WithInclude sets the Include field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Regex field is set to the value of the last call.
-func (b *FilterApplyConfiguration) WithRegex(value string) *FilterApplyConfiguration {
-	b.Regex = &value
+// If called multiple times, the Include field is set to the value of the last call.
+func (b *FilterApplyConfiguration) WithInclude(value *FilterRulesApplyConfiguration) *FilterApplyConfiguration {
+	b.Include = value
 	return b
 }
 
-// WithKeywords adds the given value to the Keywords field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the Keywords field.
-func (b *FilterApplyConfiguration) WithKeywords(values ...string) *FilterApplyConfiguration {
-	for i := range values {
-		b.Keywords = append(b.Keywords, values[i])
-	}
-	return b
-}
-
-// WithExcludeRegex sets the ExcludeRegex field in the declarative configuration to the given value
+// WithExclude sets the Exclude field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ExcludeRegex field is set to the value of the last call.
-func (b *FilterApplyConfiguration) WithExcludeRegex(value string) *FilterApplyConfiguration {
-	b.ExcludeRegex = &value
-	return b
-}
-
-// WithExcludeKeywords adds the given value to the ExcludeKeywords field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the ExcludeKeywords field.
-func (b *FilterApplyConfiguration) WithExcludeKeywords(values ...string) *FilterApplyConfiguration {
-	for i := range values {
-		b.ExcludeKeywords = append(b.ExcludeKeywords, values[i])
-	}
+// If called multiple times, the Exclude field is set to the value of the last call.
+func (b *FilterApplyConfiguration) WithExclude(value *FilterRulesApplyConfiguration) *FilterApplyConfiguration {
+	b.Exclude = value
 	return b
 }

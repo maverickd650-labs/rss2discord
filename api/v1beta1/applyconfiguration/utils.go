@@ -31,6 +31,10 @@ import (
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
 	// Group=rss2discord.maverickd650.dev, Version=v1beta1
+	case v1beta1.SchemeGroupVersion.WithKind("EmbedAuthor"):
+		return &apiv1beta1.EmbedAuthorApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("EmbedFooter"):
+		return &apiv1beta1.EmbedFooterApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("EmbedSpec"):
 		return &apiv1beta1.EmbedSpecApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("FeedGroup"):
@@ -45,6 +49,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1beta1.FeedStatusApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("Filter"):
 		return &apiv1beta1.FilterApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("FilterRules"):
+		return &apiv1beta1.FilterRulesApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("ForumPostSpec"):
+		return &apiv1beta1.ForumPostSpecApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("Mentions"):
+		return &apiv1beta1.MentionsApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("MessageSpec"):
+		return &apiv1beta1.MessageSpecApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("ThreadTarget"):
+		return &apiv1beta1.ThreadTargetApplyConfiguration{}
 
 	}
 	return nil

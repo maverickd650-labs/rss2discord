@@ -29,30 +29,22 @@ type FeedGroupSpecApplyConfiguration struct {
 	// discordWebhookSecretRef points to the Secret containing the Discord webhook URL.
 	// The secret must contain the webhook URL under the specified key.
 	DiscordWebhookSecretRef *v1.SecretKeySelector `json:"discordWebhookSecretRef,omitempty"`
-	// suspend pauses reconciliation for the entire group without modifying
-	// individual feeds. Preserves delivery history and watermarks.
+	// suspend stops processing every feed in the group. Status and delivery
+	// history are kept.
 	Suspend *bool `json:"suspend,omitempty"`
 	// interval is the duration between feed checks (e.g., "30m", "1h"),
 	// parsed by Go's time.ParseDuration. Must be at least 1m: a shorter
 	// interval would requeue the FeedGroup in a tight reconcile loop,
 	// hammering every feed host on each pass.
 	Interval *string `json:"interval,omitempty"`
-	// format is the default template for Discord messages.
-	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
-	// {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
-	// functions truncate, default, lower, upper, trim, replace and discordTime.
-	Format *string `json:"format,omitempty"`
-	// embed configures Discord embed rendering, used as the default for all
-	// feeds in this group unless a feed sets its own Embed.
-	Embed *EmbedSpecApplyConfiguration `json:"embed,omitempty"`
-	// username overrides the webhook's default display name for messages
-	// sent from this group. Discord rejects names containing "clyde" or
-	// "discord" (case-insensitive) or over 80 characters, so both
-	// constraints are enforced here at admission rather than surfacing only
-	// as a runtime send failure.
+	// message is the Discord message sent for each entry, for every feed
+	// that doesn't set its own. Defaults to content DefaultMessageContent.
+	Message *MessageSpecApplyConfiguration `json:"message,omitempty"`
+	// username overrides the webhook's default display name. A feed's
+	// username overrides this one.
 	Username *string `json:"username,omitempty"`
-	// avatarURL overrides the webhook's default avatar for messages sent
-	// from this group.
+	// avatarURL overrides the webhook's default avatar. A feed's avatarURL
+	// overrides this one.
 	AvatarURL *string `json:"avatarURL,omitempty"`
 	// retries is the number of times to retry failed operations (fetch/send).
 	Retries *int32 `json:"retries,omitempty"`
@@ -61,12 +53,11 @@ type FeedGroupSpecApplyConfiguration struct {
 	// would requeue the FeedGroup in a tight reconcile loop, hammering every
 	// feed host on each pass.
 	RetryInterval *string `json:"retryInterval,omitempty"`
-	// feeds is the list of RSS feed configurations in this group. Capped at
+	// feeds is the list of feeds in this group, keyed by name. Capped at
 	// maxConcurrentFetches (see feedgroup_controller.go) so a single
 	// reconcile can't fan out an unbounded number of simultaneous outbound
-	// fetches. RSS URLs must be unique within a group, since all per-feed
-	// status (LastSeenEntry, LastSent, ETag, ...) is keyed by URL: two feeds
-	// sharing a URL would silently clobber each other's status.
+	// fetches. URLs must also be unique within a group, so one feed is never
+	// fetched and delivered twice.
 	Feeds []FeedSpecApplyConfiguration `json:"feeds,omitempty"`
 	// catchUpLimit caps how many entries are sent to Discord when a feed has
 	// no usable watermark: the first time it is synced (no recorded
@@ -115,19 +106,11 @@ func (b *FeedGroupSpecApplyConfiguration) WithInterval(value string) *FeedGroupS
 	return b
 }
 
-// WithFormat sets the Format field in the declarative configuration to the given value
+// WithMessage sets the Message field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Format field is set to the value of the last call.
-func (b *FeedGroupSpecApplyConfiguration) WithFormat(value string) *FeedGroupSpecApplyConfiguration {
-	b.Format = &value
-	return b
-}
-
-// WithEmbed sets the Embed field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Embed field is set to the value of the last call.
-func (b *FeedGroupSpecApplyConfiguration) WithEmbed(value *EmbedSpecApplyConfiguration) *FeedGroupSpecApplyConfiguration {
-	b.Embed = value
+// If called multiple times, the Message field is set to the value of the last call.
+func (b *FeedGroupSpecApplyConfiguration) WithMessage(value *MessageSpecApplyConfiguration) *FeedGroupSpecApplyConfiguration {
+	b.Message = value
 	return b
 }
 

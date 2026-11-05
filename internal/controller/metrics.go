@@ -35,14 +35,6 @@ const (
 	labelOperation = "operation"
 )
 
-// feedIdentity returns feedName when set and rssURL when unset.
-func feedIdentity(feedName, rssURL string) string {
-	if feedName != "" {
-		return feedName
-	}
-	return rssURL
-}
-
 // Outcome labels for feedOperationsTotal. One feed operation (fetch attempt
 // or send attempt) is counted under exactly one of these per processFeed
 // call, so an operator can see at a glance why a FeedGroup isn't posting
@@ -83,8 +75,8 @@ func sendErrorOutcome(class failureClass) string {
 // `kubectl describe feedgroup` paired with this metric (or an alert on
 // fetch_error/send_error rate) replaces having to grep controller logs to
 // find out why a FeedGroup stopped posting. labelFeed identifies which
-// feed within the group an outcome belongs to (using FeedSpec.Name when set
-// and rssUrl when unset) -- a FeedGroup can have up to 50 feeds
+// feed within the group an outcome belongs to (its FeedSpec.Name) -- a
+// FeedGroup can have up to 50 feeds
 // (FeedGroupSpec.Feeds), so namespace/name alone can't tell an operator which
 // one is failing without a status dive; PrometheusRule alerts surface it
 // directly via $labels.feed.
@@ -324,16 +316,12 @@ func (m groupMetrics) syncFeedState(feedGroup *v1beta1.FeedGroup) {
 	paused := make(map[string]bool, len(feedGroup.Spec.Feeds))
 	suspended := feedGroup.Spec.Suspend
 	for _, feed := range feedGroup.Spec.Feeds {
-		id := feedIdentity(feed.Name, feed.RSSUrl)
-		paused[id] = paused[id] || feed.Paused || suspended
+		paused[feed.Name] = feed.Suspend || suspended
 	}
 
 	for i := range feedGroup.Status.Feeds {
 		fs := &feedGroup.Status.Feeds[i]
-		if fs.RSSUrl == "" {
-			continue
-		}
-		id := feedIdentity(fs.Name, fs.RSSUrl)
+		id := fs.Name
 		check := checkOf(fs)
 		ns, name := m.namespace, m.name
 		if paused[id] {

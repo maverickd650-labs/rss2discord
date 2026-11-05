@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -56,13 +57,13 @@ func TestClampText(t *testing.T) {
 func TestEnsureFeedStatuses_NormalizesOversizedStoredValues(t *testing.T) {
 	longID := "https://example.com/" + strings.Repeat("p", 4000)
 	fg, feed := newMetricsFeedGroup("normalize-ns", "normalize", "")
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	fs.LastError = strings.Repeat("e", 30000)
 	fs.LastSeenEntry = longID
 
 	ensureFeedStatuses(fg)
 
-	fs = feedStatusFor(fg, feed.RSSUrl)
+	fs = feedStatusFor(fg, feed.Name)
 	if len(fs.LastError) > maxStatusTextBytes {
 		t.Errorf("LastError is %d bytes after load, want <= %d", len(fs.LastError), maxStatusTextBytes)
 	}
@@ -85,17 +86,17 @@ func TestFeedGroupStatusWorstCaseStaysUnderBudget(t *testing.T) {
 	var status v1beta1.FeedGroupStatus
 	for i := range 50 {
 		fs := v1beta1.FeedStatus{
-			RSSUrl:        "https://example.com/" + strings.Repeat("u", 2048-21) + strconv.Itoa(i%10),
+			Name: testFeedName("https://example.com/" + strings.Repeat("u", 2048-21) + strconv.Itoa(i%10)), URL: "https://example.com/" + strings.Repeat("u", 2048-21) + strconv.Itoa(i%10),
 			LastChecked:   metav1TimeRFC3339("2026-01-01T00:00:00Z"),
 			LastSeenEntry: clampWatermark(strings.Repeat("s", 5000)),
 			LastError:     clampText(strings.Repeat("e", 40000), maxStatusTextBytes),
 			ETag:          strings.Repeat("g", 256),
 			LastModified:  strings.Repeat("m", 64),
 			BackoffUntil:  metav1TimeRFC3339("2026-01-01T00:00:00Z"),
-			LastSent:      map[string]string{},
+			LastSent:      map[string]metav1.Time{},
 		}
 		for j := range maxLastSentPerFeed {
-			fs.LastSent[hashIdentity(strconv.Itoa(j))] = testReconcileTime
+			fs.LastSent[hashIdentity(strconv.Itoa(j))] = ts(testReconcileTime)
 		}
 		for _, typ := range []string{v1beta1.FeedConditionTypeReachable, v1beta1.FeedConditionTypeDelivered} {
 			setFeedCondition(&fs, typ, metav1.ConditionFalse, strings.Repeat("R", 64), strings.Repeat("m", 40000), 1)
@@ -124,23 +125,23 @@ func TestEnsureFeedStatuses(t *testing.T) {
 
 	fg := &v1beta1.FeedGroup{
 		Spec: v1beta1.FeedGroupSpec{
-			Feeds: []v1beta1.FeedSpec{{RSSUrl: keptURL}, {RSSUrl: newURL}},
+			Feeds: []v1beta1.FeedSpec{{Name: testFeedName(keptURL), URL: keptURL}, {Name: testFeedName(newURL), URL: newURL}},
 		},
 		Status: v1beta1.FeedGroupStatus{
 			Feeds: []v1beta1.FeedStatus{
-				{RSSUrl: keptURL, LastError: "x", RetryCount: 1},
-				{RSSUrl: staleURL, LastError: "x", RetryCount: 1},
+				{Name: testFeedName(keptURL), URL: keptURL, LastError: "x", RetryCount: 1},
+				{Name: testFeedName(staleURL), URL: staleURL, LastError: "x", RetryCount: 1},
 			},
 		},
 	}
 
 	ensureFeedStatuses(fg)
 
-	if got := feedStatusFor(fg, staleURL); got != nil {
+	if got := feedStatusFor(fg, testFeedName(staleURL)); got != nil {
 		t.Fatalf("expected stale URL's FeedStatus to be removed, got %+v", got)
 	}
 
-	kept := feedStatusFor(fg, keptURL)
+	kept := feedStatusFor(fg, testFeedName(keptURL))
 	if kept == nil {
 		t.Fatal("expected kept URL's FeedStatus to be retained")
 	}
@@ -148,7 +149,7 @@ func TestEnsureFeedStatuses(t *testing.T) {
 		t.Fatalf("expected kept URL's existing state to be preserved, got %+v", kept)
 	}
 
-	newEntry := feedStatusFor(fg, newURL)
+	newEntry := feedStatusFor(fg, testFeedName(newURL))
 	if newEntry == nil {
 		t.Fatal("expected new URL to get a fresh FeedStatus entry")
 	}
@@ -217,14 +218,14 @@ func TestOpenGroupSync(t *testing.T) {
 		Spec: v1beta1.FeedGroupSpec{
 			Interval: "15m",
 			Feeds: []v1beta1.FeedSpec{
-				{RSSUrl: retainedURL},
-				{RSSUrl: newURL},
+				{Name: testFeedName(retainedURL), URL: retainedURL},
+				{Name: testFeedName(newURL), URL: newURL},
 			},
 		},
 		Status: v1beta1.FeedGroupStatus{
 			Feeds: []v1beta1.FeedStatus{
-				{RSSUrl: retainedURL, LastError: "404", RetryCount: 3, BackoffUntil: testBackoffUntil},
-				{RSSUrl: prunedURL, LastError: "500", RetryCount: 1},
+				{Name: testFeedName(retainedURL), URL: retainedURL, LastError: "404", RetryCount: 3, BackoffUntil: testBackoffUntil},
+				{Name: testFeedName(prunedURL), URL: prunedURL, LastError: "500", RetryCount: 1},
 			},
 		},
 	}
@@ -233,7 +234,7 @@ func TestOpenGroupSync(t *testing.T) {
 
 	// Populate metrics for the pruned feed so we can verify forgetFeed was called.
 	metricsFor(fg).syncFeedState(fg)
-	if _, ok := feedGaugeValue(feedHealthy, ns, name, prunedURL); !ok {
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, testFeedName(prunedURL)); !ok {
 		t.Fatalf("expected feedHealthy metric to exist for %q before pruning", prunedURL)
 	}
 
@@ -259,20 +260,20 @@ func TestOpenGroupSync(t *testing.T) {
 	}
 
 	// Verify dropped feed was pruned from Status.Feeds and its metrics forgotten
-	if got := feedStatusFor(fg, prunedURL); got != nil {
+	if got := feedStatusFor(fg, testFeedName(prunedURL)); got != nil {
 		t.Errorf("expected pruned feed %q to be removed from Status.Feeds", prunedURL)
 	}
-	if _, ok := feedGaugeValue(feedHealthy, ns, name, prunedURL); ok {
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, testFeedName(prunedURL)); ok {
 		t.Errorf("expected feedHealthy metric for %q to be forgotten after openGroupSync", prunedURL)
 	}
 
 	// Verify new feed was added
-	if got := feedStatusFor(fg, newURL); got == nil {
+	if got := feedStatusFor(fg, testFeedName(newURL)); got == nil {
 		t.Errorf("expected new feed %q to be added to Status.Feeds", newURL)
 	}
 
 	// Verify permanent backoff was cleared on spec change
-	retained := feedStatusFor(fg, retainedURL)
+	retained := feedStatusFor(fg, testFeedName(retainedURL))
 	if retained == nil {
 		t.Fatalf("expected retained feed %q to exist", retainedURL)
 	}
@@ -299,7 +300,7 @@ func TestOpenGroupSync(t *testing.T) {
 	if syncUnchanged.specChanged {
 		t.Error("expected specChanged to be false when Generation == ObservedGeneration")
 	}
-	gotRetained := feedStatusFor(fg, retainedURL)
+	gotRetained := feedStatusFor(fg, testFeedName(retainedURL))
 	if gotRetained == nil {
 		t.Fatalf("expected retained feed %q to exist after unchanged-generation openGroupSync", retainedURL)
 	}
@@ -310,7 +311,7 @@ func TestOpenGroupSync(t *testing.T) {
 
 func outOfRangeFeedStatus(url string) v1beta1.FeedStatus {
 	return v1beta1.FeedStatus{
-		RSSUrl: url,
+		Name: testFeedName(url), URL: url,
 		Conditions: []metav1.Condition{{
 			Type:               v1beta1.FeedConditionTypeReachable,
 			Status:             metav1.ConditionTrue,
@@ -354,7 +355,7 @@ func TestGroupSync_SettlePass(t *testing.T) {
 	}
 
 	// Verify per-feed gauges were synced
-	if got, ok := feedGaugeValue(feedHealthy, ns, name, feed.RSSUrl); !ok || got != 0 {
+	if got, ok := feedGaugeValue(feedHealthy, ns, name, feed.Name); !ok || got != 0 {
 		t.Errorf("feedHealthy = %v (present=%v), want 0", got, ok)
 	}
 
@@ -363,7 +364,7 @@ func TestGroupSync_SettlePass(t *testing.T) {
 	fg.Status.ObservedGeneration = fg.Generation - 1
 	syncInvalid := r.openGroupSync(fg)
 	// Mutate status to force semantic difference, but with out-of-range status to verify applyStatus error
-	fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.RSSUrl)}
+	fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.URL)}
 	_, err = syncInvalid.settlePass(t.Context(), feedPlan{}, attemptVerdict{})
 	if err == nil {
 		t.Fatal("expected status conversion error from applyStatus")
@@ -412,7 +413,7 @@ func TestGroupSync_SettleWebhookError(t *testing.T) {
 	}
 
 	// Status conversion failure propagates error
-	fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.RSSUrl)}
+	fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.URL)}
 	fg.Status.ObservedGeneration = fg.Generation - 1
 	syncErr := r.openGroupSync(fg)
 	fg.Status.Feeds[0].LastError = "changed" // make it not deep equal
@@ -433,7 +434,7 @@ func TestGroupSync_SettlePanic(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Generation = 5
 	fg.Status.ObservedGeneration = 3
-	panicked := &feedPanic{url: feed.RSSUrl, value: "unexpected nil"}
+	panicked := &feedPanic{url: feed.URL, value: "unexpected nil"}
 
 	// Pre-set Ready condition to the panic condition so status DeepEquals original and skips write
 	setReadyCondition(fg, panicked, nil)
@@ -463,7 +464,7 @@ func TestGroupSync_SettlePanic(t *testing.T) {
 	}
 
 	// When write fails, error is returned
-	fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.RSSUrl)}
+	fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.URL)}
 	syncErr := r.openGroupSync(fg)
 	fg.Status.Feeds[0].LastError = "changed" // make it not deep equal
 	writeErr := syncErr.settlePanic(t.Context(), panicked)
@@ -475,197 +476,100 @@ func TestGroupSync_SettlePanic(t *testing.T) {
 	}
 }
 
-func TestEnsureFeedStatuses_NamedFeedPreservesHistoryAcrossURLChange(t *testing.T) {
-	const oldURL = "https://example.com/old.xml"
-	const newURL = "https://example.com/new.xml"
-	const namedFeedName = "my-feed"
-
+// A feed's name is its identity: when its URL changes it keeps its delivery
+// history, but nothing the old URL's server said -- validators, check time,
+// retry state -- carries over to the new one.
+func TestEnsureFeedStatuses_URLChangeKeepsHistoryNotServerState(t *testing.T) {
+	const (
+		oldURL   = "https://example.com/old.xml"
+		newURL   = "https://example.com/new.xml"
+		feedName = "my-feed"
+	)
+	checked := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fg := &v1beta1.FeedGroup{
-		Spec: v1beta1.FeedGroupSpec{
-			Feeds: []v1beta1.FeedSpec{
-				{Name: namedFeedName, RSSUrl: newURL},
-			},
-		},
-		Status: v1beta1.FeedGroupStatus{
-			Feeds: []v1beta1.FeedStatus{
-				{
-					Name:          namedFeedName,
-					RSSUrl:        oldURL,
-					LastSeenEntry: "entry-123",
-					LastSent:      map[string]string{"hash1": "2026-01-01T00:00:00Z"},
-					ETag:          `"etag-val"`,
-					LastModified:  "Wed, 01 Jan 2026 00:00:00 GMT",
-					RetryCount:    2,
-				},
-			},
-		},
+		Spec: v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{{Name: feedName, URL: newURL}}},
+		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{
+			Name:          feedName,
+			URL:           oldURL,
+			Initialized:   true,
+			LastSeenEntry: "entry-123",
+			LastSent:      map[string]metav1.Time{"hash1": ts("2026-01-01T00:00:00Z")},
+			ETag:          `"etag-val"`,
+			LastModified:  "Wed, 01 Jan 2026 00:00:00 GMT",
+			LastChecked:   &checked,
+			RetryCount:    2,
+			BackoffUntil:  &checked,
+		}}},
 	}
 
-	pruned := ensureFeedStatuses(fg)
-
-	// Stable named feed is not pruned when changing URL; its metric identity persists
-	if len(pruned) != 0 {
-		t.Fatalf("pruned feed identities = %v, want empty (named feed identity persisted)", pruned)
+	if pruned := ensureFeedStatuses(fg); len(pruned) != 0 {
+		t.Fatalf("pruned = %v, want none: the feed's name is unchanged", pruned)
 	}
 
-	// Status should now be updated to newURL while preserving watermarks
-	fs := feedStatusFor(fg, newURL)
-	if fs == nil {
-		t.Fatalf("feedStatusFor(%s) is nil", newURL)
+	fs := feedStatusFor(fg, feedName)
+	if fs == nil || fs.URL != newURL {
+		t.Fatalf("fs = %+v, want the status re-pointed at %s", fs, newURL)
 	}
-	if fs.Name != namedFeedName || fs.RSSUrl != newURL {
-		t.Fatalf("fs = %+v, want Name=%s and RSSUrl=%s", fs, namedFeedName, newURL)
+	if !fs.Initialized || fs.LastSeenEntry != "entry-123" || !fs.LastSent["hash1"].Time.Equal(ts("2026-01-01T00:00:00Z").Time) {
+		t.Errorf("delivery history not preserved: %+v", fs)
 	}
-	if fs.LastSeenEntry != "entry-123" {
-		t.Errorf("LastSeenEntry = %q, want entry-123", fs.LastSeenEntry)
+	if fs.ETag != "" || fs.LastModified != "" {
+		t.Errorf("validators carried to the new URL: etag=%q lastModified=%q", fs.ETag, fs.LastModified)
 	}
-	if fs.ETag != `"etag-val"` || fs.LastModified != "Wed, 01 Jan 2026 00:00:00 GMT" {
-		t.Errorf("conditional GET headers not preserved: etag=%s, lastModified=%s", fs.ETag, fs.LastModified)
-	}
-	if fs.LastSent["hash1"] != "2026-01-01T00:00:00Z" {
-		t.Errorf("LastSent ledger not preserved: %+v", fs.LastSent)
-	}
-
-	// Lookup by name works too
-	if byName := feedStatusFor(fg, namedFeedName); byName == nil || byName != fs {
-		t.Errorf("feedStatusFor(fg, %q) = %+v, want same pointer as by URL", namedFeedName, byName)
+	if fs.LastChecked != nil || fs.RetryCount != 0 || fs.BackoffUntil != nil {
+		t.Errorf("check/retry state carried to the new URL: %+v", fs)
 	}
 }
 
-func TestEnsureFeedStatuses_NameMatchReservesStatusBeforeURLFallback(t *testing.T) {
-	const (
-		namedFeed = "feed-a"
-		oldURL    = "https://example.com/old.xml"
-		newURL    = "https://example.com/new.xml"
-	)
-
-	// Existing status has feed-a pointing to oldURL with delivery history
+// An unchanged URL keeps its validators.
+func TestEnsureFeedStatuses_SameURLKeepsValidators(t *testing.T) {
+	const url = "https://example.com/feed.xml"
 	fg := &v1beta1.FeedGroup{
-		Spec: v1beta1.FeedGroupSpec{
-			Feeds: []v1beta1.FeedSpec{
-				// Unnamed feed placed first in Spec with oldURL
-				{RSSUrl: oldURL},
-				// Named feed placed second with changed URL
-				{Name: namedFeed, RSSUrl: newURL},
-			},
-		},
-		Status: v1beta1.FeedGroupStatus{
-			Feeds: []v1beta1.FeedStatus{
-				{
-					Name:          namedFeed,
-					RSSUrl:        oldURL,
-					LastSeenEntry: "wm-named",
-				},
-			},
-		},
+		Spec:   v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{{Name: "a", URL: url}}},
+		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{Name: "a", URL: url, ETag: `"e"`, LastModified: "lm", RetryCount: 1}}},
 	}
-
-	pruned := ensureFeedStatuses(fg)
-	if len(pruned) != 0 {
-		t.Fatalf("pruned URLs = %v, want none since oldURL and newURL are both in spec", pruned)
-	}
-
-	// Named feed must receive its prior status and watermark
-	statusNamed := feedStatusFor(fg, namedFeed)
-	if statusNamed == nil || statusNamed.LastSeenEntry != "wm-named" || statusNamed.RSSUrl != newURL {
-		t.Fatalf("statusNamed = %+v, want LastSeenEntry=wm-named and RSSUrl=%s", statusNamed, newURL)
-	}
-
-	// Unnamed feed with oldURL must NOT steal the named feed's history
-	statusUnnamed := feedStatusFor(fg, oldURL)
-	if statusUnnamed == nil || statusUnnamed.LastSeenEntry != "" || statusUnnamed.Name != "" {
-		t.Fatalf("statusUnnamed = %+v, want empty LastSeenEntry and empty Name", statusUnnamed)
-	}
-}
-
-func TestEnsureFeedStatuses_DifferentlyNamedFeedAtSameURLDoesNotInheritHistory(t *testing.T) {
-	const (
-		sharedURL = "https://example.com/unique-feed.xml"
-		oldName   = "unique-old"
-		newName   = "unique-new"
-	)
-
-	fg := &v1beta1.FeedGroup{
-		Spec: v1beta1.FeedGroupSpec{
-			Feeds: []v1beta1.FeedSpec{
-				{Name: newName, RSSUrl: sharedURL},
-			},
-		},
-		Status: v1beta1.FeedGroupStatus{
-			Feeds: []v1beta1.FeedStatus{
-				{
-					Name:          oldName,
-					RSSUrl:        sharedURL,
-					LastSeenEntry: "wm-unique-old",
-				},
-			},
-		},
-	}
-
 	ensureFeedStatuses(fg)
-
-	fs := feedStatusFor(fg, newName)
-	if fs == nil {
-		t.Fatalf("expected status for %s", newName)
-	}
-	if fs.LastSeenEntry != "" {
-		t.Fatalf("LastSeenEntry = %q, want empty (must not inherit from differently named feed)", fs.LastSeenEntry)
+	if fs := feedStatusFor(fg, "a"); fs.ETag != `"e"` || fs.LastModified != "lm" || fs.RetryCount != 1 {
+		t.Fatalf("fs = %+v, want validators and retry state kept", fs)
 	}
 }
 
-func TestEnsureFeedStatuses_UnnamedAndNamedTransitionsAtSameURL(t *testing.T) {
-	const (
-		feedURL   = "https://example.com/transition-feed.xml"
-		feedLabel = "transition-named"
-	)
+// Renaming a feed is a different feed: the old name's status is pruned and
+// the new name starts fresh, even at the same URL.
+func TestEnsureFeedStatuses_RenameStartsFresh(t *testing.T) {
+	const url = "https://example.com/feed.xml"
+	fg := &v1beta1.FeedGroup{
+		Spec:   v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{{Name: "new-name", URL: url}}},
+		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{Name: "old-name", URL: url, LastSeenEntry: "entry"}}},
+	}
+	if pruned := ensureFeedStatuses(fg); !slices.Equal(pruned, []string{"old-name"}) {
+		t.Fatalf("pruned = %v, want [old-name]", pruned)
+	}
+	if fs := feedStatusFor(fg, "new-name"); fs == nil || fs.LastSeenEntry != "" || fs.URL != url {
+		t.Fatalf("fs = %+v, want a fresh status for new-name", fs)
+	}
+	if feedStatusFor(fg, "old-name") != nil {
+		t.Fatal("old-name's status survived")
+	}
+}
 
-	t.Run("named feed adopts unnamed prior status", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{
-			Spec: v1beta1.FeedGroupSpec{
-				Feeds: []v1beta1.FeedSpec{
-					{Name: feedLabel, RSSUrl: feedURL},
-				},
-			},
-			Status: v1beta1.FeedGroupStatus{
-				Feeds: []v1beta1.FeedStatus{
-					{
-						Name:          "",
-						RSSUrl:        feedURL,
-						LastSeenEntry: "wm-unnamed",
-					},
-				},
-			},
-		}
-		ensureFeedStatuses(fg)
-		fs := feedStatusFor(fg, feedLabel)
-		if fs == nil || fs.LastSeenEntry != "wm-unnamed" || fs.Name != feedLabel {
-			t.Fatalf("status = %+v, want Name=%s and LastSeenEntry=wm-unnamed", fs, feedLabel)
-		}
-	})
-
-	t.Run("unnamed feed adopts named prior status", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{
-			Spec: v1beta1.FeedGroupSpec{
-				Feeds: []v1beta1.FeedSpec{
-					{Name: "", RSSUrl: feedURL},
-				},
-			},
-			Status: v1beta1.FeedGroupStatus{
-				Feeds: []v1beta1.FeedStatus{
-					{
-						Name:          feedLabel,
-						RSSUrl:        feedURL,
-						LastSeenEntry: "wm-was-named",
-					},
-				},
-			},
-		}
-		ensureFeedStatuses(fg)
-		fs := feedStatusFor(fg, feedURL)
-		if fs == nil || fs.LastSeenEntry != "wm-was-named" || fs.Name != "" {
-			t.Fatalf("status = %+v, want Name='' and LastSeenEntry=wm-was-named", fs)
-		}
-	})
+// Two feeds swapping URLs keep their own histories.
+func TestEnsureFeedStatuses_SwappedURLsFollowNames(t *testing.T) {
+	const urlA, urlB = "https://a.example.com/feed.xml", "https://b.example.com/feed.xml"
+	fg := &v1beta1.FeedGroup{
+		Spec: v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{{Name: "a", URL: urlB}, {Name: "b", URL: urlA}}},
+		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{
+			{Name: "a", URL: urlA, LastSeenEntry: "a-entry"},
+			{Name: "b", URL: urlB, LastSeenEntry: "b-entry"},
+		}},
+	}
+	ensureFeedStatuses(fg)
+	if fs := feedStatusFor(fg, "a"); fs.URL != urlB || fs.LastSeenEntry != "a-entry" {
+		t.Fatalf("a = %+v", fs)
+	}
+	if fs := feedStatusFor(fg, "b"); fs.URL != urlA || fs.LastSeenEntry != "b-entry" {
+		t.Fatalf("b = %+v", fs)
+	}
 }
 
 func TestGroupSync_SettleSuspend(t *testing.T) {
@@ -682,14 +586,14 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 		Spec: v1beta1.FeedGroupSpec{
 			Suspend: true,
 			Feeds: []v1beta1.FeedSpec{
-				{RSSUrl: exampleFeedURL},
+				{Name: testFeedName(exampleFeedURL), URL: exampleFeedURL},
 			},
 		},
 		Status: v1beta1.FeedGroupStatus{
 			ObservedGeneration: 1,
 			Feeds: []v1beta1.FeedStatus{
 				{
-					RSSUrl:        exampleFeedURL,
+					Name: testFeedName(exampleFeedURL), URL: exampleFeedURL,
 					LastSeenEntry: "wm-1",
 					RetryCount:    4,
 					BackoffUntil:  metav1TimeRFC3339("2026-11-04T15:00:00Z"),
@@ -715,7 +619,7 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 		t.Fatalf("Ready condition = %+v, want Status=Unknown, Reason=Suspended", ready)
 	}
 	// Watermark and retry backoff must be preserved during suspension
-	fs := feedStatusFor(fg, exampleFeedURL)
+	fs := feedStatusFor(fg, testFeedName(exampleFeedURL))
 	if fs == nil || fs.LastSeenEntry != "wm-1" {
 		t.Fatalf("feed status watermark not preserved: %+v", fs)
 	}
@@ -728,7 +632,7 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 	fgResume.Spec.Suspend = false
 	fgResume.Generation = 3
 	r.openGroupSync(fgResume)
-	fsResume := feedStatusFor(fgResume, exampleFeedURL)
+	fsResume := feedStatusFor(fgResume, testFeedName(exampleFeedURL))
 	if fsResume.RetryCount != 0 || fsResume.BackoffUntil != nil {
 		t.Fatalf("expected RetryCount and BackoffUntil cleared on resume: %+v", fsResume)
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"unicode/utf8"
 
@@ -64,79 +65,53 @@ func errText(err error) string {
 
 // ensureFeedStatuses rebuilds feedGroup.Status.Feeds to have exactly one
 // entry per feed in feedGroup.Spec.Feeds, in spec order: existing entries are
-// matched up by Name (when specified) first, falling back to RSSUrl. If a named
-// feed's RSSUrl has changed, its existing status is updated in-place with the new
-// RSSUrl while preserving its delivery history (LastSeenEntry), LastSent ledger,
-// and conditional-GET validators. New feeds get an entry with their RSSUrl/Name,
-// and entries for feeds no longer in the spec are dropped. That one pass both initializes
-// status on a fresh FeedGroup and prunes the stale entries an edited or removed
-// feed leaves behind (the same unbounded-growth problem maxLastSentPerFeed
-// guards against one level down), so this is the only place that needs to know
-// about every per-feed status field. Paused feeds still get an entry, since
-// they're still part of the spec. Rebuilding in spec order also keeps
-// Status.Feeds' order stable across reconciles whenever the spec doesn't
-// change, which apiequality.Semantic.DeepEqual (used by groupSync settlement to skip
-// no-op writes) needs to avoid seeing a reordered-but-otherwise-identical slice
-// as a change. Retained entries have nil LastSent maps initialized, LastError
-// bounded, and oversized LastSeenEntry values replaced by clampWatermark
-// digests. It returns the feed identities it pruned so the caller can drop their
-// metric series; it does not touch Prometheus.
+// matched up by Name, new feeds get a fresh entry, and entries for feeds no
+// longer in the spec are dropped. That one pass both initializes status on a
+// fresh FeedGroup and prunes the stale entries a removed feed leaves behind
+// (the same unbounded-growth problem maxLastSentPerFeed guards against one
+// level down), so this is the only place that needs to know about every
+// per-feed status field. Suspended feeds still get an entry, since they're
+// still part of the spec.
+//
+// A feed whose URL changed keeps its delivery history (LastSeenEntry,
+// LastSent, Initialized), since the name says it is the same feed, but loses
+// its conditional-GET validators: an ETag or Last-Modified belongs to the
+// server that issued it, and sending one to a different URL could earn a 304
+// that silently stops delivery.
+//
+// Rebuilding in spec order also keeps Status.Feeds' order stable across
+// reconciles whenever the spec doesn't change, which apiequality.Semantic.DeepEqual
+// (used by groupSync settlement to skip no-op writes) needs to avoid seeing a
+// reordered-but-otherwise-identical slice as a change. Retained entries have
+// nil LastSent maps initialized, LastError bounded, and oversized
+// LastSeenEntry values replaced by clampWatermark digests. It returns the
+// names it pruned, sorted, so the caller can drop their metric series; it
+// does not touch Prometheus.
 func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
-	originalIdentities := make(map[string]struct{}, len(feedGroup.Status.Feeds))
-	existingByUrl := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
-	existingByName := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
+	existing := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
-		if id := feedIdentity(fs.Name, fs.RSSUrl); id != "" {
-			originalIdentities[id] = struct{}{}
-		}
-		existingByUrl[fs.RSSUrl] = fs
-		if fs.Name != "" {
-			existingByName[fs.Name] = fs
-		}
-	}
-
-	// First pass: reserve prior statuses matched by stable Name in Spec order.
-	// Reserving them upfront ensures URL fallback cannot steal or duplicate
-	// a prior status that belongs to a named feed whose URL has changed.
-	claimedByFeedIndex := make(map[int]v1beta1.FeedStatus, len(feedGroup.Spec.Feeds))
-	reservedUrls := make(map[string]bool, len(feedGroup.Spec.Feeds))
-	for i, feed := range feedGroup.Spec.Feeds {
-		if feed.Name != "" {
-			if existing, ok := existingByName[feed.Name]; ok {
-				claimedByFeedIndex[i] = existing
-				reservedUrls[existing.RSSUrl] = true
-				delete(existingByName, feed.Name)
-			}
-		}
-	}
-	for url := range reservedUrls {
-		delete(existingByUrl, url)
+		existing[fs.Name] = fs
 	}
 
 	rebuilt := make([]v1beta1.FeedStatus, 0, len(feedGroup.Spec.Feeds))
-
-	for i, feed := range feedGroup.Spec.Feeds {
-		var fs v1beta1.FeedStatus
-		var matched bool
-
-		if existing, ok := claimedByFeedIndex[i]; ok {
-			fs = existing
-			matched = true
-		} else if existing, ok := existingByUrl[feed.RSSUrl]; ok && (feed.Name == "" || existing.Name == "") {
-			fs = existing
-			matched = true
-			delete(existingByUrl, feed.RSSUrl)
+	for _, feed := range feedGroup.Spec.Feeds {
+		fs, ok := existing[feed.Name]
+		if !ok {
+			fs = v1beta1.FeedStatus{Name: feed.Name}
 		}
-
-		if !matched {
-			fs = v1beta1.FeedStatus{RSSUrl: feed.RSSUrl, Name: feed.Name}
-		} else {
-			fs.RSSUrl = feed.RSSUrl
-			fs.Name = feed.Name
+		delete(existing, feed.Name)
+		if fs.URL != feed.URL {
+			// Nothing the old URL's server said applies to the new one:
+			// drop its validators, its check time (so the new URL is due
+			// now) and its retry state.
+			fs.URL = feed.URL
+			fs.ETag = ""
+			fs.LastModified = ""
+			fs.LastChecked = nil
+			retryStateOf(&fs).clear()
 		}
-
 		if fs.LastSent == nil {
-			fs.LastSent = map[string]string{}
+			fs.LastSent = map[string]metav1.Time{}
 		}
 		// Normalize values stored before these fields were bounded; an
 		// oversized one would be rejected by the CRD schema on every write.
@@ -146,30 +121,17 @@ func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
 	}
 	feedGroup.Status.Feeds = rebuilt
 
-	// Collect pruned identities: existing entries whose feed identity is no longer present in rebuilt feeds
-	activeIdentities := make(map[string]bool, len(rebuilt))
-	for _, fs := range rebuilt {
-		if id := feedIdentity(fs.Name, fs.RSSUrl); id != "" {
-			activeIdentities[id] = true
-		}
-	}
-	var pruned []string
-	for oldID := range originalIdentities {
-		if !activeIdentities[oldID] {
-			pruned = append(pruned, oldID)
-		}
-	}
-	slices.Sort(pruned)
-	return pruned
+	// Whatever is left in existing was dropped from the spec.
+	return slices.Sorted(maps.Keys(existing))
 }
 
-// feedStatusFor returns a pointer to the FeedStatus for ident (matching RSSUrl
-// or Name), or nil if absent (ensureFeedStatuses runs once at the start of every
-// Reconcile and creates an entry for every feed in Spec.Feeds, so any url drawn
-// from Spec.Feeds is guaranteed to be found).
-func feedStatusFor(feedGroup *v1beta1.FeedGroup, ident string) *v1beta1.FeedStatus {
+// feedStatusFor returns a pointer to the FeedStatus for the feed called name,
+// or nil if absent (ensureFeedStatuses runs once at the start of every
+// Reconcile and creates an entry for every feed in Spec.Feeds, so any name
+// drawn from Spec.Feeds is guaranteed to be found).
+func feedStatusFor(feedGroup *v1beta1.FeedGroup, name string) *v1beta1.FeedStatus {
 	for i := range feedGroup.Status.Feeds {
-		if feedGroup.Status.Feeds[i].RSSUrl == ident || (feedGroup.Status.Feeds[i].Name != "" && feedGroup.Status.Feeds[i].Name == ident) {
+		if feedGroup.Status.Feeds[i].Name == name {
 			return &feedGroup.Status.Feeds[i]
 		}
 	}
@@ -211,8 +173,8 @@ const statusFieldOwner = "feedgroup-controller"
 
 // applyStatus persists feedGroup's status via server-side apply rather than
 // a whole-object Status().Update. FeedGroupStatus.Feeds is listType=map,
-// listMapKey=rssUrl, so entries merge (and prune, for feeds no longer sent
-// in the apply) by rssUrl instead of by slice position -- and, more broadly,
+// listMapKey=name, so entries merge (and prune, for feeds no longer sent
+// in the apply) by name instead of by slice position -- and, more broadly,
 // SSA lets this controller declare itself owner of exactly the status
 // fields it manages instead of unconditionally overwriting the whole
 // subresource, which is what removes the conflict-retry churn Update()

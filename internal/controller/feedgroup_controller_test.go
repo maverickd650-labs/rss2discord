@@ -74,7 +74,7 @@ func testRSSClient() *rss.Client {
 // repeating the find-feed-then-find-condition boilerplate at every call
 // site.
 func feedConditionReason(fg *rss2discordv1beta1.FeedGroup, url, condType string) string {
-	fs := feedStatusFor(fg, url)
+	fs := feedStatusFor(fg, testFeedName(url))
 	if fs == nil {
 		return ""
 	}
@@ -322,7 +322,7 @@ func withRetries(retryInterval string, retries int32) feedGroupOption {
 // webhook URL from secretName and watches a single feed at feedURL, with
 // defaultInterval. Opts adjust the result.
 func newTestFeedGroup(name, secretName, feedURL string, opts ...feedGroupOption) *rss2discordv1beta1.FeedGroup {
-	return newTestFeedGroupFeeds(name, secretName, []rss2discordv1beta1.FeedSpec{{RSSUrl: feedURL}}, opts...)
+	return newTestFeedGroupFeeds(name, secretName, []rss2discordv1beta1.FeedSpec{{Name: testFeedName(feedURL), URL: feedURL}}, opts...)
 }
 
 // newTestFeedGroupFeeds is newTestFeedGroup for a FeedGroup that watches the
@@ -480,7 +480,7 @@ var _ = Describe("FeedGroup Controller", func() {
 					guid:        "article-2",
 				},
 			), withRetries("5m", 3), func(fg *rss2discordv1beta1.FeedGroup) {
-				fg.Spec.Format = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Content: "**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"}
 			})
 
 			By("Running reconciliation")
@@ -494,8 +494,8 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupNameBasic, Namespace: namespace}, updated)).To(Succeed())
 			Expect(updated.Spec.CatchUpLimit).To(HaveValue(Equal(int32(5))), "omitted catchUpLimit must default to 5")
 
-			Expect(feedStatusFor(updated, rssServer.URL()).LastChecked).NotTo(BeNil())
-			Expect(feedStatusFor(updated, rssServer.URL()).LastSeenEntry).NotTo(BeEmpty())
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).LastChecked).NotTo(BeNil())
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).LastSeenEntry).NotTo(BeEmpty())
 
 			By("Verifying no errors in status")
 			Expect(feedsWithError(updated)).To(Equal(0))
@@ -534,8 +534,8 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			afterFirst := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, afterFirst)).To(Succeed())
-			Expect(feedStatusFor(afterFirst, rssServer.URL()).ETag).To(Equal(`"v1"`))
-			lastSeenAfterFirst := feedStatusFor(afterFirst, rssServer.URL()).LastSeenEntry
+			Expect(feedStatusFor(afterFirst, testFeedName(rssServer.URL())).ETag).To(Equal(`"v1"`))
+			lastSeenAfterFirst := feedStatusFor(afterFirst, testFeedName(rssServer.URL())).LastSeenEntry
 			Expect(lastSeenAfterFirst).NotTo(BeEmpty())
 
 			By("Running a second reconciliation against the unchanged feed")
@@ -551,9 +551,9 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			afterSecond := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, afterSecond)).To(Succeed())
-			Expect(feedStatusFor(afterSecond, rssServer.URL()).LastSeenEntry).To(Equal(lastSeenAfterFirst))
+			Expect(feedStatusFor(afterSecond, testFeedName(rssServer.URL())).LastSeenEntry).To(Equal(lastSeenAfterFirst))
 			Expect(feedsWithError(afterSecond)).To(Equal(0))
-			Expect(feedStatusFor(afterSecond, rssServer.URL()).RetryCount).To(Equal(int32(0)))
+			Expect(feedStatusFor(afterSecond, testFeedName(rssServer.URL())).RetryCount).To(Equal(int32(0)))
 		})
 
 		It("should not refetch a feed that was checked less than one interval ago", func() {
@@ -619,9 +619,9 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying the new ETag was NOT persisted, since the entry was never sent")
 			afterFirst := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, afterFirst)).To(Succeed())
-			Expect(feedStatusFor(afterFirst, rssServer.URL()).ETag).To(BeEmpty())
-			Expect(feedStatusFor(afterFirst, rssServer.URL()).LastSeenEntry).To(BeEmpty())
-			Expect(feedStatusFor(afterFirst, rssServer.URL()).LastError).NotTo(BeEmpty())
+			Expect(feedStatusFor(afterFirst, testFeedName(rssServer.URL())).ETag).To(BeEmpty())
+			Expect(feedStatusFor(afterFirst, testFeedName(rssServer.URL())).LastSeenEntry).To(BeEmpty())
+			Expect(feedStatusFor(afterFirst, testFeedName(rssServer.URL())).LastError).NotTo(BeEmpty())
 
 			By("Running a second reconciliation, where the Discord send succeeds")
 			_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
@@ -633,8 +633,8 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			afterSecond := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, afterSecond)).To(Succeed())
-			Expect(feedStatusFor(afterSecond, rssServer.URL()).ETag).To(Equal(`"v1"`))
-			Expect(feedStatusFor(afterSecond, rssServer.URL()).LastSeenEntry).NotTo(BeEmpty())
+			Expect(feedStatusFor(afterSecond, testFeedName(rssServer.URL())).ETag).To(Equal(`"v1"`))
+			Expect(feedStatusFor(afterSecond, testFeedName(rssServer.URL())).LastSeenEntry).NotTo(BeEmpty())
 			Expect(feedsWithError(afterSecond)).To(Equal(0))
 		})
 	})
@@ -669,7 +669,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(discordServer.MessageCount()).To(Equal(0), "no backlog should be sent")
 
 			Expect(k8sClient.Get(ctx, key, fg)).To(Succeed())
-			fs := feedStatusFor(fg, rssServer.URL())
+			fs := feedStatusFor(fg, testFeedName(rssServer.URL()))
 			Expect(fs.LastSeenEntry).To(Equal("skip-backlog-10"), "watermark should be the newest entry")
 			delivered := apimeta.FindStatusCondition(fs.Conditions, rss2discordv1beta1.FeedConditionTypeDelivered)
 			Expect(delivered).NotTo(BeNil())
@@ -702,7 +702,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			fg := &rss2discordv1beta1.FeedGroup{}
 			key := types.NamespacedName{Name: feedGroupName, Namespace: namespace}
 			Expect(k8sClient.Get(ctx, key, fg)).To(Succeed())
-			fs := feedStatusFor(fg, rssServer.URL())
+			fs := feedStatusFor(fg, testFeedName(rssServer.URL()))
 			Expect(fs.Initialized).To(BeTrue(), "initialization must survive a status write and read")
 			Expect(fs.LastSeenEntry).To(BeEmpty())
 			Expect(discordServer.MessageCount()).To(BeZero())
@@ -836,14 +836,14 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying error is tracked")
 			updated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupNameRetry, Namespace: namespace}, updated)).To(Succeed())
-			Expect(feedStatusFor(updated, rssServer.URL).LastError).NotTo(BeEmpty())
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL)).LastError).NotTo(BeEmpty())
 
 			By("Verifying the Ready condition reflects the failure")
 			readyCondition := apimeta.FindStatusCondition(updated.Status.Conditions, rss2discordv1beta1.ConditionTypeReady)
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(readyCondition.Reason).To(Equal("FeedErrors"))
-			Expect(feedStatusFor(updated, rssServer.URL).RetryCount).To(Equal(int32(1)))
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL)).RetryCount).To(Equal(int32(1)))
 			Expect(recorder.Events).To(BeEmpty(), "no event should fire before retries are exhausted")
 
 			By("Reconciling again to exhaust the configured retries")
@@ -852,7 +852,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			By("Verifying a persistent-failure Event was recorded once retries were exhausted")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupNameRetry, Namespace: namespace}, updated)).To(Succeed())
-			Expect(feedStatusFor(updated, rssServer.URL).RetryCount).To(Equal(int32(2)))
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL)).RetryCount).To(Equal(int32(2)))
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("FetchFailed")))
 
 			By("Verifying the FeedReachable condition and classified error reason")
@@ -868,7 +868,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			By("Verifying no second persistent-failure Event fires for the same ongoing failure")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupNameRetry, Namespace: namespace}, updated)).To(Succeed())
-			Expect(feedStatusFor(updated, rssServer.URL).RetryCount).To(Equal(int32(3)))
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL)).RetryCount).To(Equal(int32(3)))
 			Consistently(recorder.Events).ShouldNot(Receive())
 		})
 
@@ -910,7 +910,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying the feed failed with the SSRF guard's error, not a real fetch")
 			updated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
-			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(ContainSubstring("refusing to connect to non-public address"))
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).LastError).To(ContainSubstring("refusing to connect to non-public address"))
 		})
 
 		It("should persist what a reconcile sent before a feed panicked, and not send it again", func() {
@@ -946,7 +946,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying the sent entry was persisted despite the panic")
 			updated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
-			fs := feedStatusFor(updated, rssServer.URL())
+			fs := feedStatusFor(updated, testFeedName(rssServer.URL()))
 			Expect(fs.LastSeenEntry).To(Equal("panic-older-article"))
 			Expect(fs.LastSent).To(HaveLen(1))
 			Expect(fs.ETag).To(BeEmpty())
@@ -976,7 +976,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(discordServer.MessageCount()).To(Equal(2))
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
 			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
-			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(BeEmpty())
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).LastError).To(BeEmpty())
 			Expect(apimeta.IsStatusConditionTrue(updated.Status.Conditions, rss2discordv1beta1.ConditionTypeReady)).To(BeTrue())
 		})
 
@@ -1023,7 +1023,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying the delivery state was persisted despite the bad interval")
 			updated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
-			fs := feedStatusFor(updated, rssServer.URL())
+			fs := feedStatusFor(updated, testFeedName(rssServer.URL()))
 			Expect(fs.LastSent).NotTo(BeEmpty())
 			Expect(fs.LastSeenEntry).NotTo(BeEmpty())
 			Expect(fs.LastChecked).NotTo(BeNil())
@@ -1085,8 +1085,8 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			By("Creating FeedGroup resource with two feeds")
 			feedGroup := newTestFeedGroupFeeds(feedGroupName, "discord-webhook-removed", []rss2discordv1beta1.FeedSpec{
-				{RSSUrl: rssServer.URL()},
-				{RSSUrl: keptFeedURL, Paused: true},
+				{Name: testFeedName(rssServer.URL()), URL: rssServer.URL()},
+				{Name: testFeedName(keptFeedURL), URL: keptFeedURL, Suspend: true},
 			}, withRetries("5m", 3))
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
@@ -1098,12 +1098,12 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			afterFirst := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, afterFirst)).To(Succeed())
-			Expect(feedStatusFor(afterFirst, rssServer.URL()).LastChecked).NotTo(BeNil())
-			Expect(feedStatusFor(afterFirst, rssServer.URL()).ETag).NotTo(BeEmpty())
+			Expect(feedStatusFor(afterFirst, testFeedName(rssServer.URL())).LastChecked).NotTo(BeNil())
+			Expect(feedStatusFor(afterFirst, testFeedName(rssServer.URL())).ETag).NotTo(BeEmpty())
 
 			By("Removing the feed from spec, keeping the paused one")
 			afterFirst.Spec.Feeds = []rss2discordv1beta1.FeedSpec{
-				{RSSUrl: keptFeedURL, Paused: true},
+				{Name: testFeedName(keptFeedURL), URL: keptFeedURL, Suspend: true},
 			}
 			Expect(k8sClient.Update(ctx, afterFirst)).To(Succeed())
 
@@ -1114,7 +1114,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying the removed feed's status entries were pruned")
 			afterSecond := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, afterSecond)).To(Succeed())
-			Expect(feedStatusFor(afterSecond, rssServer.URL())).To(BeNil())
+			Expect(feedStatusFor(afterSecond, testFeedName(rssServer.URL()))).To(BeNil())
 		})
 	})
 
@@ -1159,7 +1159,7 @@ var _ = Describe("FeedGroup Controller", func() {
 				HaveField("Operation", metav1.ManagedFieldsOperationApply),
 				HaveField("Subresource", "status"),
 			)))
-			Expect(updated.Status.Feeds).To(ConsistOf(HaveField("RSSUrl", "https://example.com/ssa-concurrent.xml")))
+			Expect(updated.Status.Feeds).To(ConsistOf(HaveField("URL", "https://example.com/ssa-concurrent.xml")))
 
 			By("Applying status computed from the second, now-stale copy -- must not fail with a conflict")
 			ensureFeedStatuses(fgB)
@@ -1232,7 +1232,7 @@ var _ = Describe("FeedGroup Controller", func() {
 					},
 					RetryInterval: "five minutes",
 					Feeds: []rss2discordv1beta1.FeedSpec{
-						{RSSUrl: exampleFeedURL},
+						{Name: testFeedName(exampleFeedURL), URL: exampleFeedURL},
 					},
 				},
 			}
@@ -1244,7 +1244,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			feeds := make([]rss2discordv1beta1.FeedSpec, 51)
 			for i := range feeds {
-				feeds[i] = rss2discordv1beta1.FeedSpec{RSSUrl: fmt.Sprintf("https://example.com/feed-%d.xml", i)}
+				feeds[i] = rss2discordv1beta1.FeedSpec{Name: testFeedName(fmt.Sprintf("https://example.com/feed-%d.xml", i)), URL: fmt.Sprintf("https://example.com/feed-%d.xml", i)}
 			}
 
 			feedGroup := &rss2discordv1beta1.FeedGroup{
@@ -1296,9 +1296,9 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Verifying the new ETag was NOT persisted, since the entry was never sent")
 			updated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
-			Expect(feedStatusFor(updated, rssServer.URL()).ETag).To(BeEmpty())
-			Expect(feedStatusFor(updated, rssServer.URL()).LastSeenEntry).To(BeEmpty())
-			Expect(feedStatusFor(updated, rssServer.URL()).LastError).To(ContainSubstring("rate limited"))
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).ETag).To(BeEmpty())
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).LastSeenEntry).To(BeEmpty())
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).LastError).To(ContainSubstring("rate limited"))
 
 			By("Waiting for the Retry-After cooldown to expire and reconciling again, where the previously unsent entry is delivered")
 			time.Sleep(2 * time.Second)
@@ -1310,7 +1310,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically("<=", 33*time.Minute))
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
-			Expect(feedStatusFor(updated, rssServer.URL()).ETag).To(Equal(`"v1"`))
+			Expect(feedStatusFor(updated, testFeedName(rssServer.URL())).ETag).To(Equal(`"v1"`))
 			Expect(feedsWithError(updated)).To(Equal(0))
 		})
 
@@ -1344,8 +1344,8 @@ var _ = Describe("FeedGroup Controller", func() {
 			fg := newTestFeedGroup(feedGroupName, "secret-rate-limit-multi", rssServerA.URL(), func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.RetryInterval = "5m"
 				fg.Spec.Feeds = append(fg.Spec.Feeds, rss2discordv1beta1.FeedSpec{
-					RSSUrl: rssServerB.URL(),
-					Format: "{{.Title}}",
+					Name: testFeedName(rssServerB.URL()), URL: rssServerB.URL(),
+					Message: &rss2discordv1beta1.MessageSpec{Content: tmplTitle},
 				})
 			})
 			Expect(k8sClient.Create(ctx, fg)).To(Succeed())
@@ -1356,7 +1356,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			fgCreated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, fgCreated)).To(Succeed())
 			ensureFeedStatuses(fgCreated)
-			statusB := feedStatusFor(fgCreated, rssServerB.URL())
+			statusB := feedStatusFor(fgCreated, testFeedName(rssServerB.URL()))
 			statusB.LastSeenEntry = "feed-b-0"
 			statusB.ETag = `"etag-b-old"`
 			tBack := metav1.NewTime(time.Now().Add(-10 * time.Minute))
@@ -1375,12 +1375,12 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Asserting feed A status records the rate limit error and did not persist its new ETag")
 			updated := &rss2discordv1beta1.FeedGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, updated)).To(Succeed())
-			statusA := feedStatusFor(updated, rssServerA.URL())
+			statusA := feedStatusFor(updated, testFeedName(rssServerA.URL()))
 			Expect(statusA.LastError).To(ContainSubstring("rate limited"))
 			Expect(statusA.ETag).To(BeEmpty())
 
 			By("Asserting feed B was untouched by the rate limit on feed A")
-			statusBUpdated := feedStatusFor(updated, rssServerB.URL())
+			statusBUpdated := feedStatusFor(updated, testFeedName(rssServerB.URL()))
 			Expect(statusBUpdated.LastSeenEntry).To(Equal("feed-b-0"))
 			Expect(statusBUpdated.ETag).To(Equal(`"etag-b-old"`))
 			Expect(statusBUpdated.LastError).To(BeEmpty())
@@ -1397,35 +1397,34 @@ var _ = Describe("FeedGroup Controller", func() {
 						Key:                  secretURLKey,
 					},
 					Feeds: []rss2discordv1beta1.FeedSpec{
-						{RSSUrl: exampleFeedURL},
-						{RSSUrl: exampleFeedURL},
+						{Name: "feed-one", URL: exampleFeedURL},
+						{Name: "feed-two", URL: exampleFeedURL},
 					},
 				},
 			}
 			err := k8sClient.Create(ctx, feedGroup)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("rssUrl must be unique"))
+			Expect(err.Error()).To(ContainSubstring("url must be unique"))
 		})
 
-		It("should reject embed author and footer URLs without their required text", func() {
+		It("should reject messages the schema rules out", func() {
 			for _, tc := range []struct {
-				name         string
-				resourceName string
-				groupEmbed   *rss2discordv1beta1.EmbedSpec
-				feedEmbed    *rss2discordv1beta1.EmbedSpec
-				want         string
+				name, resourceName string
+				groupMessage       *rss2discordv1beta1.MessageSpec
+				feedMessage        *rss2discordv1beta1.MessageSpec
+				want               string
 			}{
 				{
-					name:         "group author URL without author name",
-					resourceName: "test-embed-author",
-					groupEmbed:   &rss2discordv1beta1.EmbedSpec{AuthorURL: "https://example.com"},
-					want:         "authorName is required",
+					name:         "group message with neither content nor embed",
+					resourceName: "test-message-empty",
+					groupMessage: &rss2discordv1beta1.MessageSpec{Silent: true},
+					want:         "a message needs content, embed, or both",
 				},
 				{
-					name:         "feed footer icon without footer text",
-					resourceName: "test-embed-footer",
-					feedEmbed:    &rss2discordv1beta1.EmbedSpec{FooterIconURL: "https://example.com/icon.png"},
-					want:         "footerText is required",
+					name:         "feed message suppressing previews with an embed",
+					resourceName: "test-message-suppress",
+					feedMessage:  &rss2discordv1beta1.MessageSpec{Embed: &rss2discordv1beta1.EmbedSpec{}, SuppressLinkPreviews: true},
+					want:         "suppressLinkPreviews would also hide the embed",
 				},
 			} {
 				feedGroup := &rss2discordv1beta1.FeedGroup{
@@ -1435,10 +1434,10 @@ var _ = Describe("FeedGroup Controller", func() {
 							LocalObjectReference: corev1.LocalObjectReference{Name: feedGroupValidationSecretName},
 							Key:                  secretURLKey,
 						},
-						Embed: tc.groupEmbed,
+						Message: tc.groupMessage,
 						Feeds: []rss2discordv1beta1.FeedSpec{{
-							RSSUrl: exampleFeedURL,
-							Embed:  tc.feedEmbed,
+							Name: testFeedName(exampleFeedURL), URL: exampleFeedURL,
+							Message: tc.feedMessage,
 						}},
 					},
 				}
@@ -1448,22 +1447,32 @@ var _ = Describe("FeedGroup Controller", func() {
 			}
 		})
 
-		It("should accept complete embed author and footer fields", func() {
+		It("should accept a complete message", func() {
 			feedGroup := &rss2discordv1beta1.FeedGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-embed-complete", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "test-message-complete", Namespace: namespace},
 				Spec: rss2discordv1beta1.FeedGroupSpec{
 					DiscordWebhookSecretRef: corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: feedGroupValidationSecretName},
 						Key:                  secretURLKey,
 					},
-					Embed: &rss2discordv1beta1.EmbedSpec{
-						AuthorName:    "Example",
-						AuthorURL:     "https://example.com",
-						AuthorIconURL: "https://example.com/icon.png",
-						FooterText:    "Example footer",
-						FooterIconURL: "https://example.com/footer.png",
+					Message: &rss2discordv1beta1.MessageSpec{
+						Content:  "New: {{.Title}}",
+						Mentions: &rss2discordv1beta1.Mentions{RoleIDs: []string{"123"}, UserIDs: []string{"456"}},
+						Silent:   true,
+						Embed: &rss2discordv1beta1.EmbedSpec{
+							Title:      tmplTitle,
+							Color:      "#5865F2",
+							ImageStyle: rss2discordv1beta1.EmbedImageStyleImage,
+							Timestamp:  rss2discordv1beta1.EmbedTimestampNone,
+							Author:     &rss2discordv1beta1.EmbedAuthor{Name: "{{.Author}}", URL: "https://example.com", IconURL: "https://example.com/icon.png"},
+							Footer:     &rss2discordv1beta1.EmbedFooter{Text: "Example footer", IconURL: "https://example.com/footer.png"},
+						},
 					},
-					Feeds: []rss2discordv1beta1.FeedSpec{{RSSUrl: exampleFeedURL}},
+					Feeds: []rss2discordv1beta1.FeedSpec{
+						{Name: "posts", URL: exampleFeedURL, ForumPost: &rss2discordv1beta1.ForumPostSpec{Name: tmplTitle, AppliedTagIDs: []string{"1", "2", "3", "4", "5"}}},
+						{Name: "thread", URL: "https://example.com/other.xml", Thread: &rss2discordv1beta1.ThreadTarget{ID: "1234567890"},
+							Message: &rss2discordv1beta1.MessageSpec{Content: tmplTitle, SuppressLinkPreviews: true}},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
@@ -1478,8 +1487,8 @@ var _ = Describe("FeedGroup Controller", func() {
 						Key:                  secretURLKey,
 					},
 					Feeds: []rss2discordv1beta1.FeedSpec{
-						{RSSUrl: "https://example.com/a.xml"},
-						{RSSUrl: "https://example.com/b.xml"},
+						{Name: testFeedName("https://example.com/a.xml"), URL: "https://example.com/a.xml"},
+						{Name: testFeedName("https://example.com/b.xml"), URL: "https://example.com/b.xml"},
 					},
 				},
 			}
@@ -1505,7 +1514,7 @@ var _ = Describe("FeedGroup Controller", func() {
 						guid:        fmt.Sprintf("concurrent-%d", i),
 					},
 				))
-				feeds[i] = rss2discordv1beta1.FeedSpec{RSSUrl: rssServers[i].URL()}
+				feeds[i] = rss2discordv1beta1.FeedSpec{Name: testFeedName(rssServers[i].URL()), URL: rssServers[i].URL()}
 			}
 			defer func() {
 				for _, s := range rssServers {
@@ -1542,8 +1551,8 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
 			Expect(feedsWithError(updated)).To(Equal(0))
 			for _, s := range rssServers {
-				Expect(feedStatusFor(updated, s.URL()).LastChecked).NotTo(BeNil())
-				Expect(feedStatusFor(updated, s.URL()).LastSeenEntry).NotTo(BeEmpty())
+				Expect(feedStatusFor(updated, testFeedName(s.URL())).LastChecked).NotTo(BeNil())
+				Expect(feedStatusFor(updated, testFeedName(s.URL())).LastSeenEntry).NotTo(BeEmpty())
 			}
 		})
 	})
@@ -1583,7 +1592,7 @@ var _ = Describe("FeedGroup Controller", func() {
 					},
 					Username: username,
 					Feeds: []rss2discordv1beta1.FeedSpec{
-						{RSSUrl: exampleFeedURL},
+						{Name: testFeedName(exampleFeedURL), URL: exampleFeedURL},
 					},
 				},
 			}
@@ -1593,10 +1602,13 @@ var _ = Describe("FeedGroup Controller", func() {
 			func(username string) {
 				err := k8sClient.Create(ctx, minimalFeedGroup("username-rejected", username))
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("username must not contain"))
+				Expect(err.Error()).To(ContainSubstring("Discord rejects usernames"))
 			},
 			Entry("contains clyde", "ClydeBot"),
 			Entry("contains discord", "totally-discord-official"),
+			Entry("contains a colon", "News: Daily"),
+			Entry("contains a hash", "news#1"),
+			Entry("is here", "HERE"),
 		)
 
 		It("should reject a username over 80 characters", func() {
@@ -1620,7 +1632,7 @@ var _ = Describe("FeedGroup Controller", func() {
 						LocalObjectReference: corev1.LocalObjectReference{Name: discordWebhookSecretName},
 						Key:                  secretURLKey,
 					},
-					Feeds: []rss2discordv1beta1.FeedSpec{{RSSUrl: exampleFeedURL}},
+					Feeds: []rss2discordv1beta1.FeedSpec{{Name: testFeedName(exampleFeedURL), URL: exampleFeedURL}},
 				},
 			}
 			mutate(fg)
@@ -1643,23 +1655,51 @@ var _ = Describe("FeedGroup Controller", func() {
 			Entry("microsecond-sign unit", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Interval = "100\u00b5s" }, "interval"),
 			Entry("non-http avatarURL", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.AvatarURL = "ftp://example.com/a.png" }, "avatarURL"),
 			Entry("unknown embed imageStyle", func(fg *rss2discordv1beta1.FeedGroup) {
-				fg.Spec.Embed = &rss2discordv1beta1.EmbedSpec{Enabled: true, ImageStyle: "banner"}
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Embed: &rss2discordv1beta1.EmbedSpec{ImageStyle: "banner"}}
 			}, "imageStyle"),
-			Entry("non-numeric forumThreadID", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Feeds[0].ForumThreadID = "abc" }, "forumThreadID"),
+			Entry("lowercase embed imageStyle", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Embed: &rss2discordv1beta1.EmbedSpec{ImageStyle: "image"}}
+			}, "imageStyle"),
+			Entry("unknown embed timestamp", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Embed: &rss2discordv1beta1.EmbedSpec{Timestamp: "Updated"}}
+			}, "timestamp"),
+			Entry("non-numeric thread id", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Feeds[0].Thread = &rss2discordv1beta1.ThreadTarget{ID: "abc"}
+			}, "thread.id"),
+			Entry("thread and forumPost together", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Feeds[0].Thread = &rss2discordv1beta1.ThreadTarget{ID: "1"}
+				fg.Spec.Feeds[0].ForumPost = &rss2discordv1beta1.ForumPostSpec{Name: tmplTitle}
+			}, "thread and forumPost are mutually exclusive"),
+			Entry("too many forum tags", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Feeds[0].ForumPost = &rss2discordv1beta1.ForumPostSpec{Name: tmplTitle, AppliedTagIDs: []string{"1", "2", "3", "4", "5", "6"}}
+			}, "appliedTagIDs"),
+			Entry("non-numeric mention role", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Content: "x", Mentions: &rss2discordv1beta1.Mentions{RoleIDs: []string{"everyone"}}}
+			}, "roleIDs"),
+			Entry("missing feed name", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Feeds[0].Name = "" }, "name"),
 			Entry("invalid feed name", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Feeds[0].Name = "Invalid_Name" }, "name"),
 			Entry("duplicate feed name", func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.Feeds = []rss2discordv1beta1.FeedSpec{
-					{Name: "dup", RSSUrl: "https://a.com/feed.xml"},
-					{Name: "dup", RSSUrl: "https://b.com/feed.xml"},
+					{Name: "dup", URL: "https://a.com/feed.xml"},
+					{Name: "dup", URL: "https://b.com/feed.xml"},
 				}
-			}, "each feed's name must be unique"),
+			}, "Duplicate value"),
+			Entry("duplicate feed url", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Feeds = []rss2discordv1beta1.FeedSpec{
+					{Name: "a", URL: exampleFeedURL},
+					{Name: "b", URL: exampleFeedURL},
+				}
+			}, "each feed's url must be unique"),
 			Entry("feed username contains clyde", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Feeds[0].Username = "clyde" }, "username"),
-			Entry("non-http embed authorURL", func(fg *rss2discordv1beta1.FeedGroup) {
-				fg.Spec.Embed = &rss2discordv1beta1.EmbedSpec{Enabled: true, AuthorURL: nonHTTPURL}
-			}, "authorURL"),
-			Entry("non-http embed footerIconURL", func(fg *rss2discordv1beta1.FeedGroup) {
-				fg.Spec.Embed = &rss2discordv1beta1.EmbedSpec{Enabled: true, FooterIconURL: nonHTTPURL}
-			}, "footerIconURL"),
+			Entry("username contains @", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Username = "news@home" }, "username"),
+			Entry("username contains a code fence", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Username = "```news" }, "username"),
+			Entry("username is everyone", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Feeds[0].Username = "Everyone" }, "username"),
+			Entry("non-http embed author url", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Embed: &rss2discordv1beta1.EmbedSpec{Author: &rss2discordv1beta1.EmbedAuthor{Name: "a", URL: nonHTTPURL}}}
+			}, "author.url"),
+			Entry("non-http embed footer iconURL", func(fg *rss2discordv1beta1.FeedGroup) {
+				fg.Spec.Message = &rss2discordv1beta1.MessageSpec{Embed: &rss2discordv1beta1.EmbedSpec{Footer: &rss2discordv1beta1.EmbedFooter{Text: "f", IconURL: nonHTTPURL}}}
+			}, "footer.iconURL"),
 			Entry("non-http feed avatarURL", func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.Feeds[0].AvatarURL = "ftp://example.com/avatar.png"
 			}, "avatarURL"),
@@ -1672,7 +1712,8 @@ var _ = Describe("FeedGroup Controller", func() {
 				fg.Spec.Interval = "1m"
 				fg.Spec.RetryInterval = "10s"
 				fg.Spec.AvatarURL = "https://example.com/a.png"
-				fg.Spec.Feeds[0].ForumThreadID = "1234567890"
+				fg.Spec.Username = "Everyone's News"
+				fg.Spec.Feeds[0].Thread = &rss2discordv1beta1.ThreadTarget{ID: "12345678901234567890"}
 			})
 			Expect(k8sClient.Create(ctx, fg)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, fg)).To(Succeed())
@@ -1802,7 +1843,7 @@ var _ = Describe("Reconcile API error paths", func() {
 		DeferCleanup(rssServer1.Close)
 
 		fg := newTestFeedGroupFeeds(feedGroupName, secretName, []rss2discordv1beta1.FeedSpec{
-			{Name: "my-named-feed", RSSUrl: rssServer1.URL()},
+			{Name: "my-named-feed", URL: rssServer1.URL()},
 		})
 		Expect(k8sClient.Create(ctx, fg)).To(Succeed())
 		reconciler := newTestReconciler(discordServer)
@@ -1821,7 +1862,7 @@ var _ = Describe("Reconcile API error paths", func() {
 		DeferCleanup(rssServer2.Close)
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, fg)).To(Succeed())
-		fg.Spec.Feeds[0].RSSUrl = rssServer2.URL()
+		fg.Spec.Feeds[0].URL = rssServer2.URL()
 		Expect(k8sClient.Update(ctx, fg)).To(Succeed())
 
 		_, err = reconcileFeedGroup(ctx, reconciler, feedGroupName)
@@ -1829,7 +1870,7 @@ var _ = Describe("Reconcile API error paths", func() {
 		Expect(discordServer.MessageCount()).To(Equal(2))
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: testNamespace}, fg)).To(Succeed())
-		Expect(fg.Status.Feeds[0].RSSUrl).To(Equal(rssServer2.URL()))
+		Expect(fg.Status.Feeds[0].URL).To(Equal(rssServer2.URL()))
 		Expect(fg.Status.Feeds[0].LastSeenEntry).To(Equal("item2"))
 	})
 })

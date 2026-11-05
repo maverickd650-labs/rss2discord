@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -97,12 +99,12 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 		{name: "unrelated entry is not sent", fetch: []rss.Entry{guid, other}, handled: guid, probe: other, wantResume: true, wantKeys: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
+			fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{}}
 			ledger := newDeliveryLedger(fs, tc.fetch)
 			if ledger.sent(tc.handled) {
 				t.Fatal("entry reads as sent before being handled")
 			}
-			ledger.markHandled(tc.handled, ledgerTestNow)
+			ledger.markHandled(tc.handled, ts(ledgerTestNow))
 			if got := ledger.sent(tc.probe); got != tc.wantSent {
 				t.Fatalf("sent(probe) = %v, want %v", got, tc.wantSent)
 			}
@@ -110,7 +112,7 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 				t.Fatalf("LastSent has %d keys, want %d: %v", len(fs.LastSent), tc.wantKeys, fs.LastSent)
 			}
 			for key, at := range fs.LastSent {
-				if at != ledgerTestNow {
+				if !at.Time.Equal(ts(ledgerTestNow).Time) {
 					t.Fatalf("LastSent[%s] = %q, want %q", key, at, ledgerTestNow)
 				}
 			}
@@ -132,9 +134,9 @@ func TestDeliveryLedger_MarkHandledAndSent(t *testing.T) {
 
 func TestDeliveryLedger_MarkHandledClampsLongIdentity(t *testing.T) {
 	long := rss.Entry{ID: strings.Repeat("y", maxStatusTextBytes*2)}
-	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{}}
 	ledger := newDeliveryLedger(fs, []rss.Entry{long})
-	ledger.markHandled(long, ledgerTestNow)
+	ledger.markHandled(long, ts(ledgerTestNow))
 	if len(fs.LastSeenEntry) > maxStatusTextBytes {
 		t.Fatalf("LastSeenEntry is %d bytes, want <= %d", len(fs.LastSeenEntry), maxStatusTextBytes)
 	}
@@ -145,7 +147,7 @@ func TestDeliveryLedger_MarkHandledClampsLongIdentity(t *testing.T) {
 
 func TestDeliveryLedger_MarkNewest(t *testing.T) {
 	entries := []rss.Entry{{ID: "guid-old"}, {ID: "guid-new"}}
-	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{}}
 	newDeliveryLedger(fs, entries).markNewest()
 	if fs.LastSeenEntry != "guid-new" {
 		t.Fatalf("LastSeenEntry = %q, want guid-new", fs.LastSeenEntry)
@@ -162,9 +164,9 @@ func TestDeliveryLedger_CountsCoverWholeFetch(t *testing.T) {
 	siblingA := linkEntry(identityURLPrefix+"index/post?ref=c", 0)
 	siblingB := linkEntry(identityURLPrefix+"index/post?ref=d", 1)
 	fetch := []rss.Entry{siblingA, siblingB}
-	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{}}
 	ledger := newDeliveryLedger(fs, fetch)
-	ledger.markHandled(siblingB, ledgerTestNow) // as if only the trimmed tail were scanned
+	ledger.markHandled(siblingB, ts(ledgerTestNow)) // as if only the trimmed tail were scanned
 	if ledger.sent(siblingA) {
 		t.Fatal("a sibling sharing the stripped identity was treated as sent")
 	}
@@ -172,11 +174,11 @@ func TestDeliveryLedger_CountsCoverWholeFetch(t *testing.T) {
 
 func TestPruneLastSent(t *testing.T) {
 	t.Run("ties on timestamp are broken deterministically by key", func(t *testing.T) {
-		const ts = "2024-01-01T00:00:00Z"
+		sentAt := ts("2024-01-01T00:00:00Z")
 		for range 50 {
-			sent := map[string]string{}
+			sent := map[string]metav1.Time{}
 			for _, k := range []string{"e", "b", "g", "a", "f", "c", "d"} {
-				sent[k] = ts
+				sent[k] = sentAt
 			}
 			pruneLastSent(sent, 3)
 			if len(sent) != 3 {
@@ -191,7 +193,7 @@ func TestPruneLastSent(t *testing.T) {
 	})
 
 	t.Run("under cap unchanged", func(t *testing.T) {
-		sent := map[string]string{"a": "2024-01-01T00:00:00Z", "b": "2024-01-02T00:00:00Z"}
+		sent := map[string]metav1.Time{"a": ts("2024-01-01T00:00:00Z"), "b": ts("2024-01-02T00:00:00Z")}
 		pruneLastSent(sent, 5)
 		if len(sent) != 2 {
 			t.Fatalf("expected map unchanged, got %d entries", len(sent))
@@ -199,10 +201,10 @@ func TestPruneLastSent(t *testing.T) {
 	})
 
 	t.Run("drops oldest by timestamp", func(t *testing.T) {
-		sent := map[string]string{
-			"oldest": "2024-01-01T00:00:00Z",
-			"middle": "2024-01-02T00:00:00Z",
-			"newest": "2024-01-03T00:00:00Z",
+		sent := map[string]metav1.Time{
+			"oldest": ts("2024-01-01T00:00:00Z"),
+			"middle": ts("2024-01-02T00:00:00Z"),
+			"newest": ts("2024-01-03T00:00:00Z"),
 		}
 		pruneLastSent(sent, 2)
 		if len(sent) != 2 {
@@ -254,9 +256,9 @@ func TestComputeEntryKey_IgnoresLinkAndTitleChurn(t *testing.T) {
 // unsent.
 func TestDeliveryLedger_EntriesWithoutIDAreToldApartByContent(t *testing.T) {
 	a, b := rss.Entry{Description: "first"}, rss.Entry{Description: "second"}
-	fs := &v1beta1.FeedStatus{LastSent: map[string]string{}}
+	fs := &v1beta1.FeedStatus{LastSent: map[string]metav1.Time{}}
 	ledger := newDeliveryLedger(fs, []rss.Entry{a, b})
-	ledger.markHandled(a, ledgerTestNow)
+	ledger.markHandled(a, ts(ledgerTestNow))
 	if !ledger.sent(a) || ledger.sent(b) {
 		t.Fatalf("sent(a), sent(b) = %v, %v; want true, false", ledger.sent(a), ledger.sent(b))
 	}

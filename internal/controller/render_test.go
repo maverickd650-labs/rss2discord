@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -48,67 +49,46 @@ func TestParseHexColor(t *testing.T) {
 	}
 }
 
-func TestResolveEmbedSpec(t *testing.T) {
-	feedEmbed := &v1beta1.EmbedSpec{Color: "#feed00"}
-	groupEmbed := &v1beta1.EmbedSpec{Color: "#9009ff"}
+func TestResolveMessage(t *testing.T) {
+	feedMsg := &v1beta1.MessageSpec{Content: "feed"}
+	groupMsg := &v1beta1.MessageSpec{Content: "group"}
 
-	t.Run("feed embed takes precedence", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Embed: groupEmbed}}
-		got := resolveEmbedSpec(fg, &v1beta1.FeedSpec{Embed: feedEmbed})
-		if got != feedEmbed {
-			t.Fatal("expected feed embed to take precedence")
-		}
-	})
-
-	t.Run("falls back to group embed", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Embed: groupEmbed}}
-		got := resolveEmbedSpec(fg, &v1beta1.FeedSpec{})
-		if got != groupEmbed {
-			t.Fatal("expected fallback to group embed")
-		}
-	})
-
-	t.Run("nil when neither set", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{}
-		if got := resolveEmbedSpec(fg, &v1beta1.FeedSpec{}); got != nil {
-			t.Fatalf("expected nil, got %+v", got)
-		}
-	})
+	if got := resolveMessage(&v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Message: groupMsg}}, &v1beta1.FeedSpec{Message: feedMsg}); got != feedMsg {
+		t.Fatal("expected the feed's message to take precedence")
+	}
+	if got := resolveMessage(&v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Message: groupMsg}}, &v1beta1.FeedSpec{}); got != groupMsg {
+		t.Fatal("expected fallback to the group's message")
+	}
+	if got := resolveMessage(&v1beta1.FeedGroup{}, &v1beta1.FeedSpec{}); got.Content != v1beta1.DefaultMessageContent || got.Embed != nil {
+		t.Fatalf("expected the default message, got %+v", got)
+	}
 }
 
-func TestCompileMessageTemplate_Precedence(t *testing.T) {
-	t.Run("feed format wins", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Format: "group {{.Title}}"}}
-		tmpl, err := compileMessageTemplate(fg, &v1beta1.FeedSpec{Format: "feed {{.Title}}"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		got, err := tmpl.Execute(map[string]string{testTitle: "X"})
-		if err != nil {
-			t.Fatalf("execute error: %v", err)
-		}
-		if got != "feed X" {
-			t.Fatalf("expected feed format used, got %q", got)
-		}
-	})
+// msgFeed is a feed whose message is m.
+func msgFeed(m v1beta1.MessageSpec) *v1beta1.FeedSpec { return &v1beta1.FeedSpec{Message: &m} }
 
-	t.Run("falls back to default when both blank", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{}
-		tmpl, err := compileMessageTemplate(fg, &v1beta1.FeedSpec{})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if tmpl == nil {
-			t.Fatal("expected a compiled default template")
-		}
-	})
+// embedFeed is a feed whose message is just the embed e.
+func embedFeed(e v1beta1.EmbedSpec) *v1beta1.FeedSpec {
+	return msgFeed(v1beta1.MessageSpec{Embed: &e})
+}
 
-	t.Run("invalid template returns error", func(t *testing.T) {
-		fg := &v1beta1.FeedGroup{}
-		if _, err := compileMessageTemplate(fg, &v1beta1.FeedSpec{Format: "{{.Unclosed"}); err == nil {
-			t.Fatal("expected parse error for invalid template, got nil")
-		}
-	})
+func TestNewFeedRenderer_ConfigErrors(t *testing.T) {
+	cases := map[string]*v1beta1.FeedSpec{
+		"content":     msgFeed(v1beta1.MessageSpec{Content: tmplUnclosed}),
+		"title":       embedFeed(v1beta1.EmbedSpec{Title: tmplUnclosed}),
+		"description": embedFeed(v1beta1.EmbedSpec{Description: tmplUnclosed}),
+		"author":      embedFeed(v1beta1.EmbedSpec{Author: &v1beta1.EmbedAuthor{Name: tmplUnclosed}}),
+		"footer":      embedFeed(v1beta1.EmbedSpec{Footer: &v1beta1.EmbedFooter{Text: tmplUnclosed}}),
+		"forum post":  {ForumPost: &v1beta1.ForumPostSpec{Name: tmplUnclosed}},
+		"filter":      {Filter: &v1beta1.Filter{Include: &v1beta1.FilterRules{Regex: "("}}},
+	}
+	for name, feed := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := newFeedRenderer(&v1beta1.FeedGroup{}, feed); err == nil {
+				t.Fatal("expected a configuration error")
+			}
+		})
+	}
 }
 
 func TestRenderTemplate_AuthorAndCategories(t *testing.T) {
@@ -263,54 +243,64 @@ func mustBuild(t *testing.T, group *v1beta1.FeedGroup, feed *v1beta1.FeedSpec, e
 	return msg, err
 }
 
-// TestFeedRendererBuild_EmbedTimestamp asserts an entry without a publish
-// date leaves the embed timestamp empty (discord.Embed omits it from the
-// payload) instead of sending year 0001, and that real dates are unchanged.
-func TestFeedRendererBuild_EmbedTimestamp(t *testing.T) {
-	feedGroup := &v1beta1.FeedGroup{}
-	feed := &v1beta1.FeedSpec{Embed: &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: defaultDescriptionFormat}}
+func TestFeedRendererBuild_DefaultMessage(t *testing.T) {
+	msg, err := mustBuild(t, &v1beta1.FeedGroup{}, &v1beta1.FeedSpec{}, rss.Entry{Title: "T", Description: "D", Link: testArticleURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "**T**\nD\n[Read more](https://example.com/a)"; msg.Content != want || msg.Embed != nil {
+		t.Fatalf("msg = %+v, want content %q and no embed", msg, want)
+	}
+}
 
+// TestFeedRendererBuild_EmbedTimestamp asserts the embed timestamp is the
+// entry's published time by default, empty for an undated entry (discord.Embed
+// omits it from the payload instead of sending year 0001) and for
+// timestamp None.
+const publishedRFC3339 = "2024-05-06T07:08:09Z"
+
+func TestFeedRendererBuild_EmbedTimestamp(t *testing.T) {
+	dated := time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600))
 	cases := []struct {
-		name      string
-		published time.Time
-		want      string
+		name, timestamp string
+		published       time.Time
+		want            string
 	}{
 		{name: "zero published", want: ""},
-		{name: "non-zero published", published: time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600)), want: "2024-05-06T07:08:09Z"},
+		{name: "default is published", published: dated, want: publishedRFC3339},
+		{name: "explicit published", timestamp: v1beta1.EmbedTimestampPublished, published: dated, want: publishedRFC3339},
+		{name: "none", timestamp: v1beta1.EmbedTimestampNone, published: dated, want: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg, err := mustBuild(t, feedGroup, feed, rss.Entry{Title: "T", Published: tc.published})
+			msg, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{Timestamp: tc.timestamp}), rss.Entry{Title: "T", Published: tc.published})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if msg.Embed == nil {
-				t.Fatal("expected an embed to be set")
-			}
-			if msg.Embed.Timestamp != tc.want {
-				t.Fatalf("msg.Embed.Timestamp = %q, want %q", msg.Embed.Timestamp, tc.want)
+			if msg.Embed == nil || msg.Embed.Timestamp != tc.want {
+				t.Fatalf("embed = %+v, want timestamp %q", msg.Embed, tc.want)
 			}
 		})
 	}
 }
 
 // TestFeedRendererBuild_EmbedImageStyle asserts the entry image goes to the
-// small thumbnail by default and to the large image slot for imageStyle
-// "image", and that non-http(s) image URLs are dropped either way.
+// small thumbnail by default, to the large image slot for Image, nowhere for
+// None, and that non-http(s) image URLs are dropped either way.
 func TestFeedRendererBuild_EmbedImageStyle(t *testing.T) {
 	cases := []struct {
 		name, style, image   string
 		wantThumb, wantLarge string
 	}{
 		{name: "default is thumbnail", image: imageFixtureURL, wantThumb: imageFixtureURL},
-		{name: "explicit thumbnail", style: "thumbnail", image: imageFixtureURL, wantThumb: imageFixtureURL},
-		{name: "image style", style: "image", image: imageFixtureURL, wantLarge: imageFixtureURL},
-		{name: "unsafe scheme dropped", style: "image", image: jsAlertURL},
+		{name: "explicit thumbnail", style: v1beta1.EmbedImageStyleThumbnail, image: imageFixtureURL, wantThumb: imageFixtureURL},
+		{name: "image style", style: v1beta1.EmbedImageStyleImage, image: imageFixtureURL, wantLarge: imageFixtureURL},
+		{name: "none", style: v1beta1.EmbedImageStyleNone, image: imageFixtureURL},
+		{name: "unsafe scheme dropped", style: v1beta1.EmbedImageStyleImage, image: jsAlertURL},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			feed := &v1beta1.FeedSpec{Embed: &v1beta1.EmbedSpec{Enabled: true, ImageStyle: tc.style, DescriptionFormat: defaultDescriptionFormat}}
-			msg, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, rss.Entry{Title: "T", Image: tc.image})
+			msg, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{ImageStyle: tc.style}), rss.Entry{Title: "T", Image: tc.image})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -337,46 +327,96 @@ func TestRenderTemplate_StripsHTMLFromTitle(t *testing.T) {
 	}
 }
 
-func TestFeedRendererBuild_EmbedTitleStripsHTML(t *testing.T) {
-	feed := &v1beta1.FeedSpec{Embed: &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: defaultDescriptionFormat}}
+// TestFeedRendererBuild_EmbedTemplates asserts every embed text field is a
+// template over the sanitized entry, with title and description defaulting to
+// the entry's.
+func TestFeedRendererBuild_EmbedTemplates(t *testing.T) {
+	entry := rss.Entry{Title: "<b>Breaking</b> News", Description: testDesc, Author: "Jane", FeedTitle: "Feed", Link: testArticleURL}
 
-	msg, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, rss.Entry{Title: "<b>Breaking</b> News"})
+	t.Run("defaults", func(t *testing.T) {
+		msg, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{}), entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := msg.Embed
+		if e.Title != "Breaking News" || e.Description != testDesc || e.URL != testArticleURL || e.AuthorName != "" || e.FooterText != "" {
+			t.Fatalf("embed = %+v", e)
+		}
+	})
+
+	t.Run("templated", func(t *testing.T) {
+		msg, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{
+			Title:       "[{{.FeedTitle}}] {{.Title}}",
+			Description: "{{upper .Description}}",
+			Color:       "#00ff00",
+			Author:      &v1beta1.EmbedAuthor{Name: "by {{.Author}}"},
+			Footer:      &v1beta1.EmbedFooter{Text: "via {{.FeedTitle}}"},
+		}), entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := msg.Embed
+		if e.Title != "[Feed] Breaking News" || e.Description != "DESC" || e.AuthorName != "by Jane" || e.FooterText != "via Feed" || e.Color != 0x00ff00 {
+			t.Fatalf("embed = %+v", e)
+		}
+	})
+
+	t.Run("blank author and footer are left out", func(t *testing.T) {
+		msg, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{
+			Author: &v1beta1.EmbedAuthor{Name: "{{.Author}}", URL: "https://a.example.com", IconURL: "https://a.example.com/i.png"},
+			Footer: &v1beta1.EmbedFooter{Text: " {{.Author}} ", IconURL: "https://f.example.com/i.png"},
+		}), rss.Entry{Title: "T"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := msg.Embed
+		if e.AuthorName != "" || e.AuthorURL != "" || e.AuthorIconURL != "" || e.FooterText != "" || e.FooterIconURL != "" {
+			t.Fatalf("embed = %+v, want no author or footer", e)
+		}
+	})
+
+	for name, spec := range map[string]v1beta1.EmbedSpec{
+		"title":       {Title: tmplMissingField},
+		"description": {Description: tmplMissingField},
+		"author":      {Author: &v1beta1.EmbedAuthor{Name: tmplMissingField}},
+		"footer":      {Footer: &v1beta1.EmbedFooter{Text: tmplMissingField}},
+	} {
+		t.Run(name+" execution error", func(t *testing.T) {
+			if _, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(spec), rss.Entry{}); err == nil {
+				t.Fatal("expected a render error")
+			}
+		})
+	}
+}
+
+// TestFeedRendererBuild_ContentAndEmbed asserts content and embed are sent
+// together, and that blank content is only an error without an embed.
+func TestFeedRendererBuild_ContentAndEmbed(t *testing.T) {
+	entry := rss.Entry{Title: "T"}
+
+	msg, err := mustBuild(t, &v1beta1.FeedGroup{}, msgFeed(v1beta1.MessageSpec{Content: "New: {{.Title}}", Embed: &v1beta1.EmbedSpec{}}), entry)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
+	}
+	if msg.Content != "New: T" || msg.Embed == nil || msg.Embed.Title != "T" {
+		t.Fatalf("msg = %+v, want both content and embed", msg)
+	}
+
+	msg, err = mustBuild(t, &v1beta1.FeedGroup{}, msgFeed(v1beta1.MessageSpec{Content: tmplPublished, Embed: &v1beta1.EmbedSpec{}}), entry)
+	if err != nil {
+		t.Fatalf("blank content beside an embed should not be an error: %v", err)
 	}
 	if msg.Embed == nil {
-		t.Fatal("expected an embed to be set")
+		t.Fatal("expected the embed")
 	}
-	if want := "Breaking News"; msg.Embed.Title != want {
-		t.Fatalf("msg.Embed.Title = %q, want %q", msg.Embed.Title, want)
-	}
-}
 
-// TestFeedRendererBuild_EmbedDescriptionRenderError asserts a description
-// template that parses but fails at execution (referencing a field absent
-// from renderTemplate's render data) surfaces as an error instead of a
-// blank/partial embed.
-func TestFeedRendererBuild_EmbedDescriptionRenderError(t *testing.T) {
-	feed := &v1beta1.FeedSpec{Embed: &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: tmplMissingField}}
-
-	if _, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, rss.Entry{}); err == nil {
-		t.Fatal("expected an error from a description template that fails at execution")
-	}
-}
-
-// TestFeedRendererBuild_ForumThreadNameRenderError asserts a forum thread
-// name template that parses but fails at execution surfaces as an error,
-// distinct from the content/description render-error paths.
-func TestFeedRendererBuild_ForumThreadNameRenderError(t *testing.T) {
-	feed := &v1beta1.FeedSpec{Format: tmplTitle, ForumThreadName: tmplMissingField}
-
-	if _, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, rss.Entry{}); err == nil {
-		t.Fatal("expected an error from a forum thread name template that fails at execution")
+	if _, err := mustBuild(t, &v1beta1.FeedGroup{}, msgFeed(v1beta1.MessageSpec{Content: "x{{.Unknown}}"}), entry); err == nil {
+		t.Fatal("expected a content execution error")
 	}
 }
 
 // TestFeedRendererBuild_EmptyRenderIsError asserts a template that renders
-// to blank content or a blank forum thread name (here: only {{.Published}},
+// to blank content or a blank forum post name (here: only {{.Published}},
 // for an entry with no date) is reported as a render error, so the
 // render-error path can skip the entry, rather than producing a message
 // Discord would reject on every retry.
@@ -385,73 +425,85 @@ func TestFeedRendererBuild_EmptyRenderIsError(t *testing.T) {
 	entry := rss.Entry{Title: "T"}
 
 	t.Run("blank content", func(t *testing.T) {
-		feed := &v1beta1.FeedSpec{Format: " {{.Published}} "}
-		if _, err := mustBuild(t, feedGroup, feed, entry); err == nil {
+		if _, err := mustBuild(t, feedGroup, msgFeed(v1beta1.MessageSpec{Content: " {{.Published}} "}), entry); err == nil {
 			t.Fatal("expected an error for content that renders blank")
 		}
 	})
 
-	t.Run("blank forum thread name", func(t *testing.T) {
-		feed := &v1beta1.FeedSpec{Format: tmplTitle, ForumThreadName: "{{.Published}}"}
+	t.Run("blank content with mentions", func(t *testing.T) {
+		feed := msgFeed(v1beta1.MessageSpec{Content: tmplPublished, Mentions: &v1beta1.Mentions{RoleIDs: []string{"1"}}})
 		if _, err := mustBuild(t, feedGroup, feed, entry); err == nil {
-			t.Fatal("expected an error for a forum thread name that renders blank")
+			t.Fatal("expected an error for content that renders blank, pings or not")
+		}
+	})
+
+	t.Run("blank forum post name", func(t *testing.T) {
+		feed := &v1beta1.FeedSpec{ForumPost: &v1beta1.ForumPostSpec{Name: tmplPublished}}
+		if _, err := mustBuild(t, feedGroup, feed, entry); err == nil {
+			t.Fatal("expected an error for a forum post name that renders blank")
+		}
+	})
+
+	t.Run("forum post name execution error", func(t *testing.T) {
+		feed := &v1beta1.FeedSpec{ForumPost: &v1beta1.ForumPostSpec{Name: tmplMissingField}}
+		if _, err := mustBuild(t, feedGroup, feed, entry); err == nil {
+			t.Fatal("expected an error from a forum post name that fails at execution")
 		}
 	})
 
 	t.Run("dated entry still renders", func(t *testing.T) {
 		dated := rss.Entry{Title: "T", Published: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)}
-		feed := &v1beta1.FeedSpec{Format: " {{.Published}} "}
-		msg, err := mustBuild(t, feedGroup, feed, dated)
+		msg, err := mustBuild(t, feedGroup, msgFeed(v1beta1.MessageSpec{Content: " {{.Published}} "}), dated)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if want := "2024-05-06T07:08:09Z"; msg.Content != want {
+		if want := publishedRFC3339; msg.Content != want {
 			t.Fatalf("msg.Content = %q, want %q", msg.Content, want)
 		}
 	})
 }
 
-// TestFeedRendererBuild_ForumThreadIDTakesPrecedenceOverThreadName asserts
-// an explicit ForumThreadID (posting into an existing thread) wins over a
-// configured ForumThreadName template (which creates a new thread), even
-// when both are set.
-func TestFeedRendererBuild_ForumThreadIDTakesPrecedenceOverThreadName(t *testing.T) {
-	feed := &v1beta1.FeedSpec{Format: tmplTitle, ForumThreadID: "123456", ForumThreadName: tmplTitle}
+func TestFeedRendererBuild_ThreadTargets(t *testing.T) {
+	entry := rss.Entry{Title: "Hello"}
 
-	msg, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, rss.Entry{Title: "Hello"})
+	msg, err := mustBuild(t, &v1beta1.FeedGroup{}, &v1beta1.FeedSpec{Thread: &v1beta1.ThreadTarget{ID: "123456"}}, entry)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if msg.ThreadID != "123456" {
-		t.Fatalf("msg.ThreadID = %q, want %q", msg.ThreadID, "123456")
+	if msg.ThreadID != "123456" || msg.ThreadName != "" || msg.AppliedTags != nil {
+		t.Fatalf("msg = %+v, want only ThreadID", msg)
 	}
-	if msg.ThreadName != "" {
-		t.Fatalf("expected ThreadName to stay empty when ForumThreadID is set, got %q", msg.ThreadName)
+
+	msg, err = mustBuild(t, &v1beta1.FeedGroup{}, &v1beta1.FeedSpec{ForumPost: &v1beta1.ForumPostSpec{Name: tmplTitle, AppliedTagIDs: []string{"7", "8"}}}, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.ThreadName != "Hello" || msg.ThreadID != "" || !slices.Equal(msg.AppliedTags, []string{"7", "8"}) {
+		t.Fatalf("msg = %+v, want a tagged forum post", msg)
 	}
 }
 
-// TestFeedRendererBuild_EmbedResolution asserts a feed-level Embed replaces
-// the group-level one wholesale, and that a feed with none inherits the group's.
-func TestFeedRendererBuild_EmbedResolution(t *testing.T) {
-	group := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{
-		Embed: &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: "group:{{.Title}}", FooterText: "group-footer"},
-	}}
+// TestFeedRendererBuild_MessageResolution asserts a feed's message replaces
+// the group's wholesale, and that a feed with none inherits the group's.
+func TestFeedRendererBuild_MessageResolution(t *testing.T) {
+	group := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Message: &v1beta1.MessageSpec{
+		Silent: true,
+		Embed:  &v1beta1.EmbedSpec{Description: "group:{{.Title}}", Footer: &v1beta1.EmbedFooter{Text: "group-footer"}},
+	}}}
 	entry := rss.Entry{Title: "T"}
 
-	t.Run("feed embed overrides group embed", func(t *testing.T) {
-		feed := &v1beta1.FeedSpec{Embed: &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: "feed:{{.Title}}"}}
-		msg, err := mustBuild(t, group, feed, entry)
+	t.Run("feed message overrides group message", func(t *testing.T) {
+		msg, err := mustBuild(t, group, embedFeed(v1beta1.EmbedSpec{Description: "feed:{{.Title}}"}), entry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if msg.Embed == nil || msg.Embed.Description != "feed:T" || msg.Embed.FooterText != "" {
-			t.Fatalf("embed = %+v, want the feed's embed only", msg.Embed)
+		if msg.Embed == nil || msg.Embed.Description != "feed:T" || msg.Embed.FooterText != "" || msg.Silent {
+			t.Fatalf("msg = %+v, want the feed's message only", msg)
 		}
 	})
 
-	t.Run("feed embed can disable group embed", func(t *testing.T) {
-		feed := &v1beta1.FeedSpec{Format: "plain {{.Title}}", Embed: &v1beta1.EmbedSpec{Enabled: false}}
-		msg, err := mustBuild(t, group, feed, entry)
+	t.Run("feed text message replaces group embed", func(t *testing.T) {
+		msg, err := mustBuild(t, group, msgFeed(v1beta1.MessageSpec{Content: "plain {{.Title}}"}), entry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -460,23 +512,47 @@ func TestFeedRendererBuild_EmbedResolution(t *testing.T) {
 		}
 	})
 
-	t.Run("group embed inherited when feed has none", func(t *testing.T) {
+	t.Run("group message inherited when feed has none", func(t *testing.T) {
 		msg, err := mustBuild(t, group, &v1beta1.FeedSpec{}, entry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if msg.Embed == nil || msg.Embed.Description != "group:T" || msg.Embed.FooterText != "group-footer" {
-			t.Fatalf("embed = %+v, want the group's embed", msg.Embed)
+		if msg.Embed == nil || msg.Embed.Description != "group:T" || msg.Embed.FooterText != "group-footer" || !msg.Silent {
+			t.Fatalf("msg = %+v, want the group's message", msg)
 		}
 	})
 }
 
-// A forum thread-name template that fails at execution is a render error,
-// like a failing content template, so the entry goes through retry/skip.
-func TestFeedRendererBuild_ThreadNameRenderError(t *testing.T) {
-	feed := &v1beta1.FeedSpec{Format: tmplTitle, ForumThreadName: tmplMissingField}
-	if _, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, rss.Entry{Title: "T"}); err == nil {
-		t.Fatal("expected a render error from the thread name template")
+func TestFeedRendererBuild_MentionsAndFlags(t *testing.T) {
+	mentions := &v1beta1.Mentions{RoleIDs: []string{"11", "12"}, UserIDs: []string{"21"}}
+	entry := rss.Entry{Title: "T"}
+
+	msg, err := mustBuild(t, &v1beta1.FeedGroup{}, msgFeed(v1beta1.MessageSpec{Content: tmplTitle, Mentions: mentions, Silent: true, SuppressLinkPreviews: true}), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "<@&11> <@&12> <@21>\nT"; msg.Content != want {
+		t.Fatalf("Content = %q, want %q", msg.Content, want)
+	}
+	if !slices.Equal(msg.MentionRoleIDs, mentions.RoleIDs) || !slices.Equal(msg.MentionUserIDs, mentions.UserIDs) || !msg.Silent || !msg.SuppressEmbeds {
+		t.Fatalf("msg = %+v", msg)
+	}
+
+	msg, err = mustBuild(t, &v1beta1.FeedGroup{}, msgFeed(v1beta1.MessageSpec{Embed: &v1beta1.EmbedSpec{}, Mentions: &v1beta1.Mentions{UserIDs: []string{"5"}}}), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Content != "<@5>" || msg.MentionRoleIDs != nil {
+		t.Fatalf("msg = %+v, want the pings alone beside the embed", msg)
+	}
+}
+
+func TestMentionText(t *testing.T) {
+	if got := mentionText(nil); got != "" {
+		t.Fatalf("mentionText(nil) = %q", got)
+	}
+	if got := mentionText(&v1beta1.Mentions{}); got != "" {
+		t.Fatalf("mentionText(empty) = %q", got)
 	}
 }
 
@@ -489,143 +565,63 @@ func TestFeedRendererBuild_SenderCustomizationOverrides(t *testing.T) {
 		avatarGroup = "https://cdn.example.com/group.png"
 		avatarFeed  = "https://cdn.example.com/feed.png"
 	)
-	entry := rss.Entry{Title: "News"}
+	entry := rss.Entry{Title: "Headline"}
 
 	cases := []struct {
-		name          string
-		groupUsername string
-		groupAvatar   string
-		feedUsername  string
-		feedAvatar    string
-		wantUsername  string
-		wantAvatar    string
+		name                       string
+		groupUsername, groupAvatar string
+		feedUsername, feedAvatar   string
+		wantUsername, wantAvatar   string
 	}{
-		{
-			name:          "feed username only inherits group avatar",
-			groupUsername: botGroup,
-			groupAvatar:   avatarGroup,
-			feedUsername:  botFeed,
-			wantUsername:  botFeed,
-			wantAvatar:    avatarGroup,
-		},
-		{
-			name:          "feed avatar only inherits group username",
-			groupUsername: botGroup,
-			groupAvatar:   avatarGroup,
-			feedAvatar:    avatarFeed,
-			wantUsername:  botGroup,
-			wantAvatar:    avatarFeed,
-		},
-		{
-			name:          "both feed overrides active",
-			groupUsername: botGroup,
-			groupAvatar:   avatarGroup,
-			feedUsername:  botFeed,
-			feedAvatar:    avatarFeed,
-			wantUsername:  botFeed,
-			wantAvatar:    avatarFeed,
-		},
-		{
-			name:          "neither feed override inherits group config",
-			groupUsername: botGroup,
-			groupAvatar:   avatarGroup,
-			wantUsername:  botGroup,
-			wantAvatar:    avatarGroup,
-		},
-		{
-			name:         "neither group nor feed override leaves empty (webhook default)",
-			wantUsername: "",
-			wantAvatar:   "",
-		},
+		{name: "feed username only inherits group avatar", groupUsername: botGroup, groupAvatar: avatarGroup, feedUsername: botFeed, wantUsername: botFeed, wantAvatar: avatarGroup},
+		{name: "feed avatar only inherits group username", groupUsername: botGroup, groupAvatar: avatarGroup, feedAvatar: avatarFeed, wantUsername: botGroup, wantAvatar: avatarFeed},
+		{name: "both feed overrides active", groupUsername: botGroup, groupAvatar: avatarGroup, feedUsername: botFeed, feedAvatar: avatarFeed, wantUsername: botFeed, wantAvatar: avatarFeed},
+		{name: "neither feed override inherits group config", groupUsername: botGroup, groupAvatar: avatarGroup, wantUsername: botGroup, wantAvatar: avatarGroup},
+		{name: "neither group nor feed override leaves empty (webhook default)"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			group := &v1beta1.FeedGroup{
-				Spec: v1beta1.FeedGroupSpec{
-					Username:  tc.groupUsername,
-					AvatarURL: tc.groupAvatar,
-				},
-			}
-			feed := &v1beta1.FeedSpec{
-				Username:  tc.feedUsername,
-				AvatarURL: tc.feedAvatar,
-				Format:    "plain {{.Title}}",
-			}
+			group := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Username: tc.groupUsername, AvatarURL: tc.groupAvatar}}
+			feed := &v1beta1.FeedSpec{Username: tc.feedUsername, AvatarURL: tc.feedAvatar}
 			msg, err := mustBuild(t, group, feed, entry)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if msg.Username != tc.wantUsername {
-				t.Errorf("Username = %q, want %q", msg.Username, tc.wantUsername)
-			}
-			if msg.AvatarURL != tc.wantAvatar {
-				t.Errorf("AvatarURL = %q, want %q", msg.AvatarURL, tc.wantAvatar)
+			if msg.Username != tc.wantUsername || msg.AvatarURL != tc.wantAvatar {
+				t.Errorf("Username, AvatarURL = %q, %q, want %q, %q", msg.Username, msg.AvatarURL, tc.wantUsername, tc.wantAvatar)
 			}
 		})
 	}
 }
 
-// TestFeedRendererBuild_EmbedAuthorAndFooterURLs tests authorURL, authorIconURL,
-// and footerIconURL sanitization and propagation to the discord.Embed.
+// TestFeedRendererBuild_EmbedAuthorAndFooterURLs tests author/footer URL
+// sanitization and propagation to the discord.Embed.
 func TestFeedRendererBuild_EmbedAuthorAndFooterURLs(t *testing.T) {
 	entry := rss.Entry{Title: testTitle}
-
-	t.Run("valid http and https URLs are preserved", func(t *testing.T) {
-		feed := &v1beta1.FeedSpec{
-			Embed: &v1beta1.EmbedSpec{
-				Enabled:       true,
-				AuthorName:    "Author",
-				AuthorURL:     "https://author.example.com",
-				AuthorIconURL: "http://author.example.com/icon.png",
-				FooterText:    "Footer",
-				FooterIconURL: "https://footer.example.com/icon.png",
-			},
-		}
-		msg, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, entry)
+	build := func(authorURL, authorIcon, footerIcon string) *discord.Embed {
+		t.Helper()
+		msg, err := mustBuild(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{
+			Author: &v1beta1.EmbedAuthor{Name: "Author", URL: authorURL, IconURL: authorIcon},
+			Footer: &v1beta1.EmbedFooter{Text: "Footer", IconURL: footerIcon},
+		}), entry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if msg.Embed == nil {
-			t.Fatal("expected embed to be present")
-		}
-		if msg.Embed.AuthorURL != "https://author.example.com" {
-			t.Errorf("AuthorURL = %q, want https://author.example.com", msg.Embed.AuthorURL)
-		}
-		if msg.Embed.AuthorIconURL != "http://author.example.com/icon.png" {
-			t.Errorf("AuthorIconURL = %q, want http://author.example.com/icon.png", msg.Embed.AuthorIconURL)
-		}
-		if msg.Embed.FooterIconURL != "https://footer.example.com/icon.png" {
-			t.Errorf("FooterIconURL = %q, want https://footer.example.com/icon.png", msg.Embed.FooterIconURL)
+		return msg.Embed
+	}
+
+	t.Run("valid http and https URLs are preserved", func(t *testing.T) {
+		e := build("https://author.example.com", "http://author.example.com/icon.png", "https://footer.example.com/icon.png")
+		if e.AuthorURL != "https://author.example.com" || e.AuthorIconURL != "http://author.example.com/icon.png" || e.FooterIconURL != "https://footer.example.com/icon.png" {
+			t.Fatalf("embed = %+v", e)
 		}
 	})
 
 	t.Run("unsafe URL schemes are sanitized to empty", func(t *testing.T) {
-		feed := &v1beta1.FeedSpec{
-			Embed: &v1beta1.EmbedSpec{
-				Enabled:       true,
-				AuthorName:    "Author",
-				AuthorURL:     "javascript:alert(1)",
-				AuthorIconURL: "data:image/png;base64,abc",
-				FooterText:    "Footer",
-				FooterIconURL: "ftp://example.com/icon.png",
-			},
-		}
-		msg, err := mustBuild(t, &v1beta1.FeedGroup{}, feed, entry)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if msg.Embed == nil {
-			t.Fatal("expected embed to be present")
-		}
-		if msg.Embed.AuthorURL != "" {
-			t.Errorf("AuthorURL = %q, want empty", msg.Embed.AuthorURL)
-		}
-		if msg.Embed.AuthorIconURL != "" {
-			t.Errorf("AuthorIconURL = %q, want empty", msg.Embed.AuthorIconURL)
-		}
-		if msg.Embed.FooterIconURL != "" {
-			t.Errorf("FooterIconURL = %q, want empty", msg.Embed.FooterIconURL)
+		e := build("javascript:alert(1)", "data:image/png;base64,abc", "ftp://example.com/icon.png")
+		if e.AuthorURL != "" || e.AuthorIconURL != "" || e.FooterIconURL != "" {
+			t.Fatalf("embed = %+v, want unsafe URLs dropped", e)
 		}
 	})
 }

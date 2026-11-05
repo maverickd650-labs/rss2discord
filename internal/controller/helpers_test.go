@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -84,6 +86,28 @@ const excerptText = "Some excerpt text"
 // Template sources shared across tests.
 const (
 	tmplTitle        = "{{.Title}}"
+	tmplUnclosed     = "{{.Unclosed"
+	tmplPublished    = "{{.Published}}"
+	testDesc         = "Desc"
+	testArticleURL   = "https://example.com/a"
 	tmplMissingField = "{{.DoesNotExist}}"
 	tmplSafeText     = "safe"
 )
+
+// testFeedName is the FeedSpec/FeedStatus name tests give the feed at url: a
+// DNS label derived from the URL alone, so a spec and a status built from the
+// same URL match by name the way production feeds do.
+func testFeedName(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return "feed-" + hex.EncodeToString(sum[:6])
+}
+
+// ts parses an RFC 3339 timestamp for a LastSent value, panicking on a
+// malformed literal.
+func ts(rfc3339 string) metav1.Time {
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		panic(err)
+	}
+	return metav1.NewTime(t)
+}

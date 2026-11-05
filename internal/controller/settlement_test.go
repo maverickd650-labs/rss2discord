@@ -54,7 +54,7 @@ func reloadStatus(t *testing.T, fg *v1beta1.FeedGroup) *v1beta1.FeedStatus {
 	}
 	fg.Status = reloaded
 	ensureFeedStatuses(fg)
-	return feedStatusFor(fg, exampleFeedURL)
+	return feedStatusFor(fg, testFeedName(exampleFeedURL))
 }
 
 // pendingCase is one way an entry stays unresolved after a fetch whose
@@ -81,14 +81,18 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			fix: func(*v1beta1.FeedSpec) {},
 		},
 		{
-			name:    "render error",
-			prepare: func(_ *MockDiscordServer, feed *v1beta1.FeedSpec) { feed.Format = "{{.Title.Nope}}" },
-			fix:     func(feed *v1beta1.FeedSpec) { feed.Format = "" },
+			name: "render error",
+			prepare: func(_ *MockDiscordServer, feed *v1beta1.FeedSpec) {
+				feed.Message = &v1beta1.MessageSpec{Content: "{{.Title.Nope}}"}
+			},
+			fix: func(feed *v1beta1.FeedSpec) { feed.Message = nil },
 		},
 		{
-			name:    "config error",
-			prepare: func(_ *MockDiscordServer, feed *v1beta1.FeedSpec) { feed.Filter = &v1beta1.Filter{Regex: "("} },
-			fix:     func(feed *v1beta1.FeedSpec) { feed.Filter = nil },
+			name: "config error",
+			prepare: func(_ *MockDiscordServer, feed *v1beta1.FeedSpec) {
+				feed.Filter = &v1beta1.Filter{Include: &v1beta1.FilterRules{Regex: "("}}
+			},
+			fix: func(feed *v1beta1.FeedSpec) { feed.Filter = nil },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,11 +106,11 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 
 			sentBefore := guidEntry("validators-sent", 0)
 			fresh := guidEntry("validators-fresh", 1)
-			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs := feedStatusFor(fg, feed.Name)
 			fs.Initialized = true
 			fs.StateVersion = currentStateVersion
 			fs.LastSeenEntry = entryIdentity(sentBefore)
-			fs.LastSent[computeEntryKey(sentBefore)] = testReconcileTime
+			fs.LastSent[computeEntryKey(sentBefore)] = ts(testReconcileTime)
 			fs.ETag = validatorsOld
 			fs.LastModified = "Wed, 31 Dec 2025 00:00:00 GMT"
 
@@ -171,7 +175,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 
 			bad := rss.Entry{ID: "https://example.com/skip-bad", Title: probePoisonTitle, Seq: 1}
 			good := rss.Entry{ID: "https://example.com/skip-good", Title: "good", Seq: 0}
-			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs := feedStatusFor(fg, feed.Name)
 			fs.Initialized = true
 			fs.StateVersion = currentStateVersion
 			fs.ETag = validatorsOld
