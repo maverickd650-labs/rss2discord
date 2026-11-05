@@ -51,9 +51,7 @@ func run(in io.Reader, out io.Writer) error {
 		return fmt.Errorf("input has no top-level 'spec' key -- is this a rendered PrometheusRule?")
 	}
 
-	// V3 defaults keep the generated rules file byte-identical to
-	// what the classic encoder wrote, so test/promrules diffs stay meaningful.
-	rules, err := yaml.Dump(&resource.Spec, yaml.WithV3Defaults())
+	rules, err := yaml.Dump(&resource.Spec)
 	if err != nil {
 		return fmt.Errorf("writing rules file: %w", err)
 	}
