@@ -419,7 +419,7 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	// {{.Title.Nope}} fails at execution time (it indexes into a string); the
 	// guard makes only the "bad" entry hit it, so the other one renders.
 	fg, feed := newMetricsFeedGroup(ns, name, `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`)
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "https://example.com/bad", Title: "bad", Seq: 1},
 		{ID: "https://example.com/good", Title: "good", Seq: 0},
@@ -474,7 +474,7 @@ func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title.Nope}}") // fails for every entry
-	fg.Spec.Retries = 1
+	fg.Spec.Retries = new(int32(1))
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "https://example.com/entry-a", Title: "a", Seq: 1},
 		{ID: "https://example.com/entry-b", Title: "b", Seq: 0},
@@ -1052,7 +1052,7 @@ func runSkipProbe(
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, skipProbeTemplate)
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	if prepare != nil {
 		prepare(fg, &feed)
 	}
@@ -1163,7 +1163,7 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	fg.Spec.Retries = 5
+	fg.Spec.Retries = new(int32(5))
 	fetch := rss.FetchResult{Entries: []rss.Entry{{
 		ID: "https://example.com/attempts", Title: "t", Link: "https://example.com/attempts",
 		Description: strings.Repeat("x", discord.MaxContentLength+500),
@@ -1212,7 +1212,7 @@ func TestProcessFeed_FetchRecoveryStartsDeliveryRetriesFresh(t *testing.T) {
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`)
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "https://example.com/bad", Title: "bad", Seq: 1},
 		{ID: "https://example.com/ok-entry", Title: "fine", Seq: 0},
@@ -1269,7 +1269,7 @@ func TestProcessFeed_DeliveryRunSurvivesSuccessfulFetches(t *testing.T) {
 	ns, name := "processfeed-delivery-run", "fg-delivery-run"
 
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title.Nope}}")
-	fg.Spec.Retries = 10
+	fg.Spec.Retries = new(int32(10))
 	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "https://example.com/only-entry", Title: "only"}}}
 
 	for want := int32(1); want <= 3; want++ {
@@ -1556,7 +1556,7 @@ func TestProcessFeed_ScrolledOutWatermarkFallsBackToCatchUp(t *testing.T) {
 
 func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-render-event", "fg-render-event", "{{.Bogus}}")
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
 	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "e1", Title: "Title 1"}}}
 	recorder := events.NewFakeRecorder(10)
@@ -1609,7 +1609,7 @@ func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 
 func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-event", "fg-send-event", "")
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
 	fetch := oneEntryFetch()
 	recorder := events.NewFakeRecorder(10)
@@ -1663,7 +1663,7 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 
 func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-halt", "fg-send-halt", tmplTitle)
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fg.Spec.Feeds[0] = feed
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "older-article", Title: "Older Article", Seq: 1},
@@ -1697,7 +1697,7 @@ func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
 
 func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-etag", "fg-send-etag", "")
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
 	fetch := oneEntryFetch()
 	fetch.ETag = `"v1"`
@@ -1728,7 +1728,7 @@ func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
 
 func TestProcessFeed_PermanentSendFailureBackoff(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-perm-send", "fg-perm-send", "")
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fg.Spec.RetryInterval = "5m"
 	fg.Spec.Feeds[0] = feed
 

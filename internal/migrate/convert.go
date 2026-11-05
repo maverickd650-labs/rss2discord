@@ -106,6 +106,11 @@ func convertObject(obj unstructured.Unstructured, warn func(string)) ([]byte, er
 	}
 	where := "FeedGroup " + strconv.Quote(cmp.Or(old.Namespace+"/", "")+old.Name)
 	spec := ConvertSpec(old.Spec, func(msg string) { warn(where + ": " + msg) })
+	// v1alpha1's int32 retries can't tell an explicit 0 from an omitted field,
+	// which v1beta1 defaults to 3, so the input decides.
+	if _, set, _ := unstructured.NestedFieldNoCopy(obj.Object, "spec", "retries"); set && spec.Retries == nil {
+		spec.Retries = new(int32(0))
+	}
 
 	metadata := map[string]any{"name": old.Name}
 	if old.Namespace != "" {
@@ -145,7 +150,7 @@ func ConvertSpec(old v1alpha1.FeedGroupSpec, warn func(string)) v1beta1.FeedGrou
 		Interval:                old.Interval,
 		Username:                old.Username,
 		AvatarURL:               old.AvatarURL,
-		Retries:                 old.Retries,
+		Retries:                 retriesOf(old.Retries),
 		RetryInterval:           old.RetryInterval,
 		CatchUpLimit:            old.CatchUpLimit,
 		Message:                 effectiveMessage(old.Format, old.Embed, "spec", warn),
@@ -180,6 +185,16 @@ func ConvertSpec(old v1alpha1.FeedGroupSpec, warn func(string)) v1beta1.FeedGrou
 		spec.Feeds = append(spec.Feeds, converted)
 	}
 	return spec
+}
+
+// retriesOf is v1alpha1's retries as v1beta1's: nil (the default, 3) for 0,
+// which in v1alpha1 also meant "unset" to typed clients. Convert restores an
+// explicit 0 from the input.
+func retriesOf(retries int32) *int32 {
+	if retries == 0 {
+		return nil
+	}
+	return &retries
 }
 
 // effectiveMessage is the v1beta1 message for what v1alpha1 sent with format

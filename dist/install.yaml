@@ -1241,8 +1241,11 @@ spec:
                   rule: '!has(self.embed) || !has(self.suppressLinkPreviews) || !self.suppressLinkPreviews'
               retries:
                 default: 3
-                description: retries is the number of times to retry failed operations
-                  (fetch/send).
+                description: |-
+                  retries is the number of times to retry failed operations (fetch/send).
+                  A pointer, like catchUpLimit, so an explicit 0 survives typed clients'
+                  encoding instead of being replaced by the default; 0 and 1 both allow a
+                  single retry.
                 format: int32
                 maximum: 100
                 minimum: 0

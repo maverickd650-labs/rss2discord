@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/utils/ptr"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -314,7 +316,7 @@ type feedGroupOption func(*rss2discordv1beta1.FeedGroup)
 func withRetries(retryInterval string, retries int32) feedGroupOption {
 	return func(fg *rss2discordv1beta1.FeedGroup) {
 		fg.Spec.RetryInterval = retryInterval
-		fg.Spec.Retries = retries
+		fg.Spec.Retries = new(retries)
 	}
 }
 
@@ -1039,7 +1041,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			By("Making an unrelated valid spec edit so the generation advances while the invalid interval stays the same")
 			generationBefore := updated.Generation
-			updated.Spec.Retries++
+			updated.Spec.Retries = new(ptr.Deref(updated.Spec.Retries, 0) + 1)
 			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, updated)).To(Succeed())
 			Expect(updated.Generation).To(BeNumerically(">", generationBefore))
@@ -1645,8 +1647,8 @@ var _ = Describe("FeedGroup Controller", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring(wantErr))
 			},
-			Entry("negative retries", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Retries = -1 }, "retries"),
-			Entry("retries over 100", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Retries = 101 }, "retries"),
+			Entry("negative retries", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Retries = new(int32(-1)) }, "retries"),
+			Entry("retries over 100", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Retries = new(int32(101)) }, "retries"),
 			Entry("negative catchUpLimit", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.CatchUpLimit = new(int32(-1)) }, "catchUpLimit"),
 			Entry("catchUpLimit over 100", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.CatchUpLimit = new(int32(101)) }, "catchUpLimit"),
 			Entry("sub-minute interval", func(fg *rss2discordv1beta1.FeedGroup) { fg.Spec.Interval = "1ns" }, "interval must be at least 1m"),
@@ -1707,7 +1709,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 		It("should accept values at the boundaries", func() {
 			fg := build("admission-ok", func(fg *rss2discordv1beta1.FeedGroup) {
-				fg.Spec.Retries = 100
+				fg.Spec.Retries = new(int32(100))
 				fg.Spec.CatchUpLimit = new(int32(100))
 				fg.Spec.Interval = "1m"
 				fg.Spec.RetryInterval = "10s"

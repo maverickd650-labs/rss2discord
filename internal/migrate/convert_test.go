@@ -119,7 +119,7 @@ func checkMetadata(t *testing.T, got convertedFeedGroup) {
 }
 
 func checkGroup(t *testing.T, s v1beta1.FeedGroupSpec) {
-	if s.Interval != "15m" || s.Retries != 2 || s.RetryInterval != "1m" || s.CatchUpLimit == nil || *s.CatchUpLimit != 0 ||
+	if s.Interval != "15m" || s.Retries == nil || *s.Retries != 2 || s.RetryInterval != "1m" || s.CatchUpLimit == nil || *s.CatchUpLimit != 0 ||
 		s.Username != "Bot" || s.AvatarURL != "https://example.com/a.png" || s.DiscordWebhookSecretRef.Name != "hook" {
 		t.Fatalf("group fields = %+v", s)
 	}
@@ -180,6 +180,31 @@ spec:
 	}
 	if m := got.Spec.Feeds[2].Message; m == nil || m.Embed != nil || m.Content != "ignored-beside-embed" {
 		t.Fatalf("feed 2 disabled the embed, so it sends the group's format: %+v", m)
+	}
+}
+
+// retries: 0 must survive conversion: v1beta1 would default an omitted
+// retries to 3.
+func TestConvert_Retries(t *testing.T) {
+	const doc = "apiVersion: rss2discord.maverickd650.dev/v1alpha1\nkind: FeedGroup\nmetadata: {name: x}\nspec: {%sfeeds: [{rssUrl: 'https://x.example.com/'}]}\n"
+	for _, tc := range []struct {
+		name, field string
+		want        string
+	}{
+		{name: "explicit zero", field: "retries: 0, ", want: "retries: 0"},
+		{name: "explicit value", field: "retries: 4, ", want: "retries: 4"},
+		{name: "omitted", field: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _ := convert(t, strings.Replace(doc, "%s", tc.field, 1))
+			if tc.want == "" {
+				if strings.Contains(out, "retries") {
+					t.Fatalf("omitted retries written: %s", out)
+				}
+			} else if !strings.Contains(out, tc.want) {
+				t.Fatalf("output lacks %q: %s", tc.want, out)
+			}
+		})
 	}
 }
 

@@ -388,11 +388,14 @@ type FeedGroupSpec struct {
 	AvatarURL string `json:"avatarURL,omitempty"`
 
 	// retries is the number of times to retry failed operations (fetch/send).
+	// A pointer, like catchUpLimit, so an explicit 0 survives typed clients'
+	// encoding instead of being replaced by the default; 0 and 1 both allow a
+	// single retry.
 	// +default=3
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	// +optional
-	Retries int32 `json:"retries,omitempty"`
+	Retries *int32 `json:"retries,omitempty"`
 
 	// retryInterval is the duration between retries (e.g., "5m"), parsed by
 	// Go's time.ParseDuration. Must be at least 10s: a shorter interval

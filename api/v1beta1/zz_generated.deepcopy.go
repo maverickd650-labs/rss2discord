@@ -148,6 +148,11 @@ func (in *FeedGroupSpec) DeepCopyInto(out *FeedGroupSpec) {
 		*out = new(MessageSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Retries != nil {
+		in, out := &in.Retries, &out.Retries
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Feeds != nil {
 		in, out := &in.Feeds, &out.Feeds
 		*out = make([]FeedSpec, len(*in))

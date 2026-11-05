@@ -45,7 +45,7 @@ func deliveryEntry(n int, title string) rss.Entry {
 func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender MessageSender, retryCount int32) (entryDelivery, *v1beta1.FeedStatus) {
 	t.Helper()
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title}}")
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fg.Spec.CatchUpLimit = new(int32(len(entries)))
 	fs := feedStatusFor(fg, feed.Name)
 	fs.RetryCount = retryCount

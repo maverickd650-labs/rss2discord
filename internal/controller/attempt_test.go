@@ -435,7 +435,7 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	forgetMetricsAfter(t, attemptNS, name)
 	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
-	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
+	fg.Spec.Retries, fg.Spec.RetryInterval = new(tc.retries), tc.retryInterval
 	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL, RetryCount: tc.retryCount}
 	if tc.failing {
 		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(attemptInstant, time.Hour)
@@ -560,7 +560,7 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 			forgetMetricsAfter(t, attemptNS, name)
 			fg := &v1beta1.FeedGroup{}
 			fg.Namespace, fg.Name = attemptNS, name
-			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
+			fg.Spec.Retries, fg.Spec.RetryInterval = new(tc.retries), tc.retryInterval
 			fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL, RetryCount: tc.retryCount}
 			testAttempt(t, fg, fs, attemptURL, attemptInstant).record(tc.outcome, tc.err)
 		})
@@ -603,7 +603,7 @@ func TestFeedAttempt_PastRetryLimit(t *testing.T) {
 		{retries: 0, retryCount: 1}, {retries: 0, retryCount: 2, want: true},
 	} {
 		fg := &v1beta1.FeedGroup{}
-		fg.Spec.Retries = tc.retries
+		fg.Spec.Retries = new(tc.retries)
 		fs := &v1beta1.FeedStatus{RetryCount: tc.retryCount}
 		if got := testAttempt(t, fg, fs, attemptURL, attemptInstant).pastRetryLimit(); got != tc.want {
 			t.Errorf("retries %d, RetryCount %d: pastRetryLimit = %t, want %t", tc.retries, tc.retryCount, got, tc.want)
@@ -702,7 +702,7 @@ func TestAttemptOutcomeResolve(t *testing.T) {
 func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
 	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-fg-late-clock", attemptGeneration
-	fg.Spec.Retries, fg.Spec.RetryInterval = 3, "5m"
+	fg.Spec.Retries, fg.Spec.RetryInterval = new(int32(3)), "5m"
 	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL}
 	// Recorded two hours after the reconcile started: longer than the backoff.
 	recorded := attemptInstant.Add(2 * time.Hour)
@@ -790,7 +790,7 @@ func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 			fs := &v1beta1.FeedStatus{
 				Name: testFeedName(attemptURL), URL: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount, BackoffUntil: tc.backoff,
 			}
-			attempt := testAttempt(t, &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Retries: 3}}, fs, attemptURL, attemptInstant)
+			attempt := testAttempt(t, &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Retries: new(int32(3))}}, fs, attemptURL, attemptInstant)
 			verdict := attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(tc.class))
 
 			if fs.RetryCount != tc.wantRetries {

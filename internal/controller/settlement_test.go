@@ -99,7 +99,7 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			name := "validators-" + tc.name
 			fg, feed := newMetricsFeedGroup(settlementNS, name, "{{.Title}}")
 			forgetMetricsAfter(t, fg.Namespace, fg.Name)
-			fg.Spec.Retries = 2
+			fg.Spec.Retries = new(int32(2))
 			server := NewMockDiscordServer(t)
 			defer server.Close()
 			client := server.DiscordClientBuilder()(server.URL())
@@ -167,7 +167,7 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fg, feed := newMetricsFeedGroup(settlementNS, "skip-"+tc.name, skipProbeTemplate)
 			forgetMetricsAfter(t, fg.Namespace, fg.Name)
-			fg.Spec.Retries = 2
+			fg.Spec.Retries = new(int32(2))
 			server := NewMockDiscordServer(t)
 			defer server.Close()
 			client := server.DiscordClientBuilder()(server.URL())

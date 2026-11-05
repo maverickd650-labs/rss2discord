@@ -231,7 +231,7 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	ns, name := "ports-fake-5xx", "fg-fake-5xx"
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 503, Status: "503 Service Unavailable"}}}
 
 	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
