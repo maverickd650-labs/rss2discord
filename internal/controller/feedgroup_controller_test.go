@@ -48,6 +48,7 @@ import (
 )
 
 const (
+	testSecretName           = "any-secret"
 	secretURLKey             = "url"
 	defaultInterval          = "30m"
 	feedGroupNameBasic       = "test-feedgroup"
@@ -1391,7 +1392,7 @@ var _ = Describe("FeedGroup Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-feedgroup-dup-url", Namespace: namespace},
 				Spec: rss2discordv1beta1.FeedGroupSpec{
 					DiscordWebhookSecretRef: corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "any-secret"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
 						Key:                  secretURLKey,
 					},
 					Feeds: []rss2discordv1beta1.FeedSpec{
@@ -1430,7 +1431,7 @@ var _ = Describe("FeedGroup Controller", func() {
 					ObjectMeta: metav1.ObjectMeta{Name: tc.resourceName, Namespace: namespace},
 					Spec: rss2discordv1beta1.FeedGroupSpec{
 						DiscordWebhookSecretRef: corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "any-secret"},
+							LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
 							Key:                  secretURLKey,
 						},
 						Embed: tc.groupEmbed,
@@ -1451,7 +1452,7 @@ var _ = Describe("FeedGroup Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-embed-complete", Namespace: namespace},
 				Spec: rss2discordv1beta1.FeedGroupSpec{
 					DiscordWebhookSecretRef: corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "any-secret"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
 						Key:                  secretURLKey,
 					},
 					Embed: &rss2discordv1beta1.EmbedSpec{
@@ -1472,7 +1473,7 @@ var _ = Describe("FeedGroup Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-feedgroup-distinct-url", Namespace: namespace},
 				Spec: rss2discordv1beta1.FeedGroupSpec{
 					DiscordWebhookSecretRef: corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "any-secret"},
+						LocalObjectReference: corev1.LocalObjectReference{Name: testSecretName},
 						Key:                  secretURLKey,
 					},
 					Feeds: []rss2discordv1beta1.FeedSpec{
