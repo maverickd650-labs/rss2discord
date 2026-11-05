@@ -183,6 +183,30 @@ spec:
 	}
 }
 
+// A feed that turns off a group embed, with no format anywhere, sent
+// v1alpha1's default text: it must not inherit the group's v1beta1 embed.
+func TestConvert_DisabledEmbedWithoutFormatGetsTheDefault(t *testing.T) {
+	out, _ := convert(t, `apiVersion: rss2discord.maverickd650.dev/v1alpha1
+kind: FeedGroup
+metadata: {name: g}
+spec:
+  discordWebhookSecretRef: {name: hook, key: url}
+  embed: {enabled: true}
+  feeds:
+    - rssUrl: https://a.example.com/feed
+      embed: {enabled: false}
+`)
+	var got struct {
+		Spec v1beta1.FeedGroupSpec `json:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if m := got.Spec.Feeds[0].Message; m == nil || m.Embed != nil || m.Content != v1beta1.DefaultMessageContent {
+		t.Fatalf("feed message = %+v, want the default content and no embed", m)
+	}
+}
+
 // retries: 0 must survive conversion: v1beta1 would default an omitted
 // retries to 3.
 func TestConvert_Retries(t *testing.T) {

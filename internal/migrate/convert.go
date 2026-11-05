@@ -170,7 +170,9 @@ func ConvertSpec(old v1alpha1.FeedGroupSpec, warn func(string)) v1beta1.FeedGrou
 		if feed.Format != "" || feed.Embed != nil {
 			message := effectiveMessage(cmp.Or(feed.Format, old.Format), cmp.Or(feed.Embed, old.Embed), where, warn)
 			if !sameJSON(message, spec.Message) {
-				converted.Message = message
+				// A nil message means the default, but an unset feed message
+				// inherits the group's: spell the default out.
+				converted.Message = cmp.Or(message, &v1beta1.MessageSpec{Content: v1beta1.DefaultMessageContent})
 			}
 		}
 		switch {

@@ -391,13 +391,19 @@ The controller exports these Prometheus metrics, all labeled by `namespace` and 
 
 | Metric | Type | Extra labels | What it tells you |
 | --- | --- | --- | --- |
-| `rss2discord_feed_operations_total` | counter | `feed`, `outcome` (`sent`, `fetch_error`, `send_error`, `render_error`, `rate_limited`) | Send-success ratios and a per-feed error breakdown (which feed in the group, and why; `feed` is the feed's `name`) |
+| `rss2discord_feed_operations_total` | counter | `feed`, `outcome` (`sent`, `skipped`, `render_error`, `rate_limited`, `fetch_error_<reason>`, `send_error_<reason>`; see below) | Send-success ratios and a per-feed error breakdown (which feed in the group, and why; `feed` is the feed's `name`) |
 | `rss2discord_feed_request_duration_seconds` | histogram | `operation` (`fetch`, `send`) | Latency of the operator's outbound RSS fetches and Discord sends (e.g. a feed host hanging up to its timeout) |
 | `rss2discord_feedgroup_reconcile_duration_seconds` | histogram | — | Wall-clock time of a full reconcile (every feed's fetch and send), so a FeedGroup creeping toward its requeue interval shows up before it starts missing it |
 | `rss2discord_message_overflow_chars` | histogram | — | Characters trimmed from a rendered Discord message before it was clamped to fit Discord's length limits; only recorded on actual overflow, so `histogram_count(rate(rss2discord_message_overflow_chars[5m]))` answers "how often does this FeedGroup's content get cut off" |
 | `rss2discord_feed_last_success_timestamp_seconds` | gauge | — | Unix time of the last successful check of this FeedGroup's feeds (a 304 or a fetch with nothing new still counts); group-level, so one healthy feed keeps it fresh while a sibling is dead (use the per-feed gauges below for that) |
 | `rss2discord_feed_healthy` | gauge | `feed` | Per feed (by `name`): `1` if the feed's persisted status has no `lastError`, else `0`. Read from status on every reconcile, so a feed in permanent backoff (retried only every 10m ... 6h, error counter flat in between) keeps reporting `0`, and it is populated right after an operator restart. **Suspended feeds have no series** |
 | `rss2discord_feed_last_checked_timestamp_seconds` | gauge | `feed` | Per feed (by `name`): Unix time of the last successful check (`status.feeds[].lastChecked`). **Absent for a feed that has never been checked, and for suspended feeds**, rather than exported as `0` |
+
+`fetch_error` and `send_error` are never emitted on their own; they are prefixes, and the `outcome` value always names the cause, so match them with a regex such as `outcome=~"fetch_error_.+"`:
+
+- `fetch_error_<reason>` (fetching the feed): `not_found`, `gone`, `rate_limited`, `server_error`, `client_error`, `timeout`, `dns_failure`, `tls_error`, `blocked_address`, `parse_error`, `unrecognized_format`, `response_too_large`, `invalid_url` or `other`.
+- `send_error_<reason>` (sending to Discord): `webhook_invalid` (Discord returned 404: the webhook was deleted), `gone`, `server_error`, `client_error`, `timeout`, `dns_failure`, `tls_error` or `other`. A Discord 429 is counted as `rate_limited`, not as a send error.
+- `skipped` counts an entry given up on after its render retries were exhausted (the `EntrySkipped` Event).
 
 Series for a FeedGroup are removed from the registry when that FeedGroup is deleted, so a removed group can't leave a stale freshness reading behind.
 
