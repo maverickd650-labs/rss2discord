@@ -116,6 +116,8 @@ Controls formatting entries as rich Discord embeds instead of plain text.
 | `footerIconURL` | `string` | No | — | Small icon displayed next to the footer text. Must start with `http://` or `https://`. Only sent if `footerText` is provided. |
 | `imageStyle` | `string` | No | `thumbnail` | Layout style for lead images: `thumbnail` (compact right side) or `image` (large banner below description). |
 
+Kubernetes admission requires `authorName` whenever `authorURL` or `authorIconURL` is set, and requires `footerText` whenever `footerIconURL` is set. Configurations that provide only an author URL/icon or footer icon are rejected instead of being silently omitted from the Discord payload.
+
 ---
 
 ## Status (`.status`)
