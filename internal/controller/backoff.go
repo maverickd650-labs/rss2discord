@@ -20,8 +20,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // maxPermanentBackoff is the ceiling for per-feed exponential backoff on
@@ -38,11 +39,11 @@ const maxPermanentBackoff = 6 * time.Hour
 // and backoff calculations. It is a view over the status, not a copy, so
 // changes land directly on FeedStatus. Its operations never inspect Reachable.
 type retryState struct {
-	fs *v1alpha1.FeedStatus
+	fs *v1beta1.FeedStatus
 }
 
 // retryStateOf returns the phase-independent retry state for fs.
-func retryStateOf(fs *v1alpha1.FeedStatus) retryState { return retryState{fs: fs} }
+func retryStateOf(fs *v1beta1.FeedStatus) retryState { return retryState{fs: fs} }
 
 // A retry run is the consecutive failures of one phase of a feed's sync:
 // fetching (Reachable False) or delivery -- renders and sends (Reachable True,
@@ -73,12 +74,12 @@ type retryRun struct {
 // runOf returns the retry run of fs, capturing the phase represented by its
 // current Reachable condition. The returned value must not outlive the single
 // phase-sensitive transition for which it was created.
-func runOf(fs *v1alpha1.FeedStatus) retryRun {
+func runOf(fs *v1beta1.FeedStatus) retryRun {
 	phase := phaseUnknown
 	switch {
-	case apimeta.IsStatusConditionFalse(fs.Conditions, v1alpha1.FeedConditionTypeReachable):
+	case apimeta.IsStatusConditionFalse(fs.Conditions, v1beta1.FeedConditionTypeReachable):
 		phase = phaseFetch
-	case apimeta.IsStatusConditionTrue(fs.Conditions, v1alpha1.FeedConditionTypeReachable):
+	case apimeta.IsStatusConditionTrue(fs.Conditions, v1beta1.FeedConditionTypeReachable):
 		phase = phaseDelivery
 	}
 	return retryRun{retryState: retryStateOf(fs), phase: phase}
@@ -108,7 +109,7 @@ const (
 
 // set reports whether a backoff is recorded at all, expired or not: an
 // expired backoff still belongs to the run of failures that set it.
-func (r retryState) set() bool { return r.fs.BackoffUntil != "" }
+func (r retryState) set() bool { return r.fs.BackoffUntil != nil && !r.fs.BackoffUntil.IsZero() }
 
 // inProgress reports whether a run has left any state: a counted failure or a
 // recorded backoff.
@@ -158,17 +159,13 @@ func (r retryState) exhaustedNow(max int32) bool { return r.fs.RetryCount == max
 func (r retryState) pastLimit(max int32) bool { return r.fs.RetryCount > max }
 
 // active reports whether the backoff is still in the future as of now. A
-// malformed or empty BackoffUntil is treated as "not in backoff" so a bad value
+// nil or zero BackoffUntil is treated as "not in backoff" so an unset value
 // can never permanently wedge a feed without a spec change.
 func (r retryState) active(now time.Time) bool {
-	if r.fs.BackoffUntil == "" {
+	if r.fs.BackoffUntil == nil || r.fs.BackoffUntil.IsZero() {
 		return false
 	}
-	until, err := time.Parse(time.RFC3339, r.fs.BackoffUntil)
-	if err != nil {
-		return false
-	}
-	return now.Before(until)
+	return now.Before(r.fs.BackoffUntil.Time)
 }
 
 // extend sets BackoffUntil to now plus the exponential backoff for the current
@@ -194,7 +191,7 @@ func (r retryState) extend(base time.Duration, now time.Time) (firstCapped bool)
 // base*2^oldRetryCount, which jumps straight back to maxPermanentBackoff on the
 // first retry. LastError is not touched (see clearFailure).
 func (r retryState) clear() {
-	r.fs.BackoffUntil = ""
+	r.fs.BackoffUntil = nil
 	r.fs.RetryCount = 0
 }
 
@@ -205,10 +202,11 @@ func (r retryRun) sendCaused() bool {
 	return r.set() && r.phase != phaseFetch
 }
 
-// nextBackoffUntil formats the RFC3339 timestamp for a feed's next permanent
+// nextBackoffUntil returns the *metav1.Time for a feed's next permanent
 // backoff expiry, backoff duration past now.
-func nextBackoffUntil(now time.Time, backoff time.Duration) string {
-	return now.Add(backoff).Format(time.RFC3339)
+func nextBackoffUntil(now time.Time, backoff time.Duration) *metav1.Time {
+	t := metav1.NewTime(now.Add(backoff))
+	return &t
 }
 
 // permanentBackoffDuration returns the exponential backoff for a permanent
@@ -235,7 +233,7 @@ func permanentBackoffDuration(retryCount int, base time.Duration) time.Duration 
 // retryState.clear) of every feed in the group. Called when the FeedGroup spec
 // generation advances, so an edit gives feeds in backoff an immediate fresh
 // attempt.
-func clearPermanentBackoffs(feedGroup *v1alpha1.FeedGroup) {
+func clearPermanentBackoffs(feedGroup *v1beta1.FeedGroup) {
 	for i := range feedGroup.Status.Feeds {
 		retryStateOf(&feedGroup.Status.Feeds[i]).clear()
 	}

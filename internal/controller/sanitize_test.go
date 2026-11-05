@@ -328,7 +328,7 @@ func TestHTTPURLOrEmpty(t *testing.T) {
 		input string
 		want  string
 	}{
-		{name: "https kept", input: "https://example.com/a", want: "https://example.com/a"},
+		{name: "https kept", input: testArticleURL, want: testArticleURL},
 		{name: "http kept", input: "http://example.com/a", want: "http://example.com/a"},
 		{name: "javascript dropped", input: jsAlertURL, want: ""},
 		{name: "data dropped", input: "data:text/html,<script>", want: ""},

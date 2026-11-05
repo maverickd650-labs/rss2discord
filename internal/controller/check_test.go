@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // The scheduler counts a retrying feed as failing; the Ready condition and the
@@ -28,13 +30,13 @@ import (
 func TestFeedCheck_FailedVersusFailedOrRetrying(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
-		fs                    v1alpha1.FeedStatus
+		fs                    v1beta1.FeedStatus
 		failed, failedOrRetry bool
 	}{
 		{name: "clean"},
-		{name: "LastError set", fs: v1alpha1.FeedStatus{LastError: testBoom}, failed: true, failedOrRetry: true},
-		{name: "retrying without error", fs: v1alpha1.FeedStatus{RetryCount: 2}, failedOrRetry: true},
-		{name: "error and retrying", fs: v1alpha1.FeedStatus{LastError: testBoom, RetryCount: 1}, failed: true, failedOrRetry: true},
+		{name: "LastError set", fs: v1beta1.FeedStatus{LastError: testBoom}, failed: true, failedOrRetry: true},
+		{name: "retrying without error", fs: v1beta1.FeedStatus{RetryCount: 2}, failedOrRetry: true},
+		{name: "error and retrying", fs: v1beta1.FeedStatus{LastError: testBoom, RetryCount: 1}, failed: true, failedOrRetry: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := checkOf(&tc.fs)
@@ -52,13 +54,13 @@ func TestFeedCheck_LastCheckedAndUntilDue(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	interval := 30 * time.Minute
 
-	for _, lastChecked := range []string{"", "garbage"} {
-		c := checkOf(&v1alpha1.FeedStatus{LastChecked: lastChecked})
+	for _, lastChecked := range []*metav1.Time{nil, {}} {
+		c := checkOf(&v1beta1.FeedStatus{LastChecked: lastChecked})
 		if _, ok := c.lastChecked(); ok {
-			t.Errorf("lastChecked(%q) ok, want not ok", lastChecked)
+			t.Errorf("lastChecked(%v) ok, want not ok", lastChecked)
 		}
 		if _, ok := c.untilDue(interval, now); ok {
-			t.Errorf("untilDue(%q) ok, want not ok", lastChecked)
+			t.Errorf("untilDue(%v) ok, want not ok", lastChecked)
 		}
 	}
 
@@ -70,9 +72,11 @@ func TestFeedCheck_LastCheckedAndUntilDue(t *testing.T) {
 		{"2026-01-01T11:30:00Z", 0},
 		{"2026-01-01T11:00:00Z", -30 * time.Minute},
 	} {
-		c := checkOf(&v1alpha1.FeedStatus{LastChecked: tc.lastChecked})
+		parsed := mustParse(t, tc.lastChecked)
+		mt := metav1.NewTime(parsed)
+		c := checkOf(&v1beta1.FeedStatus{LastChecked: &mt})
 		last, ok := c.lastChecked()
-		if !ok || !last.Equal(mustParse(t, tc.lastChecked)) {
+		if !ok || !last.Equal(parsed) {
 			t.Errorf("lastChecked(%q) = %v, %v", tc.lastChecked, last, ok)
 		}
 		if got, ok := c.untilDue(interval, now); !ok || got != tc.want {

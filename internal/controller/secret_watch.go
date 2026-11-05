@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // webhook returns the group's Discord webhook URL, read uncached from its
@@ -39,7 +39,7 @@ import (
 // noteWebhookSecretVersion (so a replaced Secret is noticed even when its new
 // value is unusable); and a blank value is an error. Errors are logged here and
 // returned for Reconcile to surface through groupSync settlement.
-func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.FeedGroup) (string, error) {
+func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1beta1.FeedGroup) (string, error) {
 	log := logf.FromContext(ctx)
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
@@ -73,7 +73,7 @@ func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1alpha1.F
 // namespace that reference it. A namespace holds few FeedGroups, so a cached
 // List filtered in memory is cheaper than maintaining a field index.
 func (r *FeedGroupReconciler) feedGroupsForSecret(ctx context.Context, secret client.Object) []reconcile.Request {
-	var groups v1alpha1.FeedGroupList
+	var groups v1beta1.FeedGroupList
 	if err := r.List(ctx, &groups, client.InNamespace(secret.GetNamespace())); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to list FeedGroups for a webhook Secret change",
 			"secret", types.NamespacedName{Namespace: secret.GetNamespace(), Name: secret.GetName()})
@@ -96,7 +96,7 @@ func (r *FeedGroupReconciler) feedGroupsForSecret(ctx context.Context, secret cl
 // existing FeedGroup on its first reconcile by a release that tracks it)
 // counts as a change too: the Secret may have been fixed before the upgrade,
 // and the cost is at most one extra attempt per send-backed-off feed, once.
-func noteWebhookSecretVersion(feedGroup *v1alpha1.FeedGroup, resourceVersion string) {
+func noteWebhookSecretVersion(feedGroup *v1beta1.FeedGroup, resourceVersion string) {
 	previous := feedGroup.Status.WebhookSecretResourceVersion
 	feedGroup.Status.WebhookSecretResourceVersion = resourceVersion
 	if previous == resourceVersion {
@@ -108,7 +108,7 @@ func noteWebhookSecretVersion(feedGroup *v1alpha1.FeedGroup, resourceVersion str
 // clearSendBackoffs clears the backoff (see retryState.clear) of feeds whose
 // backoff came from a send failure (retryRun.sendCaused). A fetch-failure
 // backoff survives because a new webhook cannot fix the feed's own URL.
-func clearSendBackoffs(feedGroup *v1alpha1.FeedGroup) {
+func clearSendBackoffs(feedGroup *v1beta1.FeedGroup) {
 	for i := range feedGroup.Status.Feeds {
 		if b := runOf(&feedGroup.Status.Feeds[i]); b.sendCaused() {
 			b.clear()

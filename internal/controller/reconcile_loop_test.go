@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	rss2discordv1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // These specs run the real controller under a manager (every other spec calls
@@ -89,11 +89,11 @@ var _ = Describe("Reconcile triggering under a running manager", func() {
 
 		By("Waiting for the first attempt to be recorded in status")
 		Eventually(func() int32 {
-			var got rss2discordv1alpha1.FeedGroup
+			var got rss2discordv1beta1.FeedGroup
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fg.Name, Namespace: loopNamespace}, &got); err != nil {
 				return 0
 			}
-			if fs := feedStatusFor(&got, rssServer.URL); fs != nil {
+			if fs := feedStatusFor(&got, testFeedName(rssServer.URL)); fs != nil {
 				return fs.RetryCount
 			}
 			return 0

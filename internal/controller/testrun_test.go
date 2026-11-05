@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 	"k8s.io/client-go/tools/events"
 )
@@ -28,7 +28,7 @@ import (
 // testRun is a feedRun, whose metric series are dropped when the test ends, for fg's feed with the given fetch and sender, at
 // testReconcileTime, with no Event recorder and fg's own cadence. Tests that
 // care about Events or the clock use withRecorder / withNow.
-func testRun(t testing.TB, fg *v1alpha1.FeedGroup, feed v1alpha1.FeedSpec, result rss.FetchResult, fetchErr error, sender MessageSender) feedRun {
+func testRun(t testing.TB, fg *v1beta1.FeedGroup, feed v1beta1.FeedSpec, result rss.FetchResult, fetchErr error, sender MessageSender) feedRun {
 	t.Helper()
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	return feedRun{
@@ -62,8 +62,8 @@ func (run feedRun) withClock(clock func() time.Time) feedRun {
 }
 
 // testAttempt is the feedAttempt for fg's feed at url, with no Event recorder.
-func testAttempt(t testing.TB, fg *v1alpha1.FeedGroup, fs *v1alpha1.FeedStatus, url string, now time.Time) feedAttempt {
-	return testRun(t, fg, v1alpha1.FeedSpec{RSSUrl: url}, rss.FetchResult{}, nil, nil).withNow(now).newAttempt(fs)
+func testAttempt(t testing.TB, fg *v1beta1.FeedGroup, fs *v1beta1.FeedStatus, url string, now time.Time) feedAttempt {
+	return testRun(t, fg, v1beta1.FeedSpec{Name: testFeedName(url), URL: url}, rss.FetchResult{}, nil, nil).withNow(now).newAttempt(fs)
 }
 
 func (a feedAttempt) withRecorder(recorder events.EventRecorder) feedAttempt {

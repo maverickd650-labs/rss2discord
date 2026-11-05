@@ -1,9 +1,11 @@
 package discord
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -245,6 +247,37 @@ func TestEmbedToPayload_OmitsUnsetMedia(t *testing.T) {
 	}
 }
 
+func TestEmbedToPayload_AuthorAndFooterDetails(t *testing.T) {
+	e := Embed{
+		AuthorName:    "Author",
+		AuthorURL:     "https://example.com/author",
+		AuthorIconURL: "https://example.com/author.png",
+		FooterText:    "Footer",
+		FooterIconURL: "https://example.com/footer.png",
+	}
+	p := embedToPayload(e)
+	if p.Author == nil || p.Author.Name != e.AuthorName || p.Author.URL != e.AuthorURL || p.Author.IconURL != e.AuthorIconURL {
+		t.Fatalf("unexpected Author: %+v", p.Author)
+	}
+	if p.Footer == nil || p.Footer.Text != e.FooterText || p.Footer.IconURL != e.FooterIconURL {
+		t.Fatalf("unexpected Footer: %+v", p.Footer)
+	}
+
+	// Discord requires name for author and text for footer. URL/IconURL without
+	// the required text must not create payload objects.
+	pMissing := embedToPayload(Embed{
+		AuthorURL:     "https://example.com/author",
+		AuthorIconURL: "https://example.com/author.png",
+		FooterIconURL: "https://example.com/footer.png",
+	})
+	if pMissing.Author != nil {
+		t.Fatalf("expected Author to be nil when AuthorName is empty, got %+v", pMissing.Author)
+	}
+	if pMissing.Footer != nil {
+		t.Fatalf("expected Footer to be nil when FooterText is empty, got %+v", pMissing.Footer)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	const (
 		short      = "short"
@@ -357,6 +390,43 @@ func TestFit_CombinedEmbedClamp(t *testing.T) {
 	}
 }
 
+// The author and footer URL and icon fields aren't text Discord counts
+// toward the 6000-character total, so Fit must pass them through unchanged
+// and leave them out of the combined clamp, even with author name and
+// footer text at their limits.
+func TestFit_AuthorAndFooterURLsAreKeptAndNotCounted(t *testing.T) {
+	longURL := "https://example.com/" + strings.Repeat("u", 3000)
+	e := &Embed{
+		Description:   strings.Repeat("d", 3000),
+		AuthorName:    strings.Repeat("a", MaxEmbedAuthorNameLength),
+		AuthorURL:     longURL,
+		AuthorIconURL: longURL + ".png",
+		FooterText:    strings.Repeat("f", MaxEmbedFooterTextLength),
+		FooterIconURL: longURL + ".ico",
+	}
+	// 3000+256+2048 = 5304 counted runes: under the cap, so nothing is
+	// trimmed, however long the URLs are.
+	got, trimmed := Fit(Message{Embed: e})
+	if trimmed != 0 {
+		t.Fatalf("trimmed = %d, want 0: URLs must not count toward the combined limit", trimmed)
+	}
+	if *got.Embed != *e {
+		t.Fatalf("Fit changed an embed within every limit: %+v", got.Embed)
+	}
+
+	// Over the per-field limits, only the author name and footer text are
+	// cut; their URLs and icons survive untouched.
+	e.AuthorName = strings.Repeat("a", MaxEmbedAuthorNameLength+5)
+	e.FooterText = strings.Repeat("f", MaxEmbedFooterTextLength+7)
+	got, trimmed = Fit(Message{Embed: e})
+	if trimmed != 5+7 {
+		t.Fatalf("trimmed = %d, want 12", trimmed)
+	}
+	if got.Embed.AuthorURL != e.AuthorURL || got.Embed.AuthorIconURL != e.AuthorIconURL || got.Embed.FooterIconURL != e.FooterIconURL {
+		t.Fatal("Fit changed an author/footer URL")
+	}
+}
+
 func TestFit_SumsEveryField(t *testing.T) {
 	msg := Message{
 		Content:    strings.Repeat("c", MaxContentLength+1),
@@ -418,4 +488,65 @@ func TestClampEmbedTotalLength_OtherFieldsAloneOverCap(t *testing.T) {
 	if _, again := clampEmbedTotalLength(got); again != 0 {
 		t.Fatalf("second clamp trimmed %d, want 0", again)
 	}
+}
+
+// preparedPayload runs msg through prepareRequest and decodes the body.
+func preparedPayload(t *testing.T, msg Message) (map[string]any, string) {
+	t.Helper()
+	p, err := prepareRequest("https://discord.com/api/webhooks/1/token", msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(p.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body, p.target
+}
+
+func TestPrepareRequest_MentionsFlagsAndTags(t *testing.T) {
+	t.Run("defaults suppress every mention and set no flags", func(t *testing.T) {
+		body, _ := preparedPayload(t, Message{Content: "x", AppliedTags: []string{"9"}})
+		if got, want := body["allowed_mentions"], map[string]any{"parse": []any{}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("allowed_mentions = %v, want %v", got, want)
+		}
+		if _, ok := body["flags"]; ok {
+			t.Fatalf("flags = %v, want omitted", body["flags"])
+		}
+		if _, ok := body["applied_tags"]; ok {
+			t.Fatal("applied_tags sent without a new forum post")
+		}
+	})
+
+	t.Run("configured mentions, flags and forum tags", func(t *testing.T) {
+		body, target := preparedPayload(t, Message{
+			Content:        "<@&1> <@2> x",
+			MentionRoleIDs: []string{"1"},
+			MentionUserIDs: []string{"2"},
+			Silent:         true,
+			SuppressEmbeds: true,
+			ThreadName:     "post",
+			AppliedTags:    []string{"7", "8"},
+		})
+		want := map[string]any{"parse": []any{}, "roles": []any{"1"}, "users": []any{"2"}}
+		if got := body["allowed_mentions"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("allowed_mentions = %v, want %v", got, want)
+		}
+		if got := body["flags"]; got != float64(flagSuppressEmbeds|flagSuppressNotifications) {
+			t.Fatalf("flags = %v, want %d", got, flagSuppressEmbeds|flagSuppressNotifications)
+		}
+		if got := body["applied_tags"]; !reflect.DeepEqual(got, []any{"7", "8"}) {
+			t.Fatalf("applied_tags = %v", got)
+		}
+		if strings.Contains(target, "thread_id") {
+			t.Fatalf("target = %q, want no thread_id for a new post", target)
+		}
+	})
+
+	t.Run("silent alone", func(t *testing.T) {
+		body, _ := preparedPayload(t, Message{Content: "x", Silent: true})
+		if got := body["flags"]; got != float64(flagSuppressNotifications) {
+			t.Fatalf("flags = %v, want %d", got, flagSuppressNotifications)
+		}
+	})
 }

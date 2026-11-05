@@ -19,7 +19,7 @@ package controller
 import (
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -45,14 +45,14 @@ func jitterDuration(duration time.Duration, enabled bool) time.Duration {
 // feedPlan is the outcome of deciding which feeds a reconcile fetches.
 type feedPlan struct {
 	// active are the feeds to fetch, in spec order.
-	active []v1alpha1.FeedSpec
+	active []v1beta1.FeedSpec
 	// nextDue is how long until the soonest feed skipped as not-yet-due becomes
 	// due; zero when no feed was skipped for that reason.
 	nextDue time.Duration
 }
 
-// planFeeds decides, as of now, which of the group's feeds to fetch. Paused
-// feeds and feeds without a URL are skipped. A feed in permanent-failure
+// planFeeds decides, as of now, which of the group's feeds to fetch. Suspended
+// feeds are skipped. A feed in permanent-failure
 // backoff is skipped next, before the due check: backoff outranks the "failing
 // feeds are always due" rule, and a backed-off feed contributes no wake time.
 // A feed that is not yet due is skipped and bounds nextDue, so the requeue
@@ -60,14 +60,14 @@ type feedPlan struct {
 // mid-interval). force (a spec change) makes every non-backed-off feed due. The
 // poll interval is cad.poll; an unparsable Interval is reported by
 // groupSync settlement (cad.err).
-func planFeeds(feedGroup *v1alpha1.FeedGroup, cad cadence, now time.Time, force bool) feedPlan {
+func planFeeds(feedGroup *v1beta1.FeedGroup, cad cadence, now time.Time, force bool) feedPlan {
 	pollInterval := cad.poll
-	plan := feedPlan{active: make([]v1alpha1.FeedSpec, 0, len(feedGroup.Spec.Feeds))}
+	plan := feedPlan{active: make([]v1beta1.FeedSpec, 0, len(feedGroup.Spec.Feeds))}
 	for _, feed := range feedGroup.Spec.Feeds {
-		if feed.RSSUrl == "" || feed.Paused {
+		if feed.Suspend {
 			continue
 		}
-		fs := feedStatusFor(feedGroup, feed.RSSUrl)
+		fs := feedStatusFor(feedGroup, feed.Name)
 		if fs != nil && retryStateOf(fs).active(now) {
 			continue
 		}
@@ -140,7 +140,7 @@ func (d requeueDecision) bound(delay time.Duration) time.Duration {
 // outstanding failure (those follow the RetryInterval cadence the group's
 // requeue already encodes), or a full interval has elapsed since its last
 // successful check. An unparsable LastChecked counts as due.
-func feedDue(fs *v1alpha1.FeedStatus, interval time.Duration, now time.Time, force bool) bool {
+func feedDue(fs *v1beta1.FeedStatus, interval time.Duration, now time.Time, force bool) bool {
 	check := checkOf(fs)
 	if force || check.failedOrRetrying() {
 		return true

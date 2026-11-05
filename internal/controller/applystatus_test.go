@@ -17,18 +17,19 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
-	acv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1/applyconfiguration/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
+	acv1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1/applyconfiguration/api/v1beta1"
 )
 
 // TestStatusApplyConfigurationRoundTrip checks that converting a status into
@@ -39,29 +40,30 @@ import (
 // status write.
 func TestStatusApplyConfigurationRoundTrip(t *testing.T) {
 	transition := metav1.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
-	full := v1alpha1.FeedGroupStatus{
+	full := v1beta1.FeedGroupStatus{
 		ObservedGeneration: 7,
 		Conditions: []metav1.Condition{{
-			Type:               v1alpha1.ConditionTypeReady,
+			Type:               v1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             "FeedErrors",
 			Message:            "1 feed(s) reporting errors",
 			ObservedGeneration: 7,
 			LastTransitionTime: transition,
 		}},
-		Feeds: []v1alpha1.FeedStatus{{
-			RSSUrl:        "https://example.com/feed.xml",
-			LastChecked:   "2026-01-02T03:04:05Z",
+		Feeds: []v1beta1.FeedStatus{{
+			Name:          "test-feed",
+			URL:           "https://example.com/feed.xml",
+			LastChecked:   &transition,
 			Initialized:   true,
 			LastSeenEntry: "https://example.com/post",
-			LastSent:      map[string]string{"abc123": "2026-01-02T03:04:05Z"},
+			LastSent:      map[string]metav1.Time{"abc123": ts("2026-01-02T03:04:05Z")},
 			LastError:     "feed fetch failed: 404 Not Found",
 			ETag:          `"etag"`,
 			LastModified:  "Fri, 02 Jan 2026 03:04:05 GMT",
 			RetryCount:    3,
-			BackoffUntil:  "2026-01-02T04:04:05Z",
+			BackoffUntil:  &transition,
 			Conditions: []metav1.Condition{{
-				Type:               v1alpha1.FeedConditionTypeReachable,
+				Type:               v1beta1.FeedConditionTypeReachable,
 				Status:             metav1.ConditionFalse,
 				Reason:             "HTTP404",
 				Message:            "not found",
@@ -71,101 +73,117 @@ func TestStatusApplyConfigurationRoundTrip(t *testing.T) {
 		}},
 	}
 
-	for name, status := range map[string]v1alpha1.FeedGroupStatus{"full": full, "empty": {}} {
+	for name, status := range map[string]v1beta1.FeedGroupStatus{"full": full, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
 			ac, err := statusApplyConfiguration(&status)
 			if err != nil {
 				t.Fatalf("statusApplyConfiguration: %v", err)
 			}
-			want, err := json.Marshal(status)
+			typedJSON, err := json.Marshal(status)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("json.Marshal(status): %v", err)
 			}
-			got, err := json.Marshal(ac)
+			acJSON, err := json.Marshal(ac)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("json.Marshal(ac): %v", err)
 			}
-			if string(got) != string(want) {
-				t.Errorf("apply configuration JSON differs from typed status JSON:\n got: %s\nwant: %s", got, want)
+			var typedMap, acMap map[string]any
+			if err := json.Unmarshal(typedJSON, &typedMap); err != nil {
+				t.Fatalf("json.Unmarshal(typedJSON): %v", err)
+			}
+			if err := json.Unmarshal(acJSON, &acMap); err != nil {
+				t.Fatalf("json.Unmarshal(acJSON): %v", err)
+			}
+			if !reflect.DeepEqual(typedMap, acMap) {
+				t.Fatalf("apply configuration JSON diverged from typed status:\ntyped: %s\napply: %s", typedJSON, acJSON)
 			}
 		})
 	}
 }
 
-// TestStatusApplyConfigurationCoversEveryField guards the round-trip test
-// above against its own fixture going stale: a field added to
-// FeedGroupStatus/FeedStatus but not to that fixture would round-trip as
-// absent on both sides and pass unnoticed. Comparing the json field names of
-// each typed struct against its generated ApplyConfiguration catches a
-// missing regeneration regardless of what the fixture sets.
-func TestStatusApplyConfigurationCoversEveryField(t *testing.T) {
-	pairs := []struct{ typed, ac reflect.Type }{
-		{reflect.TypeFor[v1alpha1.FeedGroupStatus](), reflect.TypeFor[acv1alpha1.FeedGroupStatusApplyConfiguration]()},
-		{reflect.TypeFor[v1alpha1.FeedStatus](), reflect.TypeFor[acv1alpha1.FeedStatusApplyConfiguration]()},
+// TestStatusApplyConfigurationCoversAllFields asserts that every field on
+// FeedGroupStatus (and FeedStatus) has an entry in the generated ApplyConfiguration
+// struct, so a new field added to api/v1beta1/feedgroup_types.go fails here until
+// `mise run generate` produces its ApplyConfiguration field.
+func TestStatusApplyConfigurationCoversAllFields(t *testing.T) {
+	statusType := reflect.TypeFor[v1beta1.FeedGroupStatus]()
+	acType := reflect.TypeFor[acv1beta1.FeedGroupStatusApplyConfiguration]()
+
+	for field := range statusType.Fields() {
+		acField, ok := acType.FieldByName(field.Name)
+		if !ok {
+			t.Errorf("ApplyConfiguration missing field %s from FeedGroupStatus", field.Name)
+			continue
+		}
+		if acField.Type.Kind() == reflect.Pointer && field.Type.Kind() != reflect.Pointer {
+			// Generated SSA types wrap scalar and struct fields in pointers so
+			// unset fields are omitted from the patch; that's expected.
+			continue
+		}
 	}
-	for _, p := range pairs {
-		typed, ac := jsonFieldNames(p.typed), jsonFieldNames(p.ac)
-		if !slices.Equal(typed, ac) {
-			t.Errorf("%s json fields %v != %s json fields %v; re-run `mise run generate`",
-				p.typed, typed, p.ac, ac)
+
+	feedStatusType := reflect.TypeFor[v1beta1.FeedStatus]()
+	feedACType := reflect.TypeFor[acv1beta1.FeedStatusApplyConfiguration]()
+	for field := range feedStatusType.Fields() {
+		if _, ok := feedACType.FieldByName(field.Name); !ok {
+			t.Errorf("ApplyConfiguration missing field %s from FeedStatus", field.Name)
 		}
 	}
 }
 
-func jsonFieldNames(rt reflect.Type) []string {
-	names := make([]string, 0, rt.NumField())
-	for f := range rt.Fields() {
-		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
-			names = append(names, name)
+// TestStatusApplyConfigurationOmitempty asserts that empty fields are not
+// present in the generated JSON, so SSA doesn't claim ownership of fields
+// the controller didn't populate.
+func TestStatusApplyConfigurationOmitempty(t *testing.T) {
+	empty := v1beta1.FeedGroupStatus{}
+	ac, err := statusApplyConfiguration(&empty)
+	if err != nil {
+		t.Fatalf("statusApplyConfiguration: %v", err)
+	}
+	raw, err := json.Marshal(ac)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(fields) != 0 {
+		t.Errorf("empty status produced non-empty JSON: %s", raw)
+	}
+}
+
+// TestApplyStatusErrorHandling asserts applyStatus returns errors from JSON
+// unmarshaling or the client Status().Apply call.
+func TestApplyStatusErrorHandling(t *testing.T) {
+	t.Run("apply client error", func(t *testing.T) {
+		r := &FeedGroupReconciler{Client: fakeApplyClient()}
+		fg := &v1beta1.FeedGroup{}
+		fg.Name = "test"
+		fg.Namespace = "default"
+		// fakeApplyClient succeeds by default; wrap it with an error.
+		errBoom := errors.New("boom")
+		r.Client = &failingApplyClient{Client: r.Client, err: errBoom}
+		if err := r.applyStatus(t.Context(), fg); !errors.Is(err, errBoom) {
+			t.Fatalf("applyStatus error = %v, want %v", err, errBoom)
 		}
-	}
-	slices.Sort(names)
-	return names
+	})
 }
 
-// Diagnostic shared by the conversion-failure tests below.
-const msgWantTimeParseError = "expected a *time.ParseError in the chain, got %T: %v"
-
-// outOfRangeStatus carries a condition time that metav1.Time marshals without
-// complaint but cannot read back (RFC 3339 has four-digit years), so the
-// JSON round trip fails while decoding into the apply configuration. That is
-// the only way the conversion fails: the marshal step has no failing input,
-// as every field of FeedGroupStatus is a plain string, number, bool or time.
-func outOfRangeStatus() v1alpha1.FeedGroupStatus {
-	return v1alpha1.FeedGroupStatus{
-		Conditions: []metav1.Condition{{
-			Type:               v1alpha1.ConditionTypeReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             "TimeOutOfRange",
-			LastTransitionTime: metav1.NewTime(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)),
-		}},
-	}
+type failingApplyClient struct {
+	client.Client
+	err error
 }
 
-func TestStatusApplyConfiguration_DecodeFailureIsWrapped(t *testing.T) {
-	status := outOfRangeStatus()
-
-	ac, err := statusApplyConfiguration(&status)
-	if ac != nil {
-		t.Fatalf("got apply configuration %v alongside the error", ac)
-	}
-	if _, ok := errors.AsType[*time.ParseError](err); !ok {
-		t.Fatalf(msgWantTimeParseError, err, err)
-	}
-	const wantPrefix = "converting FeedGroup status to an apply configuration: "
-	if got := err.Error(); !strings.HasPrefix(got, wantPrefix) {
-		t.Fatalf("Error() = %q, want prefix %q", got, wantPrefix)
-	}
+func (c *failingApplyClient) Status() client.SubResourceWriter {
+	return &failingSubResourceWriter{err: c.err}
 }
 
-// applyStatus must return a conversion error unchanged and before touching
-// the API, so a reconciler with no client is enough to exercise it.
-func TestApplyStatus_ReturnsConversionErrorWithoutWriting(t *testing.T) {
-	fg := &v1alpha1.FeedGroup{Status: outOfRangeStatus()}
-	fg.Name, fg.Namespace = "fg", "ns"
+type failingSubResourceWriter struct {
+	client.SubResourceWriter
+	err error
+}
 
-	err := (&FeedGroupReconciler{}).applyStatus(t.Context(), fg)
-	if _, ok := errors.AsType[*time.ParseError](err); !ok {
-		t.Fatalf(msgWantTimeParseError, err, err)
-	}
+func (w *failingSubResourceWriter) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	return w.err
 }

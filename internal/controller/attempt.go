@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
 
@@ -155,9 +155,10 @@ func (v attemptVerdict) settlement() syncVerdict {
 // permanent failure backs off immediately, a transient one retries until its
 // retries run out and is then announced once -- is written once, in record.
 type feedAttempt struct {
-	group *v1alpha1.FeedGroup
-	fs    *v1alpha1.FeedStatus
-	url   string
+	group    *v1beta1.FeedGroup
+	fs       *v1beta1.FeedStatus
+	feedName string
+	url      string
 	// now is the reconcile's clock reading, for LastChecked.
 	now time.Time
 	// clock is the run's clock (feedRun.clock): the success gauge and the
@@ -179,9 +180,9 @@ func (a feedAttempt) recordedAt() time.Time {
 }
 
 // newAttempt opens the attempt for the run's feed, whose status is fs.
-func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
+func (run feedRun) newAttempt(fs *v1beta1.FeedStatus) feedAttempt {
 	return feedAttempt{
-		group: run.group, fs: fs, url: run.feed.RSSUrl, now: run.now, clock: run.clock,
+		group: run.group, fs: fs, feedName: run.feed.Name, url: run.feed.URL, now: run.now, clock: run.clock,
 		cadence: run.cadence, recorder: run.recorder,
 	}
 }
@@ -231,15 +232,16 @@ func (run feedRun) newAttempt(fs *v1alpha1.FeedStatus) feedAttempt {
 func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 	o, class := o.resolve(err)
 	if label := o.metricLabel(class); label != "" {
-		metricsFor(a.group).operation(a.url, label)
+		metricsFor(a.group).operation(a.feedName, label)
 	}
 
 	switch o.kind {
 	case attemptFetchSucceeded:
 		runOf(a.fs).fetchSucceeded() // before Reachable flips: runOf captures the phase from it
-		a.fs.LastChecked = a.now.Format(time.RFC3339)
+		t := metav1.NewTime(a.now)
+		a.fs.LastChecked = &t
 		metricsFor(a.group).checkSucceeded(a.recordedAt())
-		a.setCondition(v1alpha1.FeedConditionTypeReachable, metav1.ConditionTrue,
+		a.setCondition(v1beta1.FeedConditionTypeReachable, metav1.ConditionTrue,
 			reasonFetchSucceeded, "Feed fetched successfully")
 		return attemptVerdict{}
 
@@ -258,7 +260,7 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 
 	case attemptRateLimited:
 		a.fs.LastError = errText(err)
-		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonRateLimited, err.Error())
+		a.setCondition(v1beta1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonRateLimited, err.Error())
 		verdict := attemptVerdict{retry: true, pending: true}
 		if rateLimitErr, ok := errors.AsType[*discord.RateLimitError](err); ok {
 			verdict.retryAfter = rateLimitErr.RetryAfter
@@ -267,7 +269,7 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 
 	case attemptSent:
 		clearFailure(a.fs)
-		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue,
+		a.setCondition(v1beta1.FeedConditionTypeDelivered, metav1.ConditionTrue,
 			reasonMessageSent, "Entry rendered and delivered to Discord")
 		return attemptVerdict{}
 
@@ -277,14 +279,14 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 		// failing forever.
 		const reason = eventReasonRenderFailed
 		clearFailure(a.fs)
-		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonEntrySkipped,
+		a.setCondition(v1beta1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonEntrySkipped,
 			fmt.Sprintf("skipped entry %q after %s: %v", clampText(o.entry, 100), reason, err))
 		a.warn(reasonEntrySkipped, eventActionSkippedEntry, "feed %s: skipped entry %q after exhausting retries (%s): %v",
 			a.url, clampText(o.entry, 100), reason, err)
 		return attemptVerdict{}
 
 	case attemptBacklogSkipped:
-		a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonBacklogSkipped,
+		a.setCondition(v1beta1.FeedConditionTypeDelivered, metav1.ConditionTrue, reasonBacklogSkipped,
 			fmt.Sprintf("catchUpLimit is 0: skipped %d existing entries", o.count))
 		return attemptVerdict{}
 
@@ -295,7 +297,7 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 		// condition first flips to ConfigError (or its message changes, e.g. a
 		// different typo), not on every reconcile of the same unresolved error.
 		a.fs.LastError = errText(err)
-		if a.setCondition(v1alpha1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, err.Error()) {
+		if a.setCondition(v1beta1.FeedConditionTypeDelivered, metav1.ConditionFalse, reasonConfigError, err.Error()) {
 			a.warn(reasonConfigError, eventActionInvalidConfig, "feed %s: %v", a.url, err)
 		}
 		return attemptVerdict{}
@@ -312,9 +314,9 @@ func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 func (a feedAttempt) failed(phase failurePhase, class failureClass, eventReason string, err error) attemptVerdict {
 	a.fs.LastError = errText(err)
 	runOf(a.fs).fail(phase) // before the condition: runOf captures the old Reachable
-	condType := v1alpha1.FeedConditionTypeDelivered
+	condType := v1beta1.FeedConditionTypeDelivered
 	if phase == failureFetch {
-		condType = v1alpha1.FeedConditionTypeReachable
+		condType = v1beta1.FeedConditionTypeReachable
 	}
 	a.setCondition(condType, metav1.ConditionFalse, class.conditionReason, err.Error())
 	state := retryStateOf(a.fs)
@@ -390,7 +392,7 @@ func (a feedAttempt) warn(reason, action, format string, args ...any) {
 // clearFailure resets fs's retry state: its last error, its retry count and
 // any permanent backoff. A sent or skipped entry clears it through record; a
 // feedSync does when the fetch it applied is accounted for.
-func clearFailure(fs *v1alpha1.FeedStatus) {
+func clearFailure(fs *v1beta1.FeedStatus) {
 	fs.LastError = ""
 	retryStateOf(fs).clear()
 }

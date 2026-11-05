@@ -41,7 +41,7 @@ func FuzzControllerSanitizers(f *testing.F) {
 		"http://example.com",
 		jsAlertURL,
 		"data:text/html,<script>alert(1)</script>",
-		"ftp://example.com",
+		nonHTTPURL,
 		"not a url",
 		"@everyone",
 		"@here",

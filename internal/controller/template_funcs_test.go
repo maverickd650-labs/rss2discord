@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/msgtemplate"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -53,15 +53,15 @@ func TestTemplateFuncs(t *testing.T) {
 func TestFeedRendererBuild_OutputLimitAppliesToEveryTemplate(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		feed *v1alpha1.FeedSpec
+		feed *v1beta1.FeedSpec
 	}{
-		{name: "message", feed: &v1alpha1.FeedSpec{Format: authorField}},
-		{name: "embed description", feed: &v1alpha1.FeedSpec{Embed: &v1alpha1.EmbedSpec{Enabled: true, DescriptionFormat: authorField}}},
-		{name: "forum thread name", feed: &v1alpha1.FeedSpec{Format: "safe", ForumThreadName: authorField}},
+		{name: "message", feed: &v1beta1.FeedSpec{Message: &v1beta1.MessageSpec{Content: authorField}}},
+		{name: "embed description", feed: &v1beta1.FeedSpec{Message: &v1beta1.MessageSpec{Embed: &v1beta1.EmbedSpec{Description: authorField}}}},
+		{name: "forum thread name", feed: &v1beta1.FeedSpec{Message: &v1beta1.MessageSpec{Content: "safe"}, ForumPost: &v1beta1.ForumPostSpec{Name: authorField}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := rss.Entry{Author: strings.Repeat("x", (1<<20)+1)}
-			msg, err := mustBuild(t, &v1alpha1.FeedGroup{}, tc.feed, entry)
+			msg, err := mustBuild(t, &v1beta1.FeedGroup{}, tc.feed, entry)
 			if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
 				t.Fatalf("expected output-limit error, got %v", err)
 			}

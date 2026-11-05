@@ -22,7 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	v1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // Metric label names, shared across the vectors below and
@@ -30,7 +30,7 @@ import (
 const (
 	labelNamespace = "namespace"
 	labelName      = "name"
-	labelFeedURL   = "rss_url"
+	labelFeed      = "feed"
 	labelOutcome   = "outcome"
 	labelOperation = "operation"
 )
@@ -74,17 +74,18 @@ func sendErrorOutcome(class failureClass) string {
 // feedOperationsTotal counts feed fetch/send outcomes per FeedGroup, so
 // `kubectl describe feedgroup` paired with this metric (or an alert on
 // fetch_error/send_error rate) replaces having to grep controller logs to
-// find out why a FeedGroup stopped posting. labelFeedURL identifies which
-// feed within the group an outcome belongs to -- a FeedGroup can have up to
-// 50 feeds (FeedGroupSpec.Feeds), so namespace/name alone can't tell an
-// operator which one is failing without a status dive; PrometheusRule alerts
-// surface it directly via $labels.rss_url.
+// find out why a FeedGroup stopped posting. labelFeed identifies which
+// feed within the group an outcome belongs to (its FeedSpec.Name) -- a
+// FeedGroup can have up to 50 feeds
+// (FeedGroupSpec.Feeds), so namespace/name alone can't tell an operator which
+// one is failing without a status dive; PrometheusRule alerts surface it
+// directly via $labels.feed.
 var feedOperationsTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "rss2discord_feed_operations_total",
-		Help: "Total number of RSS feed fetch/send operations processed, labeled by FeedGroup, feed URL, and outcome.",
+		Help: "Total number of RSS feed fetch/send operations processed, labeled by FeedGroup, feed identity (name or URL), and outcome.",
 	},
-	[]string{labelNamespace, labelName, labelFeedURL, labelOutcome},
+	[]string{labelNamespace, labelName, labelFeed, labelOutcome},
 )
 
 // operation labels for feedRequestDuration, distinguishing the two outbound
@@ -136,26 +137,28 @@ var feedLastSuccessTimestamp = prometheus.NewGaugeVec(
 // counter is flat for hours and any rate()-based alert resolves while the
 // feed is still dead. Reading the state from Status.Feeds instead keeps
 // reporting 0 for as long as the feed is broken (and across operator
-// restarts). Paused feeds have no series; see groupMetrics.syncFeedState.
+// restarts). Labeled by feed identity (name or URL). Paused feeds have no
+// series; see groupMetrics.syncFeedState.
 var feedHealthy = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "rss2discord_feed_healthy",
-		Help: "1 if the feed's last check left no error in status, 0 otherwise (including feeds in backoff). Absent for paused feeds.",
+		Help: "1 if the feed's last check left no error in status, 0 otherwise (including feeds in backoff). Labeled by feed identity (name or URL). Absent for paused feeds.",
 	},
-	[]string{labelNamespace, labelName, labelFeedURL},
+	[]string{labelNamespace, labelName, labelFeed},
 )
 
 // feedLastCheckedTimestamp is the per-feed counterpart of
 // feedLastSuccessTimestamp, parsed from FeedStatus.LastChecked (which only
 // advances on a successful check). Per-feed so one healthy feed can't mask a
 // stuck sibling; from persisted status so it is populated right after a
-// restart. No series exists for a feed that has never been checked.
+// restart. Labeled by feed identity (name or URL). No series exists for a
+// feed that has never been checked.
 var feedLastCheckedTimestamp = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "rss2discord_feed_last_checked_timestamp_seconds",
-		Help: "Unix timestamp of the last successful check of this feed. Absent until the feed has been checked, and for paused feeds.",
+		Help: "Unix timestamp of the last successful check of this feed, labeled by feed identity (name or URL). Absent until the feed has been checked, and for paused feeds.",
 	},
-	[]string{labelNamespace, labelName, labelFeedURL},
+	[]string{labelNamespace, labelName, labelFeed},
 )
 
 // messageOverflowChars records how many characters were trimmed from a
@@ -205,7 +208,7 @@ type metricScope int
 const (
 	// scopePerGroup vectors are keyed by namespace/name only.
 	scopePerGroup metricScope = iota
-	// scopePerFeed vectors also carry labelFeedURL, so a single feed's series
+	// scopePerFeed vectors also carry labelFeed, so a single feed's series
 	// can be dropped without touching the rest of its group.
 	scopePerFeed
 )
@@ -241,14 +244,14 @@ type groupMetrics struct {
 }
 
 // metricsFor returns the handle for feedGroup.
-func metricsFor(feedGroup *v1alpha1.FeedGroup) groupMetrics {
+func metricsFor(feedGroup *v1beta1.FeedGroup) groupMetrics {
 	return groupMetrics{namespace: feedGroup.Namespace, name: feedGroup.Name}
 }
 
 // operation counts one fetch/send outcome for a feed. feedAttempt.record is
 // its only caller, so every counted outcome goes through the retry policy.
-func (m groupMetrics) operation(rssURL, outcome string) {
-	feedOperationsTotal.WithLabelValues(m.namespace, m.name, rssURL, outcome).Inc()
+func (m groupMetrics) operation(feed, outcome string) {
+	feedOperationsTotal.WithLabelValues(m.namespace, m.name, feed, outcome).Inc()
 }
 
 // requestDuration records how long one outbound HTTP call took. Only the timed
@@ -286,10 +289,10 @@ func (m groupMetrics) forget() {
 }
 
 // forgetFeed drops every series for a single feed within the group, for a feed
-// removed from the group's spec. Only the per-feed vectors carry labelFeedURL.
-func (m groupMetrics) forgetFeed(rssURL string) {
+// removed from the group's spec. Only the per-feed vectors carry labelFeed.
+func (m groupMetrics) forgetFeed(feed string) {
 	labels := prometheus.Labels{
-		labelNamespace: m.namespace, labelName: m.name, labelFeedURL: rssURL,
+		labelNamespace: m.namespace, labelName: m.name, labelFeed: feed,
 	}
 	for _, e := range allMetrics {
 		if e.scope == scopePerFeed {
@@ -309,22 +312,21 @@ func (m groupMetrics) forgetFeed(rssURL string) {
 // series are dropped (a feed paused while broken would otherwise alert
 // forever), and an empty or unparsable LastChecked yields no timestamp series
 // so a feed that simply hasn't been checked yet can't look 50 years stale.
-func (m groupMetrics) syncFeedState(feedGroup *v1alpha1.FeedGroup) {
+func (m groupMetrics) syncFeedState(feedGroup *v1beta1.FeedGroup) {
 	paused := make(map[string]bool, len(feedGroup.Spec.Feeds))
+	suspended := feedGroup.Spec.Suspend
 	for _, feed := range feedGroup.Spec.Feeds {
-		paused[feed.RSSUrl] = paused[feed.RSSUrl] || feed.Paused
+		paused[feed.Name] = feed.Suspend || suspended
 	}
 
 	for i := range feedGroup.Status.Feeds {
 		fs := &feedGroup.Status.Feeds[i]
-		if fs.RSSUrl == "" {
-			continue
-		}
+		id := fs.Name
 		check := checkOf(fs)
 		ns, name := m.namespace, m.name
-		if paused[fs.RSSUrl] {
-			feedHealthy.DeleteLabelValues(ns, name, fs.RSSUrl)
-			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, fs.RSSUrl)
+		if paused[id] {
+			feedHealthy.DeleteLabelValues(ns, name, id)
+			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, id)
 			continue
 		}
 
@@ -332,12 +334,12 @@ func (m groupMetrics) syncFeedState(feedGroup *v1alpha1.FeedGroup) {
 		if !check.failed() {
 			healthy = 1
 		}
-		feedHealthy.WithLabelValues(ns, name, fs.RSSUrl).Set(healthy)
+		feedHealthy.WithLabelValues(ns, name, id).Set(healthy)
 
 		if last, ok := check.lastChecked(); ok {
-			feedLastCheckedTimestamp.WithLabelValues(ns, name, fs.RSSUrl).Set(float64(last.Unix()))
+			feedLastCheckedTimestamp.WithLabelValues(ns, name, id).Set(float64(last.Unix()))
 		} else {
-			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, fs.RSSUrl)
+			feedLastCheckedTimestamp.DeleteLabelValues(ns, name, id)
 		}
 	}
 }

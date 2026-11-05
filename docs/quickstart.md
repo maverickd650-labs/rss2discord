@@ -29,7 +29,7 @@ kubectl create secret generic discord-webhook \
 `my-feedgroup.yaml`:
 
 ```yaml
-apiVersion: rss2discord.maverickd650.dev/v1alpha1
+apiVersion: rss2discord.maverickd650.dev/v1beta1
 kind: FeedGroup
 metadata:
   name: tech-news
@@ -41,17 +41,21 @@ spec:
   interval: "30m"
   retries: 3
   retryInterval: "5m"
-  format: |
-    **{{.Title}}**
-    {{.Description}}
-    [Read more]({{.Link}})
+  message:
+    content: |
+      **{{.Title}}**
+      {{.Description}}
+      [Read more]({{.Link}})
   feeds:
-    - rssUrl: "https://news.ycombinator.com/rss"
+    - name: hackernews
+      url: "https://news.ycombinator.com/rss"
       filter:
-        keywords:
-          - kubernetes
-          - golang
-    - rssUrl: "https://www.reddit.com/r/golang/.rss"
+        include:
+          keywords: [kubernetes, golang]
+        exclude:
+          keywords: [hiring]
+    - name: reddit-golang
+      url: "https://www.reddit.com/r/golang/.rss"
 ```
 
 ```bash
@@ -67,7 +71,7 @@ kubectl describe feedgroup tech-news -n default
 
 ## Next
 
-- Tweak `format` to change how messages look in Discord.
-- Add a `filter` (regex or keywords) to a feed to cut down on noise.
-- Set `embed.enabled: true` (with a `color`) to render entries as Discord embeds instead of plain text, or `forumThreadName` on a feed to post into a forum channel.
-- See the [Configuration reference](../README.md#configuration-reference) and [Troubleshooting](../README.md#troubleshooting) sections in the README for everything else.
+- Tweak `message.content` to change how messages look in Discord.
+- Add a `filter` to a feed (`include` and `exclude` rules on keywords, regex or categories) to cut down on noise.
+- Add `message.embed` to render entries as Discord embeds, `message.mentions` to ping a role, or `forumPost` on a feed to post into a forum channel.
+- See the [Schema Reference](schema.md) for full field documentation and [Configuration reference](../README.md#configuration-reference) in the README.

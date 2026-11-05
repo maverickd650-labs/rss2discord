@@ -21,7 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"k8s.io/utils/ptr"
+
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // minParsedInterval floors any interval/retryInterval a cadence parses. The
@@ -54,7 +56,8 @@ type cadence struct {
 	// backoff: spec.retryInterval floored at minParsedInterval, or
 	// fallbackRetryInterval when empty or unparsable.
 	retry time.Duration
-	// maxRetries is spec.retries with a minimum of one.
+	// maxRetries is spec.retries with a minimum of one (an unset spec.retries,
+	// which admission defaulting never leaves, also counts as one).
 	maxRetries int32
 	// err is the first of spec.interval and spec.retryInterval that could not
 	// be parsed (interval first), or nil. Both fields are always checked, so
@@ -69,8 +72,8 @@ type cadence struct {
 // cadenceOf resolves spec's timing. A blank (whitespace-only) duration takes
 // its fallback without error; an unparsable one takes its fallback and sets err;
 // a parsed one is floored at minParsedInterval (the fallbacks are not floored).
-func cadenceOf(spec *v1alpha1.FeedGroupSpec) cadence {
-	c := cadence{maxRetries: max(spec.Retries, 1)}
+func cadenceOf(spec *v1beta1.FeedGroupSpec) cadence {
+	c := cadence{maxRetries: max(ptr.Deref(spec.Retries, 0), 1)}
 	var intervalErr, retryErr error
 	c.poll, intervalErr = parseDurationWithDefault(spec.Interval, fallbackInterval)
 	c.retry, retryErr = parseDurationWithDefault(spec.RetryInterval, fallbackRetryInterval)

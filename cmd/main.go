@@ -41,6 +41,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	rss2discordv1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	rss2discordv1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/controller"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
@@ -57,6 +58,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(rss2discordv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(rss2discordv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

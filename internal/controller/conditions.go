@@ -31,6 +31,8 @@ const (
 	reasonReconciled        = "Reconciled"
 	reasonFeedErrors        = "FeedErrors"
 	reasonAllFeedsReachable = "AllFeedsReachable"
+	// reasonSuspended is the Ready condition reason when the group has Spec.Suspend true.
+	reasonSuspended = "Suspended"
 	// reasonInvalidInterval is the Ready condition reason (and Warning Event
 	// reason) for a spec.interval/spec.retryInterval that time.ParseDuration
 	// rejects.

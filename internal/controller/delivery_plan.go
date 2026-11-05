@@ -17,7 +17,7 @@ limitations under the License.
 package controller
 
 import (
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
@@ -31,7 +31,7 @@ const defaultCatchUpLimit = 5
 // catchUpLimitOf is the effective catch-up limit of spec: Spec.CatchUpLimit, or
 // defaultCatchUpLimit when it is unset. It is the only code that reads
 // Spec.CatchUpLimit; everything downstream takes the resolved int.
-func catchUpLimitOf(spec v1alpha1.FeedGroupSpec) int {
+func catchUpLimitOf(spec v1beta1.FeedGroupSpec) int {
 	if spec.CatchUpLimit != nil {
 		return int(*spec.CatchUpLimit)
 	}

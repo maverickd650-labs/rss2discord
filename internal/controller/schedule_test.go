@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1"
 )
 
 // Whole-scenario checks of the group schedule: which feeds a reconcile
@@ -29,14 +31,17 @@ import (
 
 var scheduleNow = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-func stamp(offset time.Duration) string { return scheduleNow.Add(offset).Format(time.RFC3339) }
+func stamp(offset time.Duration) *metav1.Time {
+	mt := metav1.NewTime(scheduleNow.Add(offset))
+	return &mt
+}
 
 // scheduleGroup builds a group whose feeds are named by the keys of statuses
 // (in the given order); a nil status leaves the feed without one.
-func scheduleGroup(interval string, feeds ...v1alpha1.FeedStatus) *v1alpha1.FeedGroup {
-	fg := &v1alpha1.FeedGroup{Spec: v1alpha1.FeedGroupSpec{Interval: interval, RetryInterval: "5m"}}
+func scheduleGroup(interval string, feeds ...v1beta1.FeedStatus) *v1beta1.FeedGroup {
+	fg := &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Interval: interval, RetryInterval: "5m"}}
 	for _, fs := range feeds {
-		fg.Spec.Feeds = append(fg.Spec.Feeds, v1alpha1.FeedSpec{RSSUrl: fs.RSSUrl})
+		fg.Spec.Feeds = append(fg.Spec.Feeds, v1beta1.FeedSpec{Name: testFeedName(fs.URL), URL: fs.URL})
 		fg.Status.Feeds = append(fg.Status.Feeds, fs)
 	}
 	return fg
@@ -45,7 +50,7 @@ func scheduleGroup(interval string, feeds ...v1alpha1.FeedStatus) *v1alpha1.Feed
 func activeURLs(p feedPlan) []string {
 	urls := make([]string, 0, len(p.active))
 	for _, f := range p.active {
-		urls = append(urls, f.RSSUrl)
+		urls = append(urls, f.URL)
 	}
 	return urls
 }
@@ -63,19 +68,19 @@ func sameURLs(got, want []string) bool {
 }
 
 func TestPlanFeeds(t *testing.T) {
-	healthy := func(url string, age time.Duration) v1alpha1.FeedStatus {
-		return v1alpha1.FeedStatus{RSSUrl: url, LastChecked: stamp(-age)}
+	healthy := func(url string, age time.Duration) v1beta1.FeedStatus {
+		return v1beta1.FeedStatus{Name: testFeedName(url), URL: url, LastChecked: stamp(-age)}
 	}
 	tests := []struct {
 		name        string
-		fg          func() *v1alpha1.FeedGroup
+		fg          func() *v1beta1.FeedGroup
 		force       bool
 		wantActive  []string
 		wantNextDue time.Duration
 	}{
 		{
 			name: "healthy feed is not fetched early because a sibling fails",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				failing := healthy("failing", time.Minute)
 				failing.LastError, failing.RetryCount = "upstream error", 1
 				return scheduleGroup(defaultInterval, healthy("healthy", 10*time.Minute), failing)
@@ -85,7 +90,7 @@ func TestPlanFeeds(t *testing.T) {
 		},
 		{
 			name: "backoff outranks always-due failure and adds no wake time",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				backed := healthy("backed", 2*time.Hour)
 				backed.LastError, backed.RetryCount, backed.BackoffUntil = "404", 3, stamp(time.Minute)
 				return scheduleGroup(defaultInterval, backed, healthy("healthy", 10*time.Minute))
@@ -95,7 +100,7 @@ func TestPlanFeeds(t *testing.T) {
 		},
 		{
 			name: "backoff expiring exactly now is due again",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				backed := healthy("backed", 2*time.Hour)
 				backed.LastError, backed.RetryCount, backed.BackoffUntil = "404", 3, stamp(0)
 				return scheduleGroup(defaultInterval, backed)
@@ -104,7 +109,7 @@ func TestPlanFeeds(t *testing.T) {
 		},
 		{
 			name: "interval elapsing exactly now is due; one second earlier is not",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				return scheduleGroup(defaultInterval, healthy("exact", 30*time.Minute), healthy("early", 30*time.Minute-time.Second))
 			},
 			wantActive:  []string{"exact"},
@@ -112,11 +117,11 @@ func TestPlanFeeds(t *testing.T) {
 		},
 		{
 			name: "spec change forces healthy feeds but not backed-off or paused ones",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				backed := healthy("backed", time.Minute)
 				backed.BackoffUntil = stamp(time.Hour)
 				fg := scheduleGroup(defaultInterval, healthy("healthy", time.Minute), backed, healthy("paused", time.Hour))
-				fg.Spec.Feeds[2].Paused = true
+				fg.Spec.Feeds[2].Suspend = true
 				return fg
 			},
 			force:      true,
@@ -124,24 +129,24 @@ func TestPlanFeeds(t *testing.T) {
 		},
 		{
 			name: "malformed timestamps are recoverable",
-			fg: func() *v1alpha1.FeedGroup {
-				badCheck := v1alpha1.FeedStatus{RSSUrl: "badcheck", LastChecked: "bad-last-checked"}
+			fg: func() *v1beta1.FeedGroup {
+				badCheck := v1beta1.FeedStatus{Name: testFeedName("badcheck"), URL: "badcheck", LastChecked: &metav1.Time{}}
 				badBackoff := healthy("badbackoff", 2*time.Hour)
-				badBackoff.BackoffUntil = "bad-backoff-until"
+				badBackoff.BackoffUntil = &metav1.Time{}
 				return scheduleGroup(defaultInterval, badCheck, badBackoff)
 			},
 			wantActive: []string{"badcheck", "badbackoff"},
 		},
 		{
 			name: "unparsable interval falls back to the default for the due check",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				return scheduleGroup("not-a-duration", healthy("a", 10*time.Minute))
 			},
 			wantNextDue: fallbackInterval - 10*time.Minute,
 		},
 		{
 			name: "soonest of several not-yet-due feeds wins",
-			fg: func() *v1alpha1.FeedGroup {
+			fg: func() *v1beta1.FeedGroup {
 				return scheduleGroup(defaultInterval, healthy("a", 5*time.Minute), healthy("b", 25*time.Minute), healthy("c", 10*time.Minute))
 			},
 			wantNextDue: 5 * time.Minute,
@@ -161,17 +166,16 @@ func TestPlanFeeds(t *testing.T) {
 	}
 }
 
-func TestPlanFeeds_PausedAndEmptyURLNeverContributeWakeTime(t *testing.T) {
-	fg := scheduleGroup(defaultInterval, v1alpha1.FeedStatus{RSSUrl: "paused", LastChecked: stamp(-time.Minute)})
-	fg.Spec.Feeds[0].Paused = true
-	fg.Spec.Feeds = append(fg.Spec.Feeds, v1alpha1.FeedSpec{})
+func TestPlanFeeds_SuspendedNeverContributesWakeTime(t *testing.T) {
+	fg := scheduleGroup(defaultInterval, v1beta1.FeedStatus{Name: testFeedName("paused"), URL: "paused", LastChecked: stamp(-time.Minute)})
+	fg.Spec.Feeds[0].Suspend = true
 	if got := planFeeds(fg, cadenceOf(&fg.Spec), scheduleNow, false); len(got.active) != 0 || got.nextDue != 0 {
 		t.Fatalf("plan = %+v, want nothing active and no wake time", got)
 	}
 }
 
 func TestRequeueDecision(t *testing.T) {
-	cad := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: "1h", RetryInterval: "2m"})
+	cad := cadenceOf(&v1beta1.FeedGroupSpec{Interval: "1h", RetryInterval: "2m"})
 	plan := feedPlan{nextDue: 20 * time.Minute}
 
 	t.Run("rate limit wins: exact, unjittered, ignores nextDue", func(t *testing.T) {
@@ -228,12 +232,12 @@ func TestRequeueDecision_Bound(t *testing.T) {
 // so with a group Interval longer than the backoff the effective retry is the
 // first group wake after expiry. Pinned so a change to that is deliberate.
 func TestBackoffAddsNoWakeTime(t *testing.T) {
-	backed := v1alpha1.FeedStatus{
-		RSSUrl: "backed", LastChecked: stamp(-time.Hour), LastError: "404", RetryCount: 1,
+	backed := v1beta1.FeedStatus{
+		Name: testFeedName("backed"), URL: "backed", LastChecked: stamp(-time.Hour), LastError: "404", RetryCount: 1,
 		BackoffUntil: stamp(10 * time.Minute),
 	}
 	fg := scheduleGroup(defaultInterval, backed)
-	cad := cadenceOf(&v1alpha1.FeedGroupSpec{Interval: defaultInterval, RetryInterval: "5m"})
+	cad := cadenceOf(&v1beta1.FeedGroupSpec{Interval: defaultInterval, RetryInterval: "5m"})
 	plan := planFeeds(fg, cad, scheduleNow, false)
 	d := plan.requeue(cad, false, 0)
 	if len(plan.active) != 0 || d.bound(30*time.Minute) != 30*time.Minute {
@@ -277,22 +281,22 @@ func TestRequeueDecisionWait(t *testing.T) {
 
 // TestFeedDue covers the per-feed poll-interval gate.
 func TestFeedDue(t *testing.T) {
-	const recentCheck = "2026-01-01T11:59:00Z"
+	recentCheck := metav1TimeRFC3339("2026-01-01T11:59:00Z")
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	interval := 30 * time.Minute
 	cases := []struct {
 		name  string
-		fs    v1alpha1.FeedStatus
+		fs    v1beta1.FeedStatus
 		force bool
 		want  bool
 	}{
 		{name: "never checked", want: true},
-		{name: "checked recently", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:45:00Z"}, want: false},
-		{name: "interval elapsed", fs: v1alpha1.FeedStatus{LastChecked: "2026-01-01T11:30:00Z"}, want: true},
-		{name: "malformed LastChecked", fs: v1alpha1.FeedStatus{LastChecked: "garbage"}, want: true},
-		{name: "recent but failing", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, LastError: testBoom}, want: true},
-		{name: "recent but retrying", fs: v1alpha1.FeedStatus{LastChecked: recentCheck, RetryCount: 1}, want: true},
-		{name: "recent but spec changed", fs: v1alpha1.FeedStatus{LastChecked: recentCheck}, force: true, want: true},
+		{name: "checked recently", fs: v1beta1.FeedStatus{LastChecked: metav1TimeRFC3339("2026-01-01T11:45:00Z")}, want: false},
+		{name: "interval elapsed", fs: v1beta1.FeedStatus{LastChecked: metav1TimeRFC3339("2026-01-01T11:30:00Z")}, want: true},
+		{name: "malformed/zero LastChecked", fs: v1beta1.FeedStatus{LastChecked: &metav1.Time{}}, want: true},
+		{name: "recent but failing", fs: v1beta1.FeedStatus{LastChecked: recentCheck, LastError: testBoom}, want: true},
+		{name: "recent but retrying", fs: v1beta1.FeedStatus{LastChecked: recentCheck, RetryCount: 1}, want: true},
+		{name: "recent but spec changed", fs: v1beta1.FeedStatus{LastChecked: recentCheck}, force: true, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

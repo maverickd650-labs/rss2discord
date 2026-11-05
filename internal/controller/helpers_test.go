@@ -2,8 +2,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -11,6 +15,28 @@ import (
 
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 )
+
+// metav1TimeRFC3339 parses an RFC3339 timestamp string into a *metav1.Time.
+// It panics on malformed fixture input rather than silently returning a zero time.
+func metav1TimeRFC3339(s string) *metav1.Time {
+	if s == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic("invalid RFC3339 timestamp " + s + ": " + err.Error())
+	}
+	mt := metav1.NewTime(t)
+	return &mt
+}
+
+// timePtrEqual reports whether two *metav1.Time pointers represent the same time.
+func timePtrEqual(a, b *metav1.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(b)
+}
 
 // fakeApplyClient returns a controller client that intercepts SubResourceApply calls
 // without performing real cluster API writes, allowing settlePass to execute cleanly in unit tests.
@@ -24,7 +50,11 @@ func fakeApplyClient() client.Client {
 
 // http500Status is the HTTP status string for a 500 Internal Server Error response,
 // shared across test cases to satisfy goconst.
-const http500Status = "500 Internal Server Error"
+const (
+	http500Status = "500 Internal Server Error"
+	testTitle     = "Title"
+	nonHTTPURL    = "ftp://example.com"
+)
 
 // errInternalServer is a common 500 error used in fakeSender setups.
 var errInternalServer = &discord.HTTPStatusError{
@@ -56,6 +86,28 @@ const excerptText = "Some excerpt text"
 // Template sources shared across tests.
 const (
 	tmplTitle        = "{{.Title}}"
+	tmplUnclosed     = "{{.Unclosed"
+	tmplPublished    = "{{.Published}}"
+	testDesc         = "Desc"
+	testArticleURL   = "https://example.com/a"
 	tmplMissingField = "{{.DoesNotExist}}"
 	tmplSafeText     = "safe"
 )
+
+// testFeedName is the FeedSpec/FeedStatus name tests give the feed at url: a
+// DNS label derived from the URL alone, so a spec and a status built from the
+// same URL match by name the way production feeds do.
+func testFeedName(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return "feed-" + hex.EncodeToString(sum[:6])
+}
+
+// ts parses an RFC 3339 timestamp for a LastSent value, panicking on a
+// malformed literal.
+func ts(rfc3339 string) metav1.Time {
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		panic(err)
+	}
+	return metav1.NewTime(t)
+}

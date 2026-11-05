@@ -1,0 +1,30 @@
+apiVersion: rss2discord.maverickd650.dev/v1beta1
+kind: FeedGroup
+metadata:
+  labels:
+    app.kubernetes.io/name: rss2discord-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: feedgroup-sample
+spec:
+  discordWebhookSecretRef:
+    name: discord-webhook
+    key: url
+  interval: 30m
+  message:
+    embed:
+      color: "#326CE5"
+      author:
+        name: Kubernetes
+        url: https://blog.kubernetes.io/
+        iconURL: https://kubernetes.io/images/favicon.png
+      footer:
+        text: "{{.FeedTitle}}"
+        iconURL: https://kubernetes.io/images/favicon.png
+  feeds:
+    - name: k8s-blog
+      url: https://blog.kubernetes.io/feed.xml
+      filter:
+        exclude:
+          keywords:
+            - jobs
+            - hiring

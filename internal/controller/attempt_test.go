@@ -33,7 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 
-	"github.com/maverickd650-labs/rss2discord/api/v1alpha1"
+	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
@@ -44,7 +44,6 @@ var attemptInstant = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 const (
 	attemptNS         = "attempt-ns"
 	attemptURL        = "https://example.test/attempt.xml"
-	attemptNow        = "2026-03-04T05:06:07Z" // attemptInstant, formatted
 	attemptGeneration = 3
 	attemptOld        = "old"
 	testBoom          = "boom"
@@ -181,7 +180,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 2, failing: true,
 			want: attemptWant{
 				retryCount: 2, lastError: attemptOld, backoff: time.Hour, checked: true,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionTrue, reason: "FetchSucceeded",
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionTrue, reason: "FetchSucceeded",
 			},
 		},
 
@@ -191,14 +190,14 @@ func attemptCases() []attemptCase {
 			name: "transient fetch failure retries", outcome: fetchFailed, err: fetchFailure(classServerError), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: labelFetchErrorServerError, verdict: retry,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
 			name: "transient fetch failure below the limit is quiet", outcome: fetchFailed, err: fetchFailure(classTimeout), retries: 3, retryCount: 1,
 			want: attemptWant{
 				retryCount: 2, lastError: testBoom, label: "fetch_error_timeout", verdict: retry,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
@@ -206,7 +205,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 2,
 			want: attemptWant{
 				retryCount: 3, lastError: testBoom, label: labelFetchErrorServerError, warnings: eventNamed(eventFetchFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
@@ -214,14 +213,14 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 3,
 			want: attemptWant{
 				retryCount: 4, lastError: testBoom, label: labelFetchErrorServerError,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
 			name: "a retry limit below one counts as one", outcome: fetchFailed, err: fetchFailure(classDNSFailure), retries: 0,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: "fetch_error_dns_failure", warnings: eventNamed(eventFetchFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonDNSFailure, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonDNSFailure, message: testBoom,
 			},
 		},
 
@@ -232,7 +231,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryInterval: interval,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: labelFetchErrorNotFound,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
 			},
 		},
 		{
@@ -240,7 +239,7 @@ func attemptCases() []attemptCase {
 			retries: 1, retryInterval: interval, retryCount: 1,
 			want: attemptWant{
 				retryCount: 2, lastError: testBoom, backoff: 20 * time.Minute, label: "fetch_error_gone",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP410, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP410, message: testBoom,
 			},
 		},
 		{
@@ -248,7 +247,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryInterval: interval, retryCount: 5,
 			want: attemptWant{
 				retryCount: 6, lastError: testBoom, backoff: 320 * time.Minute, label: "fetch_error_parse_error",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonParseError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonParseError, message: testBoom,
 			},
 		},
 		{
@@ -257,7 +256,7 @@ func attemptCases() []attemptCase {
 			want: attemptWant{
 				retryCount: 7, lastError: testBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
 				warnings:  eventNamed(eventFetchFailed, capped),
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
 			},
 		},
 		{
@@ -265,7 +264,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryInterval: interval, retryCount: 7,
 			want: attemptWant{
 				retryCount: 8, lastError: testBoom, backoff: maxPermanentBackoff, label: labelFetchErrorNotFound,
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonHTTP404, message: testBoom,
 			},
 		},
 		{
@@ -273,14 +272,14 @@ func attemptCases() []attemptCase {
 			retries: 3, retryInterval: interval, retryCount: 100,
 			want: attemptWant{
 				retryCount: 101, lastError: testBoom, backoff: maxPermanentBackoff, label: "fetch_error_tls_error",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTLSError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonTLSError, message: testBoom,
 			},
 		},
 		{
 			name: "an unset RetryInterval backs off from the 5m fallback", outcome: fetchFailed, err: fetchFailure(classBlockedAddress), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: "fetch_error_blocked_address",
-				condition: v1alpha1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonBlockedAddress, message: testBoom,
+				condition: v1beta1.FeedConditionTypeReachable, status: metav1.ConditionFalse, reason: reasonBlockedAddress, message: testBoom,
 			},
 		},
 
@@ -290,7 +289,7 @@ func attemptCases() []attemptCase {
 			name: "transient send failure retries and stays pending", outcome: sendFailed, err: sendFailure(classServerError), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: "send_error_server_error", verdict: retryPending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonServerError, message: testBoom,
 			},
 		},
 		{
@@ -298,7 +297,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 2,
 			want: attemptWant{
 				retryCount: 3, lastError: testBoom, label: labelSendErrorTimeout, verdict: pending, warnings: eventNamed(eventSendFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
@@ -306,7 +305,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 3,
 			want: attemptWant{
 				retryCount: 4, lastError: testBoom, label: labelSendErrorTimeout, verdict: pending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonTimeout, message: testBoom,
 			},
 		},
 		{
@@ -314,7 +313,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryInterval: interval,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, backoff: 10 * time.Minute, label: "send_error_webhook_invalid", verdict: pending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonWebhookInvalid, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonWebhookInvalid, message: testBoom,
 			},
 		},
 		{
@@ -323,7 +322,7 @@ func attemptCases() []attemptCase {
 			want: attemptWant{
 				retryCount: 7, lastError: testBoom, backoff: maxPermanentBackoff, label: "send_error_client_error", verdict: pending,
 				warnings:  eventNamed(eventSendFailed, capped),
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonClientError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonClientError, message: testBoom,
 			},
 		},
 
@@ -333,28 +332,28 @@ func attemptCases() []attemptCase {
 			name: "render failure retries", outcome: renderFailed, err: boom, retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: labelRenderError, verdict: retryPending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 		{
 			name: "render failure never backs off, whatever error it carries", outcome: renderFailed, err: fetchFailure(classNotFound), retries: 3,
 			want: attemptWant{
 				retryCount: 1, lastError: testBoom, label: labelRenderError, verdict: retryPending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 		{
 			name: "render failure announces exhaustion once, at the limit", outcome: renderFailed, err: boom, retries: 3, retryCount: 2,
 			want: attemptWant{
 				retryCount: 3, lastError: testBoom, label: labelRenderError, verdict: pending, warnings: eventNamed(eventRenderFailed, exhausted),
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 		{
 			name: "render failure past the limit is quiet and still pending", outcome: renderFailed, err: boom, retries: 3, retryCount: 3,
 			want: attemptWant{
 				retryCount: 4, lastError: testBoom, label: labelRenderError, verdict: pending,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRenderError, message: testBoom,
 			},
 		},
 
@@ -366,7 +365,7 @@ func attemptCases() []attemptCase {
 			want: attemptWant{
 				retryCount: 1, lastError: rateLimited.Error(), label: "rate_limited",
 				verdict:   attemptVerdict{retry: true, retryAfter: 7 * time.Second, pending: true},
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRateLimited, message: "retry after 7s",
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonRateLimited, message: "retry after 7s",
 			},
 		},
 
@@ -374,7 +373,7 @@ func attemptCases() []attemptCase {
 		{
 			name: "sent clears the failure", outcome: attemptOutcome{kind: attemptSent}, retries: 3, retryCount: 2, failing: true,
 			want: attemptWant{
-				label: "sent", condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionTrue, reason: "MessageSent",
+				label: "sent", condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionTrue, reason: "MessageSent",
 			},
 		},
 		{
@@ -382,7 +381,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 4, failing: true,
 			want: attemptWant{
 				label: "skipped", warnings: []string{reasonEntrySkipped, "Poison title", "exhausting retries"},
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonEntrySkipped,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonEntrySkipped,
 				message: `skipped entry "Poison title" after RenderFailed: boom`,
 			},
 		},
@@ -391,7 +390,7 @@ func attemptCases() []attemptCase {
 			retries: 3, retryCount: 2, failing: true,
 			want: attemptWant{
 				retryCount: 2, lastError: attemptOld, backoff: time.Hour,
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionTrue, reason: reasonBacklogSkipped,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionTrue, reason: reasonBacklogSkipped,
 				message: "catchUpLimit is 0: skipped 4 existing entries",
 			},
 		},
@@ -399,7 +398,7 @@ func attemptCases() []attemptCase {
 			name: "a config error is not counted or retried, and warns", outcome: attemptOutcome{kind: attemptConfigError}, err: boom, retries: 3,
 			want: attemptWant{
 				lastError: testBoom, warnings: []string{reasonConfigError, testBoom},
-				condition: v1alpha1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonConfigError, message: testBoom,
+				condition: v1beta1.FeedConditionTypeDelivered, status: metav1.ConditionFalse, reason: reasonConfigError, message: testBoom,
 			},
 		},
 	}
@@ -433,10 +432,10 @@ func TestFeedAttempt_Record(t *testing.T) {
 func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 	t.Helper()
 	forgetMetricsAfter(t, attemptNS, name)
-	fg := &v1alpha1.FeedGroup{}
+	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, name, attemptGeneration
-	fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
-	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
+	fg.Spec.Retries, fg.Spec.RetryInterval = new(tc.retries), tc.retryInterval
+	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL, RetryCount: tc.retryCount}
 	if tc.failing {
 		fs.LastError, fs.BackoffUntil = attemptOld, nextBackoffUntil(attemptInstant, time.Hour)
 	}
@@ -455,8 +454,9 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 		t.Errorf("LastError = %q, want %q", fs.LastError, tc.want.lastError)
 	}
 	assertBackoffUntil(t, fs.BackoffUntil, attemptInstant, tc.want.backoff)
-	if checked := fs.LastChecked == attemptNow; checked != tc.want.checked || (!checked && fs.LastChecked != "") {
-		t.Errorf("LastChecked = %q, want advanced=%t", fs.LastChecked, tc.want.checked)
+	checked := fs.LastChecked != nil && !fs.LastChecked.IsZero() && fs.LastChecked.Time.Equal(attemptInstant)
+	if checked != tc.want.checked || (!checked && fs.LastChecked != nil) {
+		t.Errorf("LastChecked = %v, want advanced=%t", fs.LastChecked, tc.want.checked)
 	}
 	assertAttemptCondition(t, fs, tc.want)
 	assertOutcomeMetric(t, name, tc.want.label)
@@ -465,18 +465,24 @@ func checkAttemptCase(t *testing.T, name string, tc attemptCase) {
 
 // assertBackoffUntil checks that backoffUntil is exactly want after now, the
 // (fake, unmoving) time record ran at, or unset when want is 0.
-func assertBackoffUntil(t *testing.T, backoffUntil string, now time.Time, want time.Duration) {
+func assertBackoffUntil(t *testing.T, backoffUntil *metav1.Time, now time.Time, want time.Duration) {
 	t.Helper()
-	wantUntil := ""
-	if want != 0 {
-		wantUntil = nextBackoffUntil(now, want)
+	if want == 0 {
+		if backoffUntil != nil && !backoffUntil.IsZero() {
+			t.Errorf("BackoffUntil = %v, want unset", backoffUntil)
+		}
+		return
 	}
-	if backoffUntil != wantUntil {
-		t.Errorf("BackoffUntil = %q, want %q (%v after %s)", backoffUntil, wantUntil, want, now.Format(time.RFC3339))
+	if backoffUntil == nil || backoffUntil.IsZero() {
+		t.Fatalf("BackoffUntil is unset, want %v after %s", want, now.Format(time.RFC3339))
+	}
+	wantTime := now.Add(want)
+	if !backoffUntil.Time.Equal(wantTime) {
+		t.Errorf("BackoffUntil = %v, want %v (%v after %s)", backoffUntil.Time, wantTime, want, now.Format(time.RFC3339))
 	}
 }
 
-func assertAttemptCondition(t *testing.T, fs *v1alpha1.FeedStatus, want attemptWant) {
+func assertAttemptCondition(t *testing.T, fs *v1beta1.FeedStatus, want attemptWant) {
 	t.Helper()
 	if want.condition == "" {
 		if len(fs.Conditions) != 0 {
@@ -505,7 +511,7 @@ func assertOutcomeMetric(t *testing.T, group, wantLabel string) {
 	t.Helper()
 	total := 0.0
 	for _, label := range expectedOutcomes() {
-		count := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(attemptNS, group, attemptURL, label))
+		count := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(attemptNS, group, testFeedName(attemptURL), label))
 		total += count
 		if want := label == wantLabel; (count == 1) != want {
 			t.Errorf("outcome %q counted %v times, want counted=%t", label, count, want)
@@ -551,10 +557,10 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			name := fmt.Sprintf("attempt-nil-%d", i)
 			forgetMetricsAfter(t, attemptNS, name)
-			fg := &v1alpha1.FeedGroup{}
+			fg := &v1beta1.FeedGroup{}
 			fg.Namespace, fg.Name = attemptNS, name
-			fg.Spec.Retries, fg.Spec.RetryInterval = tc.retries, tc.retryInterval
-			fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL, RetryCount: tc.retryCount}
+			fg.Spec.Retries, fg.Spec.RetryInterval = new(tc.retries), tc.retryInterval
+			fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL, RetryCount: tc.retryCount}
 			testAttempt(t, fg, fs, attemptURL, attemptInstant).record(tc.outcome, tc.err)
 		})
 	}
@@ -566,9 +572,9 @@ func TestFeedAttempt_NilRecorderIsSafe(t *testing.T) {
 func TestFeedAttempt_ConfigErrorWarnsOncePerDistinctError(t *testing.T) {
 	name := "attempt-config-once"
 	forgetMetricsAfter(t, attemptNS, name)
-	fg := &v1alpha1.FeedGroup{}
+	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name = attemptNS, name
-	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL}
+	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL}
 	recorder := events.NewFakeRecorder(10)
 	attempt := testAttempt(t, fg, fs, attemptURL, attemptInstant).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
@@ -595,9 +601,9 @@ func TestFeedAttempt_PastRetryLimit(t *testing.T) {
 		{retries: 3, retryCount: 2}, {retries: 3, retryCount: 3}, {retries: 3, retryCount: 4, want: true},
 		{retries: 0, retryCount: 1}, {retries: 0, retryCount: 2, want: true},
 	} {
-		fg := &v1alpha1.FeedGroup{}
-		fg.Spec.Retries = tc.retries
-		fs := &v1alpha1.FeedStatus{RetryCount: tc.retryCount}
+		fg := &v1beta1.FeedGroup{}
+		fg.Spec.Retries = new(tc.retries)
+		fs := &v1beta1.FeedStatus{RetryCount: tc.retryCount}
 		if got := testAttempt(t, fg, fs, attemptURL, attemptInstant).pastRetryLimit(); got != tc.want {
 			t.Errorf("retries %d, RetryCount %d: pastRetryLimit = %t, want %t", tc.retries, tc.retryCount, got, tc.want)
 		}
@@ -659,8 +665,8 @@ func TestAttemptOutcome_MetricLabels(t *testing.T) {
 			t.Fatal("recording an unknown kind did not panic")
 		}
 	}()
-	fg := &v1alpha1.FeedGroup{}
-	testAttempt(t, fg, &v1alpha1.FeedStatus{}, attemptURL, attemptInstant).
+	fg := &v1beta1.FeedGroup{}
+	testAttempt(t, fg, &v1beta1.FeedStatus{}, attemptURL, attemptInstant).
 		record(attemptOutcome{kind: attemptKindEnd}, nil)
 }
 
@@ -693,13 +699,13 @@ func TestAttemptOutcomeResolve(t *testing.T) {
 // when the reconcile started (LastChecked's time), so a slow fetch or a long
 // rate-limit wait before the failure cannot eat into the backoff.
 func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
-	fg := &v1alpha1.FeedGroup{}
+	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-fg-late-clock", attemptGeneration
-	fg.Spec.Retries, fg.Spec.RetryInterval = 3, "5m"
-	fs := &v1alpha1.FeedStatus{RSSUrl: attemptURL}
+	fg.Spec.Retries, fg.Spec.RetryInterval = new(int32(3)), "5m"
+	fs := &v1beta1.FeedStatus{Name: testFeedName(attemptURL), URL: attemptURL}
 	// Recorded two hours after the reconcile started: longer than the backoff.
 	recorded := attemptInstant.Add(2 * time.Hour)
-	attempt := testRun(t, fg, v1alpha1.FeedSpec{RSSUrl: attemptURL}, rss.FetchResult{}, nil, nil).
+	attempt := testRun(t, fg, v1beta1.FeedSpec{Name: testFeedName(attemptURL), URL: attemptURL}, rss.FetchResult{}, nil, nil).
 		withNow(attemptInstant).withClock(func() time.Time { return recorded }).newAttempt(fs)
 
 	attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(classNotFound))
@@ -712,40 +718,41 @@ func TestFeedAttempt_BackoffCountsFromWhenTheFailureIsRecorded(t *testing.T) {
 // ends, with RetryCount and the backoff reset but LastError kept; a delivery
 // run (Reachable True) and a feed never fetched are left alone.
 func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
-	const backoffUntil = "2026-01-01T01:00:00Z"
+	backoffTime := metav1.NewTime(time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC))
+	backoffUntil := &backoffTime
 	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
-		return []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}}
+		return []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: status}}
 	}
 	for _, tc := range []struct {
 		name        string
 		conditions  []metav1.Condition
 		retryCount  int32
-		backoff     string
+		backoff     *metav1.Time
 		wantRetries int32
-		wantBackoff string
+		wantBackoff *metav1.Time
 	}{
-		{"fetch run with retries", reachable(metav1.ConditionFalse), 5, "", 0, ""},
-		{"fetch run in backoff", reachable(metav1.ConditionFalse), 2, backoffUntil, 0, ""},
-		{"fetch run with only a backoff", reachable(metav1.ConditionFalse), 0, backoffUntil, 0, ""},
-		{"delivery run", reachable(metav1.ConditionTrue), 2, "", 2, ""},
+		{"fetch run with retries", reachable(metav1.ConditionFalse), 5, nil, 0, nil},
+		{"fetch run in backoff", reachable(metav1.ConditionFalse), 2, backoffUntil, 0, nil},
+		{"fetch run with only a backoff", reachable(metav1.ConditionFalse), 0, backoffUntil, 0, nil},
+		{"delivery run", reachable(metav1.ConditionTrue), 2, nil, 2, nil},
 		{"delivery run in backoff", reachable(metav1.ConditionTrue), 2, backoffUntil, 2, backoffUntil},
-		{"never fetched", nil, 2, "", 2, ""},
+		{"never fetched", nil, 2, nil, 2, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{
-				RSSUrl: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount,
+			fs := &v1beta1.FeedStatus{
+				Name: testFeedName(attemptURL), URL: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount,
 				BackoffUntil: tc.backoff, LastError: "earlier failure",
 			}
-			testAttempt(t, &v1alpha1.FeedGroup{}, fs, attemptURL, attemptInstant).
+			testAttempt(t, &v1beta1.FeedGroup{}, fs, attemptURL, attemptInstant).
 				record(attemptOutcome{kind: attemptFetchSucceeded}, nil)
 
-			if fs.RetryCount != tc.wantRetries || fs.BackoffUntil != tc.wantBackoff {
-				t.Errorf("RetryCount=%d BackoffUntil=%q, want %d and %q", fs.RetryCount, fs.BackoffUntil, tc.wantRetries, tc.wantBackoff)
+			if fs.RetryCount != tc.wantRetries || !fs.BackoffUntil.Equal(tc.wantBackoff) {
+				t.Errorf("RetryCount=%d BackoffUntil=%v, want %d and %v", fs.RetryCount, fs.BackoffUntil, tc.wantRetries, tc.wantBackoff)
 			}
 			if fs.LastError != "earlier failure" {
 				t.Errorf("LastError = %q, want it kept", fs.LastError)
 			}
-			if !apimeta.IsStatusConditionTrue(fs.Conditions, v1alpha1.FeedConditionTypeReachable) {
+			if !apimeta.IsStatusConditionTrue(fs.Conditions, v1beta1.FeedConditionTypeReachable) {
 				t.Error("Reachable should be True after a successful fetch")
 			}
 		})
@@ -758,30 +765,31 @@ func TestFeedAttempt_FetchSuccessEndsOnlyAFetchPhaseRun(t *testing.T) {
 // from 1), whereas a fetch failure inside a fetch run counts on and a feed never
 // fetched keeps its count.
 func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
-	const staleBackoff = "2026-01-01T01:00:00Z"
+	staleTime := metav1.NewTime(time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC))
+	staleBackoff := &staleTime
 	reachable := func(status metav1.ConditionStatus) []metav1.Condition {
-		return []metav1.Condition{{Type: v1alpha1.FeedConditionTypeReachable, Status: status}}
+		return []metav1.Condition{{Type: v1beta1.FeedConditionTypeReachable, Status: status}}
 	}
 	for _, tc := range []struct {
 		name        string
 		conditions  []metav1.Condition
 		retryCount  int32
-		backoff     string
+		backoff     *metav1.Time
 		class       failureClass
 		wantRetries int32
 		wantRetry   bool
 	}{
-		{"delivery run, transient fetch failure", reachable(metav1.ConditionTrue), 2, "", classServerError, 1, true},
+		{"delivery run, transient fetch failure", reachable(metav1.ConditionTrue), 2, nil, classServerError, 1, true},
 		{"delivery run in backoff, transient fetch failure", reachable(metav1.ConditionTrue), 2, staleBackoff, classServerError, 1, true},
-		{"delivery run, permanent fetch failure", reachable(metav1.ConditionTrue), 4, "", classNotFound, 1, false},
-		{"fetch run counts on", reachable(metav1.ConditionFalse), 2, "", classServerError, 3, false},
-		{"never fetched", nil, 1, "", classServerError, 2, true},
+		{"delivery run, permanent fetch failure", reachable(metav1.ConditionTrue), 4, nil, classNotFound, 1, false},
+		{"fetch run counts on", reachable(metav1.ConditionFalse), 2, nil, classServerError, 3, false},
+		{"never fetched", nil, 1, nil, classServerError, 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1alpha1.FeedStatus{
-				RSSUrl: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount, BackoffUntil: tc.backoff,
+			fs := &v1beta1.FeedStatus{
+				Name: testFeedName(attemptURL), URL: attemptURL, Conditions: tc.conditions, RetryCount: tc.retryCount, BackoffUntil: tc.backoff,
 			}
-			attempt := testAttempt(t, &v1alpha1.FeedGroup{Spec: v1alpha1.FeedGroupSpec{Retries: 3}}, fs, attemptURL, attemptInstant)
+			attempt := testAttempt(t, &v1beta1.FeedGroup{Spec: v1beta1.FeedGroupSpec{Retries: new(int32(3))}}, fs, attemptURL, attemptInstant)
 			verdict := attempt.record(attemptOutcome{kind: attemptFetchFailed}, fetchFailure(tc.class))
 
 			if fs.RetryCount != tc.wantRetries {
@@ -792,10 +800,10 @@ func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 			}
 			if tc.class == classNotFound {
 				want := nextBackoffUntil(attempt.recordedAt().UTC(), permanentBackoffDuration(1, attempt.cadence.retry))
-				if fs.BackoffUntil != want {
-					t.Errorf("BackoffUntil = %q, want %q (backed off from 1)", fs.BackoffUntil, want)
+				if !fs.BackoffUntil.Equal(want) {
+					t.Errorf("BackoffUntil = %v, want %v (backed off from 1)", fs.BackoffUntil, want)
 				}
-			} else if fs.BackoffUntil == staleBackoff {
+			} else if fs.BackoffUntil != nil {
 				t.Error("the delivery run's backoff should be cleared")
 			}
 		})
@@ -804,12 +812,12 @@ func TestFeedAttempt_FetchFailureEndsADeliveryRun(t *testing.T) {
 
 func TestFeedAttempt_ConfigErrorDoesNotRepeatOnGenerationChange(t *testing.T) {
 	const differentConfigError = "different config error"
-	fg := &v1alpha1.FeedGroup{}
+	fg := &v1beta1.FeedGroup{}
 	fg.Namespace, fg.Name, fg.Generation = attemptNS, "attempt-config-generation", attemptGeneration
-	fs := &v1alpha1.FeedStatus{
-		RSSUrl: attemptURL,
+	fs := &v1beta1.FeedStatus{
+		Name: testFeedName(attemptURL), URL: attemptURL,
 		Conditions: []metav1.Condition{{
-			Type: v1alpha1.FeedConditionTypeDelivered, Status: metav1.ConditionFalse,
+			Type: v1beta1.FeedConditionTypeDelivered, Status: metav1.ConditionFalse,
 			Reason: reasonConfigError, Message: testBoom, ObservedGeneration: attemptGeneration - 1,
 		}},
 	}
@@ -820,7 +828,7 @@ func TestFeedAttempt_ConfigErrorDoesNotRepeatOnGenerationChange(t *testing.T) {
 	if got := drainEvents(recorder); len(got) != 0 {
 		t.Fatalf("generation-only change emitted Warning Events: %v", got)
 	}
-	condition := apimeta.FindStatusCondition(fs.Conditions, v1alpha1.FeedConditionTypeDelivered)
+	condition := apimeta.FindStatusCondition(fs.Conditions, v1beta1.FeedConditionTypeDelivered)
 	if condition == nil || condition.ObservedGeneration != attemptGeneration {
 		t.Fatalf("condition = %+v, want ObservedGeneration %d", condition, attemptGeneration)
 	}

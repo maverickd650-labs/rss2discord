@@ -421,6 +421,7 @@ const FeedConditionTypeDelivered = "Delivered"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:unservedversion
 // +kubebuilder:resource:path=feedgroups,scope=Namespaced
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reachable",type="string",JSONPath=".status.conditions[?(@.type=='FeedReachable')].status"
