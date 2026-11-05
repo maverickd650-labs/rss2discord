@@ -19,7 +19,10 @@ func metav1TimeRFC3339(s string) *metav1.Time {
 	if s == "" {
 		return nil
 	}
-	t, _ := time.Parse(time.RFC3339, s)
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic("invalid RFC3339 timestamp " + s + ": " + err.Error())
+	}
 	mt := metav1.NewTime(t)
 	return &mt
 }
