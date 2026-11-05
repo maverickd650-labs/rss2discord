@@ -44,7 +44,6 @@ var attemptInstant = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 const (
 	attemptNS         = "attempt-ns"
 	attemptURL        = "https://example.test/attempt.xml"
-	attemptNow        = "2026-03-04T05:06:07Z" // attemptInstant, formatted
 	attemptGeneration = 3
 	attemptOld        = "old"
 	testBoom          = "boom"
