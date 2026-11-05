@@ -47,8 +47,9 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
+const feedGroupValidationSecretName = "any-secret"
+
 const (
-	feedGroupValidationSecretName           = "any-secret"
 	secretURLKey             = "url"
 	defaultInterval          = "30m"
 	feedGroupNameBasic       = "test-feedgroup"
