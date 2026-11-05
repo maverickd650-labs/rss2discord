@@ -49,6 +49,7 @@ run = "go fmt ./..."
 
 [tasks.vet]
 description = "Run go vet against code"
+depends = ["generate", "fmt"]
 run = "go vet ./..."
 
 # golangci-lint is installed by mise as the stock binary, but this project uses
