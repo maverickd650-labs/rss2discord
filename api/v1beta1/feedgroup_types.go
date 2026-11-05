@@ -68,6 +68,8 @@ const EmbedImageStyleImage = "image"
 // "bubble" with title, description, thumbnail, author and footer) instead
 // of a plain text message.
 // +kubebuilder:validation:MinProperties=1
+// +kubebuilder:validation:XValidation:rule="(!has(self.authorURL) && !has(self.authorIconURL)) || has(self.authorName)",message="authorName is required when authorURL or authorIconURL is set"
+// +kubebuilder:validation:XValidation:rule="!has(self.footerIconURL) || has(self.footerText)",message="footerText is required when footerIconURL is set"
 type EmbedSpec struct {
 	// enabled switches a feed's messages from plain text content to a
 	// Discord embed.
