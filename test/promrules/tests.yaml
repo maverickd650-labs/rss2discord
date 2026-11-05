@@ -14,7 +14,7 @@ tests:
   # label already on the metric).
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -24,7 +24,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/feed.xml
+              feed: https://example.invalid/feed.xml
               outcome: fetch_error_not_found
               reason: not_found
             exp_annotations:
@@ -37,7 +37,7 @@ tests:
   # outcome="rate_limited" firing continuously proves RSS2DiscordFeedRateLimited.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml",outcome="rate_limited"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="rate_limited"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -47,7 +47,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/feed.xml
+              feed: https://example.invalid/feed.xml
             exp_annotations:
               summary: "FeedGroup demo/feedgroup-sample is being rate limited by Discord"
               description: >-
@@ -59,7 +59,7 @@ tests:
   # RSS2DiscordFeedSendErrors and its label_replace reason extraction.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml",outcome="send_error_timeout"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="send_error_timeout"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -69,7 +69,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/feed.xml
+              feed: https://example.invalid/feed.xml
               outcome: send_error_timeout
               reason: timeout
             exp_annotations:
@@ -85,7 +85,7 @@ tests:
   # deliberate omission as a regression test.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml",outcome="render_error"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="render_error"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -103,9 +103,9 @@ tests:
   # after it. The sibling feed reporting 1 must never alert.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml"}'
         values: "0x60"
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/other.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/other.xml"}'
         values: "1x60"
     alert_rule_test:
       - eval_time: 20m
@@ -118,7 +118,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/feed.xml
+              feed: https://example.invalid/feed.xml
             exp_annotations:
               summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample is unhealthy"
               description: >-
@@ -141,11 +141,11 @@ tests:
   # reset the alert's `for` clock, which isn't what a scraped gauge does.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
         values: "0+1x3 3x500"
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml"}'
         values: "0x500"
-      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/feed.xml"}'
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml"}'
         values: "0x500"
     alert_rule_test:
       - eval_time: 8h
@@ -158,7 +158,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/feed.xml
+              feed: https://example.invalid/feed.xml
             exp_annotations:
               summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample is unhealthy"
               description: >-
@@ -177,7 +177,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/feed.xml
+              feed: https://example.invalid/feed.xml
             exp_annotations:
               summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has not been checked successfully recently"
               description: >-
@@ -190,9 +190,9 @@ tests:
   # (its timestamp advances 60s per 1m of test time, so its age is always 0).
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/frozen.xml"}'
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/frozen.xml"}'
         values: "0x500"
-      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/fresh.xml"}'
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/fresh.xml"}'
         values: "0+60x500"
     alert_rule_test:
       - eval_time: 7h
@@ -202,7 +202,7 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              rss_url: https://example.invalid/frozen.xml
+              feed: https://example.invalid/frozen.xml
             exp_annotations:
               summary: "Feed https://example.invalid/frozen.xml in FeedGroup demo/feedgroup-sample has not been checked successfully recently"
               description: >-
@@ -217,7 +217,7 @@ tests:
   # exists for it.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",rss_url="https://example.invalid/new.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/new.xml"}'
         values: "1x800"
     alert_rule_test:
       - eval_time: 12h

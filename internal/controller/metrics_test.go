@@ -440,12 +440,12 @@ func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
 				labels := prometheus.Labels{labelNamespace: ns, labelName: name}
 				switch e.vec {
 				case feedOperationsTotal:
-					labels[labelFeedURL], labels[labelOutcome] = url, outcomeSent
+					labels[labelFeed], labels[labelOutcome] = url, outcomeSent
 				case feedRequestDuration:
 					labels[labelOperation] = operationSend
 				default:
 					if e.scope == scopePerFeed {
-						labels[labelFeedURL] = url
+						labels[labelFeed] = url
 					}
 				}
 				touchSeries(t, e.vec, labels)
@@ -456,7 +456,7 @@ func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
 		return map[string]string{labelNamespace: ns, labelName: name}
 	}
 	feed := func(ns, name, url string) map[string]string {
-		return map[string]string{labelNamespace: ns, labelName: name, labelFeedURL: url}
+		return map[string]string{labelNamespace: ns, labelName: name, labelFeed: url}
 	}
 
 	t.Run("forget", func(t *testing.T) {
@@ -562,7 +562,7 @@ func TestEnsureFeedStatuses_ReportsPrunedFeeds(t *testing.T) {
 // feedGaugeValue reads the series of a per-feed gauge vec without creating
 // it, reporting whether it exists. WithLabelValues can't be used for presence
 // checks because it creates the series it is asked for.
-func feedGaugeValue(vec *prometheus.GaugeVec, namespace, name, rssURL string) (float64, bool) {
+func feedGaugeValue(vec *prometheus.GaugeVec, namespace, name, feedID string) (float64, bool) {
 	ch := make(chan prometheus.Metric, 64)
 	go func() {
 		vec.Collect(ch)
@@ -581,7 +581,7 @@ func feedGaugeValue(vec *prometheus.GaugeVec, namespace, name, rssURL string) (f
 		for _, lp := range m.GetLabel() {
 			labels[lp.GetName()] = lp.GetValue()
 		}
-		if labels[labelNamespace] == namespace && labels[labelName] == name && labels[labelFeedURL] == rssURL {
+		if labels[labelNamespace] == namespace && labels[labelName] == name && labels[labelFeed] == feedID {
 			value, found = m.GetGauge().GetValue(), true
 		}
 	}
@@ -743,5 +743,144 @@ func TestSyncFeedState_SkipsStatusWithoutURL(t *testing.T) {
 	}
 	if got, ok := feedGaugeValue(feedHealthy, ns, name, exampleFeedURL); !ok || got != 1 {
 		t.Errorf("feedHealthy for the real feed = %v (present=%v), want 1", got, ok)
+	}
+}
+
+// TestMetrics_NamedAndUnnamedFeedSeries asserts that per-feed vectors
+// (feedOperationsTotal, feedHealthy, feedLastCheckedTimestamp) use FeedSpec.Name
+// when set and fall back to rssUrl when unset. It also confirms that group-level
+// vectors are keyed by namespace and name only, with no feed identity label.
+func TestMetrics_NamedAndUnnamedFeedSeries(t *testing.T) {
+	const (
+		namedFeedName  = "my-named-feed"
+		namedFeedURL   = "https://example.com/named.xml"
+		unnamedFeedURL = "https://example.com/unnamed.xml"
+	)
+	ns, name := "metrics-named-unnamed", "fg-named-unnamed"
+	forgetMetricsAfter(t, ns, name)
+
+	checkedStamp := metav1TimeRFC3339("2026-03-04T05:06:07Z")
+
+	fg := &v1beta1.FeedGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Spec: v1beta1.FeedGroupSpec{
+			Feeds: []v1beta1.FeedSpec{
+				{Name: namedFeedName, RSSUrl: namedFeedURL},
+				{RSSUrl: unnamedFeedURL},
+			},
+		},
+		Status: v1beta1.FeedGroupStatus{
+			Feeds: []v1beta1.FeedStatus{
+				{Name: namedFeedName, RSSUrl: namedFeedURL, LastChecked: checkedStamp},
+				{RSSUrl: unnamedFeedURL, LastChecked: checkedStamp},
+			},
+		},
+	}
+
+	handle := metricsFor(fg)
+	handle.syncFeedState(fg)
+
+	// Named feed must use its Name as the feed label value.
+	if val, ok := feedGaugeValue(feedHealthy, ns, name, namedFeedName); !ok || val != 1 {
+		t.Errorf("feedHealthy for named feed = %v (present=%v), want 1", val, ok)
+	}
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, namedFeedURL); ok {
+		t.Errorf("feedHealthy should not have a series under the URL %q when Name is set", namedFeedURL)
+	}
+	if val, ok := feedGaugeValue(feedLastCheckedTimestamp, ns, name, namedFeedName); !ok || val <= 0 {
+		t.Errorf("feedLastCheckedTimestamp for named feed = %v (present=%v), want > 0", val, ok)
+	}
+
+	// Unnamed feed must fall back to RSSUrl as the feed label value.
+	if val, ok := feedGaugeValue(feedHealthy, ns, name, unnamedFeedURL); !ok || val != 1 {
+		t.Errorf("feedHealthy for unnamed feed = %v (present=%v), want 1", val, ok)
+	}
+	if val, ok := feedGaugeValue(feedLastCheckedTimestamp, ns, name, unnamedFeedURL); !ok || val <= 0 {
+		t.Errorf("feedLastCheckedTimestamp for unnamed feed = %v (present=%v), want > 0", val, ok)
+	}
+
+	// Operations count under the proper identity.
+	handle.operation(namedFeedName, outcomeSent)
+	handle.operation(unnamedFeedURL, outcomeSent)
+
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, namedFeedName, outcomeSent)); got != 1 {
+		t.Errorf("feedOperationsTotal for named feed = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, namedFeedURL, outcomeSent)); got != 0 {
+		t.Errorf("feedOperationsTotal for named feed's URL = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, unnamedFeedURL, outcomeSent)); got != 1 {
+		t.Errorf("feedOperationsTotal for unnamed feed = %v, want 1", got)
+	}
+
+	// Verify group-level vectors carry only namespace/name (and operation for requestDuration),
+	// with no feed label.
+	handle.checkSucceeded(time.Now())
+	handle.requestDuration(operationFetch, time.Second)
+	handle.overflow(10)
+	handle.reconcileDuration(time.Second)
+
+	for _, e := range allMetrics {
+		if e.scope == scopePerGroup {
+			ch := make(chan prometheus.Metric, 16)
+			e.vec.Collect(ch)
+			close(ch)
+			for m := range ch {
+				var dtoMetric dto.Metric
+				if err := m.Write(&dtoMetric); err != nil {
+					continue
+				}
+				for _, lp := range dtoMetric.GetLabel() {
+					if lp.GetName() == labelFeed || lp.GetName() == "rss_url" {
+						t.Errorf("group-level metric %T carries feed label %q", e.vec, lp.GetName())
+					}
+				}
+			}
+		}
+	}
+
+	// forgetFeed drops only the requested feed's series.
+	handle.forgetFeed(namedFeedName)
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, namedFeedName); ok {
+		t.Error("named feed's series survived forgetFeed")
+	}
+	if _, ok := feedGaugeValue(feedHealthy, ns, name, unnamedFeedURL); !ok {
+		t.Error("unnamed feed's series was incorrectly dropped by forgetFeed of sibling")
+	}
+}
+
+// TestProcessFeed_NamedFeedRecordsMetricUnderName asserts that processFeed
+// increments feedOperationsTotal under feed.Name when set.
+func TestProcessFeed_NamedFeedRecordsMetricUnderName(t *testing.T) {
+	ctx := t.Context()
+	const (
+		feedName = "process-named-feed"
+		feedURL  = "https://example.com/process-named.xml"
+	)
+	ns, name := "metrics-process-named", "fg-process-named"
+	forgetMetricsAfter(t, ns, name)
+
+	discordServer := NewMockDiscordServer(t)
+	defer discordServer.Close()
+
+	fg := &v1beta1.FeedGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Spec: v1beta1.FeedGroupSpec{
+			Feeds: []v1beta1.FeedSpec{
+				{Name: feedName, RSSUrl: feedURL},
+			},
+		},
+	}
+	ensureFeedStatuses(fg)
+
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	feed := fg.Spec.Feeds[0]
+	processFeed(ctx, testRun(t, fg, feed, oneEntryFetch(), nil, client))
+
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, feedName, outcomeSent)); got != 1 {
+		t.Errorf("feedOperationsTotal with feedName = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, feedURL, outcomeSent)); got != 0 {
+		t.Errorf("feedOperationsTotal with feedURL = %v, want 0", got)
 	}
 }

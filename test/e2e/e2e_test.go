@@ -421,12 +421,12 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				// Match each label independently rather than one fixed-order string:
 				// the text exposition format serializes labels alphabetically by
-				// name, not in the vector's declared (namespace, name, rss_url,
+				// name, not in the vector's declared (namespace, name, feed,
 				// outcome) order.
 				g.Expect(output).To(ContainSubstring(`rss2discord_feed_operations_total{`))
 				g.Expect(output).To(ContainSubstring(fmt.Sprintf(`namespace="%s"`, feedGroupNamespace)))
 				g.Expect(output).To(ContainSubstring(fmt.Sprintf(`name="%s"`, feedGroupName)))
-				g.Expect(output).To(ContainSubstring(`rss_url="https://feeds.invalid/feed.xml"`))
+				g.Expect(output).To(ContainSubstring(`feed="https://feeds.invalid/feed.xml"`))
 				g.Expect(output).To(ContainSubstring(`outcome="fetch_error_dns_failure"`))
 			}
 			Eventually(verifyFeedGroupMetric, 2*time.Minute).Should(Succeed())

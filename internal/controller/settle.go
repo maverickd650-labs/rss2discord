@@ -46,8 +46,8 @@ type groupSync struct {
 // fresh retry cycle, snapshotting the pre-reconcile status to detect no-op writes,
 // and resolving the group's cadence.
 func (r *FeedGroupReconciler) openGroupSync(feedGroup *v1beta1.FeedGroup) *groupSync {
-	for _, url := range ensureFeedStatuses(feedGroup) {
-		metricsFor(feedGroup).forgetFeed(url)
+	for _, feedID := range ensureFeedStatuses(feedGroup) {
+		metricsFor(feedGroup).forgetFeed(feedID)
 	}
 	specChanged := feedGroup.Generation > feedGroup.Status.ObservedGeneration
 	if specChanged && !feedGroup.Spec.Suspend {

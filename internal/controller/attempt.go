@@ -155,9 +155,10 @@ func (v attemptVerdict) settlement() syncVerdict {
 // permanent failure backs off immediately, a transient one retries until its
 // retries run out and is then announced once -- is written once, in record.
 type feedAttempt struct {
-	group *v1beta1.FeedGroup
-	fs    *v1beta1.FeedStatus
-	url   string
+	group    *v1beta1.FeedGroup
+	fs       *v1beta1.FeedStatus
+	feedName string
+	url      string
 	// now is the reconcile's clock reading, for LastChecked.
 	now time.Time
 	// clock is the run's clock (feedRun.clock): the success gauge and the
@@ -181,7 +182,7 @@ func (a feedAttempt) recordedAt() time.Time {
 // newAttempt opens the attempt for the run's feed, whose status is fs.
 func (run feedRun) newAttempt(fs *v1beta1.FeedStatus) feedAttempt {
 	return feedAttempt{
-		group: run.group, fs: fs, url: run.feed.RSSUrl, now: run.now, clock: run.clock,
+		group: run.group, fs: fs, feedName: run.feed.Name, url: run.feed.RSSUrl, now: run.now, clock: run.clock,
 		cadence: run.cadence, recorder: run.recorder,
 	}
 }
@@ -231,7 +232,7 @@ func (run feedRun) newAttempt(fs *v1beta1.FeedStatus) feedAttempt {
 func (a feedAttempt) record(o attemptOutcome, err error) attemptVerdict {
 	o, class := o.resolve(err)
 	if label := o.metricLabel(class); label != "" {
-		metricsFor(a.group).operation(a.url, label)
+		metricsFor(a.group).operation(feedIdentity(a.feedName, a.url), label)
 	}
 
 	switch o.kind {

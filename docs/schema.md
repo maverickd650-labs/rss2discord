@@ -156,7 +156,7 @@ In `v1alpha1`, feed statuses were keyed solely by `rssUrl`. Changing a feed's UR
 In `v1beta1`, `name` provides a durable identifier:
 - **Durable Watermarks:** When a feed with a `name` has its `rssUrl` changed in `spec.feeds`, the controller matches by `name` first, updates `rssUrl` in `.status.feeds`, and retains the full delivery history.
 - **Reservation Safety:** Name matching reserves prior statuses before URL fallbacks run, guaranteeing that each prior status is claimed at most once.
-- **Prometheus Metric Cleanup:** The previous RSS URL is reported as pruned, immediately dropping gauge series for the old URL and creating series for the new URL.
+- **Prometheus Metric Series:** Per-feed vectors (`rss2discord_feed_operations_total`, `rss2discord_feed_healthy`, `rss2discord_feed_last_checked_timestamp_seconds`) use the feed's `name` as their `feed` metric label when provided, falling back to `rssUrl` if unnamed. When a feed identity changes or is removed, obsolete series are immediately dropped via `forgetFeed`.
 - **Validation:** Names must be RFC 1123 DNS labels (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, max 63 characters). CEL validation ensures that any configured feed names within a group are unique.
 
 ### 2. Group Suspension (`spec.suspend`)

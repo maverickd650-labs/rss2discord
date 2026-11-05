@@ -3,7 +3,6 @@ package controller
 import (
 	"encoding/json"
 	"errors"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -504,9 +503,9 @@ func TestEnsureFeedStatuses_NamedFeedPreservesHistoryAcrossURLChange(t *testing.
 
 	pruned := ensureFeedStatuses(fg)
 
-	// Old URL should be reported as pruned so metrics can drop it
-	if !slices.Contains(pruned, oldURL) {
-		t.Fatalf("pruned URLs = %v, want to contain %s", pruned, oldURL)
+	// Stable named feed is not pruned when changing URL; its metric identity persists
+	if len(pruned) != 0 {
+		t.Fatalf("pruned feed identities = %v, want empty (named feed identity persisted)", pruned)
 	}
 
 	// Status should now be updated to newURL while preserving watermarks

@@ -79,14 +79,16 @@ func errText(err error) string {
 // no-op writes) needs to avoid seeing a reordered-but-otherwise-identical slice
 // as a change. Retained entries have nil LastSent maps initialized, LastError
 // bounded, and oversized LastSeenEntry values replaced by clampWatermark
-// digests. It returns the RSSUrls it pruned so the caller can drop their
+// digests. It returns the feed identities it pruned so the caller can drop their
 // metric series; it does not touch Prometheus.
 func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
-	originalUrls := make(map[string]struct{}, len(feedGroup.Status.Feeds))
+	originalIdentities := make(map[string]struct{}, len(feedGroup.Status.Feeds))
 	existingByUrl := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
 	existingByName := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
-		originalUrls[fs.RSSUrl] = struct{}{}
+		if id := feedIdentity(fs.Name, fs.RSSUrl); id != "" {
+			originalIdentities[id] = struct{}{}
+		}
 		existingByUrl[fs.RSSUrl] = fs
 		if fs.Name != "" {
 			existingByName[fs.Name] = fs
@@ -144,15 +146,17 @@ func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
 	}
 	feedGroup.Status.Feeds = rebuilt
 
-	// Collect pruned URLs: existing entries whose RSSUrl is no longer present in rebuilt feeds
-	activeUrls := make(map[string]bool, len(rebuilt))
+	// Collect pruned identities: existing entries whose feed identity is no longer present in rebuilt feeds
+	activeIdentities := make(map[string]bool, len(rebuilt))
 	for _, fs := range rebuilt {
-		activeUrls[fs.RSSUrl] = true
+		if id := feedIdentity(fs.Name, fs.RSSUrl); id != "" {
+			activeIdentities[id] = true
+		}
 	}
 	var pruned []string
-	for oldURL := range originalUrls {
-		if !activeUrls[oldURL] {
-			pruned = append(pruned, oldURL)
+	for oldID := range originalIdentities {
+		if !activeIdentities[oldID] {
+			pruned = append(pruned, oldID)
 		}
 	}
 	slices.Sort(pruned)
