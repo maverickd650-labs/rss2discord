@@ -362,7 +362,7 @@ helm uninstall rss2discord-operator -n rss2discord-operator-system
 
 The `v1beta1` API replaces `v1alpha1` with no conversion webhook: existing FeedGroups must be exported, converted and re-created, and their delivery history starts over (`catchUpLimit` caps what each feed re-sends). Run the `stateVersion` check below on the old release first. The steps are in [docs/schema.md](docs/schema.md#upgrading-from-v1alpha1).
 
-Once a FeedGroup has been re-created as `v1beta1`, an older controller can't read it: rolling back means restoring the old release's CRD and your `v1alpha1` manifests together, not only the controller image.
+Once a FeedGroup has been re-created as `v1beta1`, an older controller can't read it, and the old CRD can't be installed over the new one. Rolling back means deleting the CRD, reinstalling the old release and re-applying your saved `v1alpha1` manifests: see [Rolling back to v1alpha1](docs/schema.md#rolling-back-to-v1alpha1). What to do if the upgrade is interrupted is in the same document.
 
 #### Releases before v1beta1
 

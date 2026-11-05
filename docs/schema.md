@@ -232,4 +232,37 @@ v1beta1 renames and restructures fields and makes each feed's `name` required, s
 | `feeds[].forumThreadName` | `feeds[].forumPost.name` |
 | status keyed by `rssUrl` | status keyed by `name`; `lastSent` values are timestamps |
 
-**Rolling back.** An older controller watches v1alpha1, which this CRD no longer serves, so rolling back the image alone stops all reconciliation. To roll back, delete the v1beta1 FeedGroups, reinstall the old release (including its CRD), and re-apply your saved `feedgroups-v1alpha1.yaml`.
+### If the upgrade is interrupted
+
+Each case below is rehearsed against a real API server in `test/upgrade` (run by `mise run test`).
+
+- **Stopped after deleting the old FeedGroups, before upgrading.** Nothing is lost: carry on from step 3's upgrade with `feedgroups-v1beta1.yaml`, or go back by re-applying `feedgroups-v1alpha1.yaml` on the old release.
+- **Upgraded without deleting the old FeedGroups.** They now read as v1beta1 objects with their renamed fields missing, and fail validation on any update. Delete them (`kubectl delete feedgroups -A --all`) and apply `feedgroups-v1beta1.yaml`.
+- **Upgraded before exporting.** An export taken now is the broken v1beta1 view, which the converter refuses. The data is still in storage, and the new CRD still holds the v1alpha1 schema, so serve it again long enough to export:
+
+  ```bash
+  kubectl patch crd feedgroups.rss2discord.maverickd650.dev --type=json -p '[
+    {"op":"replace","path":"/spec/versions/0/served","value":true},
+    {"op":"replace","path":"/spec/versions/0/storage","value":true},
+    {"op":"replace","path":"/spec/versions/1/served","value":false},
+    {"op":"replace","path":"/spec/versions/1/storage","value":false}]'
+  kubectl get feedgroups.v1alpha1.rss2discord.maverickd650.dev -A -o yaml > feedgroups-v1alpha1.yaml
+  ```
+
+  (`versions/0` is `v1alpha1` and `versions/1` is `v1beta1`; check with `kubectl get crd feedgroups.rss2discord.maverickd650.dev -o jsonpath='{.spec.versions[*].name}'`.) Then continue from step 2, and re-run the upgrade, which restores the CRD.
+
+## Rolling back to v1alpha1
+
+An older controller watches v1alpha1, which this CRD no longer serves, so rolling back the image alone stops all reconciliation. Installing the old CRD over this one is also refused: `v1beta1` is now in the CRD's `status.storedVersions` (even after step 5's cleanup) and the old CRD doesn't list it, so a plain `helm rollback` or `kubectl apply` of the old release fails. Instead, with your saved `feedgroups-v1alpha1.yaml`:
+
+1. Delete the CRD. This deletes every FeedGroup with it, which rolling back requires anyway:
+
+   ```bash
+   kubectl delete crd feedgroups.rss2discord.maverickd650.dev
+   ```
+
+   With Helm and the default `crd.keep: false`, `helm uninstall` does the same.
+2. Install the old release, which re-creates its CRD.
+3. Re-apply the saved manifests: `kubectl apply -f feedgroups-v1alpha1.yaml`.
+
+Delivery history starts over again, so each feed re-sends up to `catchUpLimit` entries.
