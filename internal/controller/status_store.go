@@ -120,7 +120,7 @@ func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
 		if existing, ok := claimedByFeedIndex[i]; ok {
 			fs = existing
 			matched = true
-		} else if existing, ok := existingByUrl[feed.RSSUrl]; ok {
+		} else if existing, ok := existingByUrl[feed.RSSUrl]; ok && (feed.Name == "" || existing.Name == "") {
 			fs = existing
 			matched = true
 			delete(existingByUrl, feed.RSSUrl)

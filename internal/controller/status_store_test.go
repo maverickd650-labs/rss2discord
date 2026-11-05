@@ -579,6 +579,96 @@ func TestEnsureFeedStatuses_NameMatchReservesStatusBeforeURLFallback(t *testing.
 	}
 }
 
+func TestEnsureFeedStatuses_DifferentlyNamedFeedAtSameURLDoesNotInheritHistory(t *testing.T) {
+	const (
+		sharedURL = "https://example.com/unique-feed.xml"
+		oldName   = "unique-old"
+		newName   = "unique-new"
+	)
+
+	fg := &v1beta1.FeedGroup{
+		Spec: v1beta1.FeedGroupSpec{
+			Feeds: []v1beta1.FeedSpec{
+				{Name: newName, RSSUrl: sharedURL},
+			},
+		},
+		Status: v1beta1.FeedGroupStatus{
+			Feeds: []v1beta1.FeedStatus{
+				{
+					Name:          oldName,
+					RSSUrl:        sharedURL,
+					LastSeenEntry: "wm-unique-old",
+				},
+			},
+		},
+	}
+
+	ensureFeedStatuses(fg)
+
+	fs := feedStatusFor(fg, newName)
+	if fs == nil {
+		t.Fatalf("expected status for %s", newName)
+	}
+	if fs.LastSeenEntry != "" {
+		t.Fatalf("LastSeenEntry = %q, want empty (must not inherit from differently named feed)", fs.LastSeenEntry)
+	}
+}
+
+func TestEnsureFeedStatuses_UnnamedAndNamedTransitionsAtSameURL(t *testing.T) {
+	const (
+		feedURL   = "https://example.com/transition-feed.xml"
+		feedLabel = "transition-named"
+	)
+
+	t.Run("named feed adopts unnamed prior status", func(t *testing.T) {
+		fg := &v1beta1.FeedGroup{
+			Spec: v1beta1.FeedGroupSpec{
+				Feeds: []v1beta1.FeedSpec{
+					{Name: feedLabel, RSSUrl: feedURL},
+				},
+			},
+			Status: v1beta1.FeedGroupStatus{
+				Feeds: []v1beta1.FeedStatus{
+					{
+						Name:          "",
+						RSSUrl:        feedURL,
+						LastSeenEntry: "wm-unnamed",
+					},
+				},
+			},
+		}
+		ensureFeedStatuses(fg)
+		fs := feedStatusFor(fg, feedLabel)
+		if fs == nil || fs.LastSeenEntry != "wm-unnamed" || fs.Name != feedLabel {
+			t.Fatalf("status = %+v, want Name=%s and LastSeenEntry=wm-unnamed", fs, feedLabel)
+		}
+	})
+
+	t.Run("unnamed feed adopts named prior status", func(t *testing.T) {
+		fg := &v1beta1.FeedGroup{
+			Spec: v1beta1.FeedGroupSpec{
+				Feeds: []v1beta1.FeedSpec{
+					{Name: "", RSSUrl: feedURL},
+				},
+			},
+			Status: v1beta1.FeedGroupStatus{
+				Feeds: []v1beta1.FeedStatus{
+					{
+						Name:          feedLabel,
+						RSSUrl:        feedURL,
+						LastSeenEntry: "wm-was-named",
+					},
+				},
+			},
+		}
+		ensureFeedStatuses(fg)
+		fs := feedStatusFor(fg, feedURL)
+		if fs == nil || fs.LastSeenEntry != "wm-was-named" || fs.Name != "" {
+			t.Fatalf("status = %+v, want Name='' and LastSeenEntry=wm-was-named", fs)
+		}
+	})
+}
+
 func TestGroupSync_SettleSuspend(t *testing.T) {
 	const ns = "settle-suspend-ns"
 	const name = "settle-suspend"
