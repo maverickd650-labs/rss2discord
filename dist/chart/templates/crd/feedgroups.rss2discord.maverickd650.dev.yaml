@@ -781,6 +781,11 @@ spec:
                     - thumbnail
                     - image
                     type: string
+                x-kubernetes-validations:
+                - message: authorName is required when authorURL or authorIconURL is set
+                  rule: "(!has(self.authorURL) && !has(self.authorIconURL)) || has(self.authorName)"
+                - message: footerText is required when footerIconURL is set
+                  rule: "!has(self.footerIconURL) || has(self.footerText)"
                 type: object
               feeds:
                 description: |-
@@ -870,6 +875,11 @@ spec:
                           - thumbnail
                           - image
                           type: string
+                      x-kubernetes-validations:
+                      - message: authorName is required when authorURL or authorIconURL is set
+                        rule: "(!has(self.authorURL) && !has(self.authorIconURL)) || has(self.authorName)"
+                      - message: footerText is required when footerIconURL is set
+                        rule: "!has(self.footerIconURL) || has(self.footerText)"
                       type: object
                     filter:
                       description: filter defines how to filter entries from this
