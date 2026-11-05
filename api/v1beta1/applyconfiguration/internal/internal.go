@@ -38,35 +38,51 @@ func Parser() *typed.Parser {
 var parserOnce sync.Once
 var parser *typed.Parser
 var schemaYAML = typed.YAMLObject(`types:
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedAuthor
+  map:
+    fields:
+    - name: iconURL
+      type:
+        scalar: string
+    - name: name
+      type:
+        scalar: string
+    - name: url
+      type:
+        scalar: string
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedFooter
+  map:
+    fields:
+    - name: iconURL
+      type:
+        scalar: string
+    - name: text
+      type:
+        scalar: string
 - name: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedSpec
   map:
     fields:
-    - name: authorIconURL
+    - name: author
       type:
-        scalar: string
-    - name: authorName
-      type:
-        scalar: string
-    - name: authorURL
-      type:
-        scalar: string
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedAuthor
     - name: color
       type:
         scalar: string
-    - name: descriptionFormat
+    - name: description
       type:
         scalar: string
-    - name: enabled
+    - name: footer
       type:
-        scalar: boolean
-      default: false
-    - name: footerIconURL
-      type:
-        scalar: string
-    - name: footerText
-      type:
-        scalar: string
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedFooter
     - name: imageStyle
+      type:
+        scalar: string
+      default: Thumbnail
+    - name: timestamp
+      type:
+        scalar: string
+      default: Published
+    - name: title
       type:
         scalar: string
 - name: com.github.maverickd650-labs.rss2discord.api.v1beta1.FeedGroup
@@ -100,26 +116,21 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: discordWebhookSecretRef
       type:
         namedType: io.k8s.api.core.v1.SecretKeySelector
-    - name: embed
-      type:
-        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedSpec
     - name: feeds
       type:
         list:
           elementType:
             namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.FeedSpec
-          elementRelationship: atomic
-    - name: format
-      type:
-        scalar: string
-      default: |-
-        **{{.Title}}**
-        {{.Description}}
-        [Read more]({{.Link}})
+          elementRelationship: associative
+          keys:
+          - name
     - name: interval
       type:
         scalar: string
       default: 30m
+    - name: message
+      type:
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.MessageSpec
     - name: retries
       type:
         scalar: numeric
@@ -153,7 +164,7 @@ var schemaYAML = typed.YAMLObject(`types:
             namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.FeedStatus
           elementRelationship: associative
           keys:
-          - rssUrl
+          - name
     - name: observedGeneration
       type:
         scalar: numeric
@@ -166,29 +177,26 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: avatarURL
       type:
         scalar: string
-    - name: embed
-      type:
-        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedSpec
     - name: filter
       type:
         namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.Filter
-    - name: format
+    - name: forumPost
       type:
-        scalar: string
-    - name: forumThreadID
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.ForumPostSpec
+    - name: message
       type:
-        scalar: string
-    - name: forumThreadName
-      type:
-        scalar: string
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.MessageSpec
     - name: name
       type:
         scalar: string
-    - name: paused
+    - name: suspend
       type:
         scalar: boolean
       default: false
-    - name: rssUrl
+    - name: thread
+      type:
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.ThreadTarget
+    - name: url
       type:
         scalar: string
     - name: username
@@ -230,31 +238,37 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         map:
           elementType:
-            scalar: string
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: name
       type:
         scalar: string
     - name: retryCount
       type:
         scalar: numeric
-    - name: rssUrl
-      type:
-        scalar: string
     - name: stateVersion
       type:
         scalar: numeric
+    - name: url
+      type:
+        scalar: string
 - name: com.github.maverickd650-labs.rss2discord.api.v1beta1.Filter
   map:
     fields:
-    - name: excludeKeywords
+    - name: exclude
+      type:
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.FilterRules
+    - name: include
+      type:
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.FilterRules
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.FilterRules
+  map:
+    fields:
+    - name: categories
       type:
         list:
           elementType:
             scalar: string
           elementRelationship: associative
-    - name: excludeRegex
-      type:
-        scalar: string
     - name: keywords
       type:
         list:
@@ -262,6 +276,59 @@ var schemaYAML = typed.YAMLObject(`types:
             scalar: string
           elementRelationship: associative
     - name: regex
+      type:
+        scalar: string
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.ForumPostSpec
+  map:
+    fields:
+    - name: appliedTagIDs
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: associative
+    - name: name
+      type:
+        scalar: string
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.Mentions
+  map:
+    fields:
+    - name: roleIDs
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: associative
+    - name: userIDs
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: associative
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.MessageSpec
+  map:
+    fields:
+    - name: content
+      type:
+        scalar: string
+    - name: embed
+      type:
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.EmbedSpec
+    - name: mentions
+      type:
+        namedType: com.github.maverickd650-labs.rss2discord.api.v1beta1.Mentions
+    - name: silent
+      type:
+        scalar: boolean
+      default: false
+    - name: suppressLinkPreviews
+      type:
+        scalar: boolean
+      default: false
+- name: com.github.maverickd650-labs.rss2discord.api.v1beta1.ThreadTarget
+  map:
+    fields:
+    - name: id
       type:
         scalar: string
 - name: io.k8s.api.core.v1.SecretKeySelector

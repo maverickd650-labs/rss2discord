@@ -26,95 +26,130 @@ import (
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
 )
 
-// entryFilter is a feed's filter compiled once per feed per reconcile. Regexes
-// and keywords are normalized here rather than for every entry. hasKeywords
-// distinguishes an absent keyword restriction from a configured list whose
-// entries are all blank (which deliberately matches nothing). The zero value
-// matches every entry.
+// entryFilter is a feed's filter compiled once per feed per reconcile: an
+// include and an exclude ruleSet. The zero value matches every entry.
 type entryFilter struct {
-	regex           *regexp.Regexp
-	keywords        []string
-	hasKeywords     bool
-	excludeRegex    *regexp.Regexp
-	excludeKeywords []string
+	include, exclude *ruleSet
 }
 
-// compileEntryFilter compiles filter's regexes and normalizes its keywords
-// (trimmed, lowercased, blanks dropped). A nil filter or a blank regex compiles
-// to no regex; an invalid regex is an error.
+// ruleSet is one compiled v1beta1.FilterRules. Regexes and keywords are
+// normalized here rather than for every entry. Each has* flag distinguishes an
+// absent criterion from a configured list whose entries are all blank, which
+// matches nothing.
+type ruleSet struct {
+	regex                      *regexp.Regexp
+	keywords, categories       []string
+	hasKeywords, hasCategories bool
+}
+
+// compileEntryFilter compiles filter's two rule sets. A nil filter compiles to
+// the zero entryFilter; an invalid regex is an error.
 func compileEntryFilter(filter *v1beta1.Filter) (entryFilter, error) {
 	if filter == nil {
 		return entryFilter{}, nil
 	}
-
-	var f entryFilter
-	if strings.TrimSpace(filter.Regex) != "" {
-		re, err := regexp.Compile(filter.Regex)
-		if err != nil {
-			return entryFilter{}, fmt.Errorf("invalid filter regex %q: %w", filter.Regex, err)
-		}
-		f.regex = re
+	include, err := compileRuleSet("include", filter.Include)
+	if err != nil {
+		return entryFilter{}, err
 	}
-
-	f.hasKeywords = len(filter.Keywords) > 0
-	for _, keyword := range filter.Keywords {
-		if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" {
-			f.keywords = append(f.keywords, keyword)
-		}
+	exclude, err := compileRuleSet("exclude", filter.Exclude)
+	if err != nil {
+		return entryFilter{}, err
 	}
-
-	if strings.TrimSpace(filter.ExcludeRegex) != "" {
-		re, err := regexp.Compile(filter.ExcludeRegex)
-		if err != nil {
-			return entryFilter{}, fmt.Errorf("invalid filter excludeRegex %q: %w", filter.ExcludeRegex, err)
-		}
-		f.excludeRegex = re
-	}
-
-	for _, keyword := range filter.ExcludeKeywords {
-		if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" {
-			f.excludeKeywords = append(f.excludeKeywords, keyword)
-		}
-	}
-
-	return f, nil
+	return entryFilter{include: include, exclude: exclude}, nil
 }
 
-// matches reports whether entry passes the filter:
-// 1. Any matching excludeRegex or excludeKeywords vetoes the entry (returns false).
-// 2. If positive criteria are configured (regex or keywords), the entry must match them.
-// The zero value matches every entry.
-func (f entryFilter) matches(entry rss.Entry) bool {
-	content := entry.Title + "\n" + entry.Description
-
-	if f.excludeRegex != nil && f.excludeRegex.MatchString(content) {
-		return false
+// compileRuleSet compiles rules (nil for nil rules): its regex, unless blank,
+// and its keywords and categories trimmed, lowercased, blanks dropped. which
+// names the rule set in an invalid-regex error.
+func compileRuleSet(which string, rules *v1beta1.FilterRules) (*ruleSet, error) {
+	if rules == nil {
+		return nil, nil
 	}
-	if len(f.excludeKeywords) > 0 {
-		contentLower := strings.ToLower(strings.TrimSpace(content))
-		if slices.ContainsFunc(f.excludeKeywords, func(keyword string) bool {
-			return strings.Contains(contentLower, keyword)
-		}) {
-			return false
+	rs := &ruleSet{
+		keywords:      normalizeTerms(rules.Keywords),
+		hasKeywords:   len(rules.Keywords) > 0,
+		categories:    normalizeTerms(rules.Categories),
+		hasCategories: len(rules.Categories) > 0,
+	}
+	if strings.TrimSpace(rules.Regex) != "" {
+		re, err := regexp.Compile(rules.Regex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter %s regex %q: %w", which, rules.Regex, err)
+		}
+		rs.regex = re
+	}
+	return rs, nil
+}
+
+// normalizeTerms trims and lowercases terms, dropping blanks.
+func normalizeTerms(terms []string) []string {
+	var out []string
+	for _, term := range terms {
+		if term = strings.ToLower(strings.TrimSpace(term)); term != "" {
+			out = append(out, term)
 		}
 	}
+	return out
+}
 
-	if f.hasKeywords && len(f.keywords) == 0 {
-		return false
+// entryText is what a filter matches entry against: the title and
+// description, as given (for regexes) and lowercased (for keywords), and its
+// categories, HTML-stripped and lowercased, as a display entry shows them.
+type entryText struct {
+	text, lower string
+	categories  []string
+}
+
+func textOf(entry rss.Entry) entryText {
+	text := entry.Title + "\n" + entry.Description
+	categories := stripCategories(entry.Categories)
+	for i, c := range categories {
+		categories[i] = strings.ToLower(c)
 	}
-	if f.regex == nil && !f.hasKeywords {
+	return entryText{text: text, lower: strings.ToLower(strings.TrimSpace(text)), categories: categories}
+}
+
+// matches reports whether entry passes the filter: it must match every
+// criterion include sets, and no criterion exclude sets. The zero value
+// matches every entry.
+func (f entryFilter) matches(entry rss.Entry) bool {
+	if f.include == nil && f.exclude == nil {
 		return true
 	}
-
-	if f.regex != nil && !f.regex.MatchString(content) {
+	t := textOf(entry)
+	if f.exclude != nil && f.exclude.matchesAny(t) {
 		return false
 	}
-	if !f.hasKeywords {
-		return true
-	}
+	return f.include == nil || f.include.matchesAll(t)
+}
 
-	contentLower := strings.ToLower(strings.TrimSpace(content))
-	return slices.ContainsFunc(f.keywords, func(keyword string) bool {
-		return strings.Contains(contentLower, keyword)
+// matchesAll reports whether t matches every criterion rs sets.
+func (rs *ruleSet) matchesAll(t entryText) bool {
+	if rs.regex != nil && !rs.regex.MatchString(t.text) {
+		return false
+	}
+	if rs.hasKeywords && !rs.keywordMatch(t) {
+		return false
+	}
+	return !rs.hasCategories || rs.categoryMatch(t)
+}
+
+// matchesAny reports whether t matches at least one criterion rs sets.
+func (rs *ruleSet) matchesAny(t entryText) bool {
+	return (rs.regex != nil && rs.regex.MatchString(t.text)) || rs.keywordMatch(t) || rs.categoryMatch(t)
+}
+
+// keywordMatch reports whether any of rs's keywords is a substring of t.
+func (rs *ruleSet) keywordMatch(t entryText) bool {
+	return slices.ContainsFunc(rs.keywords, func(keyword string) bool {
+		return strings.Contains(t.lower, keyword)
+	})
+}
+
+// categoryMatch reports whether any of rs's categories is one of t's.
+func (rs *ruleSet) categoryMatch(t entryText) bool {
+	return slices.ContainsFunc(rs.categories, func(category string) bool {
+		return slices.Contains(t.categories, category)
 	})
 }

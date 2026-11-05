@@ -45,9 +45,9 @@ func deliveryEntry(n int, title string) rss.Entry {
 func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender MessageSender, retryCount int32) (entryDelivery, *v1beta1.FeedStatus) {
 	t.Helper()
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title}}")
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fg.Spec.CatchUpLimit = new(int32(len(entries)))
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	fs.RetryCount = retryCount
 
 	renderer, err := newFeedRenderer(fg, &feed)
@@ -56,7 +56,7 @@ func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender 
 	}
 	syncer := openFeedSync(fs, rss.FetchResult{Entries: entries}, feedSyncSpecFor(fg, testReconcileInstant))
 	syncer.begin()
-	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileInstant)
+	attempt := testAttempt(t, fg, fs, feed.URL, testReconcileInstant)
 	return entryDelivery{
 		renderer: renderer,
 		syncer:   syncer,
@@ -67,7 +67,7 @@ func newTestDelivery(t *testing.T, ns, name string, entries []rss.Entry, sender 
 }
 
 func outcomeCount(ns, name, outcome string) float64 {
-	return testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcome))
+	return testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), outcome))
 }
 
 func TestEntryDelivery_SendsAndMarksEveryEntryHandled(t *testing.T) {

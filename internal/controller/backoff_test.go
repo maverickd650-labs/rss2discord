@@ -212,24 +212,24 @@ func TestClearPermanentBackoffs(t *testing.T) {
 	fg := &v1beta1.FeedGroup{
 		Spec: v1beta1.FeedGroupSpec{
 			Feeds: []v1beta1.FeedSpec{
-				{RSSUrl: exampleFeedURL},
-				{RSSUrl: "https://other.example.com/feed.xml"},
+				{Name: testFeedName(exampleFeedURL), URL: exampleFeedURL},
+				{Name: testFeedName("https://other.example.com/feed.xml"), URL: "https://other.example.com/feed.xml"},
 			},
 		},
 	}
 	ensureFeedStatuses(fg)
-	feedStatusFor(fg, exampleFeedURL).BackoffUntil = metav1TimeRFC3339("2030-01-01T00:00:00Z")
-	feedStatusFor(fg, exampleFeedURL).RetryCount = 7
-	feedStatusFor(fg, "https://other.example.com/feed.xml").RetryCount = 2
+	feedStatusFor(fg, testFeedName(exampleFeedURL)).BackoffUntil = metav1TimeRFC3339("2030-01-01T00:00:00Z")
+	feedStatusFor(fg, testFeedName(exampleFeedURL)).RetryCount = 7
+	feedStatusFor(fg, testFeedName("https://other.example.com/feed.xml")).RetryCount = 2
 
 	clearPermanentBackoffs(fg)
 
 	for _, fs := range fg.Status.Feeds {
 		if fs.BackoffUntil != nil {
-			t.Errorf("feed %s: BackoffUntil = %v, want nil", fs.RSSUrl, fs.BackoffUntil)
+			t.Errorf("feed %s: BackoffUntil = %v, want nil", fs.URL, fs.BackoffUntil)
 		}
 		if fs.RetryCount != 0 {
-			t.Errorf("feed %s: RetryCount = %d, want 0", fs.RSSUrl, fs.RetryCount)
+			t.Errorf("feed %s: RetryCount = %d, want 0", fs.URL, fs.RetryCount)
 		}
 	}
 }

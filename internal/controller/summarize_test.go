@@ -35,7 +35,7 @@ const (
 )
 
 func feedWithReachable(url string, status metav1.ConditionStatus, reason, lastError string) v1beta1.FeedStatus {
-	fs := v1beta1.FeedStatus{RSSUrl: url, LastError: lastError}
+	fs := v1beta1.FeedStatus{Name: testFeedName(url), URL: url, LastError: lastError}
 	if status != "" {
 		fs.Conditions = []metav1.Condition{{
 			Type: v1beta1.FeedConditionTypeReachable, Status: status, Reason: reason,
@@ -247,7 +247,7 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 		return c.Reason
 	}
 
-	failing := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{RSSUrl: "u", LastError: testBoom}}}}
+	failing := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{Name: testFeedName("u"), URL: "u", LastError: testBoom}}}}
 	setReadyCondition(failing, nil, intervalErr)
 	if got := readyReason(failing); got != reasonInvalidInterval {
 		t.Fatalf("with a failing feed and a bad interval: reason = %q, want %q", got, reasonInvalidInterval)
@@ -261,7 +261,7 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 
 	// A feed that panicked before handling anything was restored without a
 	// failure, so the feeds alone would read healthy: the panic decides Ready.
-	panicked := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{RSSUrl: "u"}}}}
+	panicked := &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{Name: testFeedName("u"), URL: "u"}}}}
 	setReadyCondition(panicked, &feedPanic{url: "u", value: testBoom, stack: []byte("goroutine 1")}, intervalErr)
 	if got := readyReason(panicked); got != reasonReconcilePanicked {
 		t.Fatalf("after a feed panicked: reason = %q, want %q", got, reasonReconcilePanicked)

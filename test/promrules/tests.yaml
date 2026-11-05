@@ -14,7 +14,7 @@ tests:
   # label already on the metric).
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="example",outcome="fetch_error_not_found"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -24,20 +24,20 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              feed: https://example.invalid/feed.xml
+              feed: example
               outcome: fetch_error_not_found
               reason: not_found
             exp_annotations:
-              summary: "FeedGroup demo/feedgroup-sample is failing to fetch feed https://example.invalid/feed.xml"
+              summary: "FeedGroup demo/feedgroup-sample is failing to fetch feed example"
               description: >-
                 FeedGroup demo/feedgroup-sample has had sustained RSS fetch errors on feed
-                https://example.invalid/feed.xml (reason: not_found) for at least 15m. Check
+                example (reason: not_found) for at least 15m. Check
                 the feed URL, network egress, and the FeedGroup status conditions.
 
   # outcome="rate_limited" firing continuously proves RSS2DiscordFeedRateLimited.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="rate_limited"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="example",outcome="rate_limited"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -47,19 +47,19 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              feed: https://example.invalid/feed.xml
+              feed: example
             exp_annotations:
               summary: "FeedGroup demo/feedgroup-sample is being rate limited by Discord"
               description: >-
                 FeedGroup demo/feedgroup-sample has been rate limited by Discord while sending
-                feed https://example.invalid/feed.xml for at least 15m. Posts are being
+                feed example for at least 15m. Posts are being
                 delayed; consider reducing the polling frequency or splitting the feed.
 
   # outcome="send_error_timeout" firing continuously proves both
   # RSS2DiscordFeedSendErrors and its label_replace reason extraction.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="send_error_timeout"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="example",outcome="send_error_timeout"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -69,14 +69,14 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              feed: https://example.invalid/feed.xml
+              feed: example
               outcome: send_error_timeout
               reason: timeout
             exp_annotations:
-              summary: "FeedGroup demo/feedgroup-sample is failing to send feed https://example.invalid/feed.xml to Discord"
+              summary: "FeedGroup demo/feedgroup-sample is failing to send feed example to Discord"
               description: >-
                 FeedGroup demo/feedgroup-sample has had sustained Discord send errors on feed
-                https://example.invalid/feed.xml (reason: timeout) for at least 15m. Check the
+                example (reason: timeout) for at least 15m. Check the
                 webhook URL and the FeedGroup status conditions.
 
   # outcome="render_error" firing continuously must never fire any alert --
@@ -85,7 +85,7 @@ tests:
   # deliberate omission as a regression test.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="render_error"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="example",outcome="render_error"}'
         values: "0+1x40"
     alert_rule_test:
       - eval_time: 30m
@@ -103,9 +103,9 @@ tests:
   # after it. The sibling feed reporting 1 must never alert.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="example"}'
         values: "0x60"
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/other.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="other"}'
         values: "1x60"
     alert_rule_test:
       - eval_time: 20m
@@ -118,11 +118,11 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              feed: https://example.invalid/feed.xml
+              feed: example
             exp_annotations:
-              summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample is unhealthy"
+              summary: "Feed example in FeedGroup demo/feedgroup-sample is unhealthy"
               description: >-
-                Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has
+                Feed example in FeedGroup demo/feedgroup-sample has
                 reported an error for at least 30m. Unlike the error-rate alerts this is driven
                 by the feed's persisted status, so it keeps firing while the feed is in
                 permanent backoff and retried only every few hours. Check the FeedGroup's
@@ -141,11 +141,11 @@ tests:
   # reset the alert's `for` clock, which isn't what a scraped gauge does.
   - interval: 1m
     input_series:
-      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml",outcome="fetch_error_not_found"}'
+      - series: 'rss2discord_feed_operations_total{namespace="demo",name="feedgroup-sample",feed="example",outcome="fetch_error_not_found"}'
         values: "0+1x3 3x500"
-      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml"}'
+      - series: 'rss2discord_feed_healthy{namespace="demo",name="feedgroup-sample",feed="example"}'
         values: "0x500"
-      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",feed="https://example.invalid/feed.xml"}'
+      - series: 'rss2discord_feed_last_checked_timestamp_seconds{namespace="demo",name="feedgroup-sample",feed="example"}'
         values: "0x500"
     alert_rule_test:
       - eval_time: 8h
@@ -158,11 +158,11 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              feed: https://example.invalid/feed.xml
+              feed: example
             exp_annotations:
-              summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample is unhealthy"
+              summary: "Feed example in FeedGroup demo/feedgroup-sample is unhealthy"
               description: >-
-                Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has
+                Feed example in FeedGroup demo/feedgroup-sample has
                 reported an error for at least 30m. Unlike the error-rate alerts this is driven
                 by the feed's persisted status, so it keeps firing while the feed is in
                 permanent backoff and retried only every few hours. Check the FeedGroup's
@@ -177,11 +177,11 @@ tests:
               severity: warning
               namespace: demo
               name: feedgroup-sample
-              feed: https://example.invalid/feed.xml
+              feed: example
             exp_annotations:
-              summary: "Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has not been checked successfully recently"
+              summary: "Feed example in FeedGroup demo/feedgroup-sample has not been checked successfully recently"
               description: >-
-                Feed https://example.invalid/feed.xml in FeedGroup demo/feedgroup-sample has not
+                Feed example in FeedGroup demo/feedgroup-sample has not
                 had a successful check for more than 21600 seconds. Check that the operator is
                 running and the FeedGroup's interval is shorter than this threshold.
 

@@ -23,16 +23,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Filter defines filtering rules for RSS feed entries.
+// FilterRules is one set of match criteria. Within Keywords and Categories any
+// one item matching is enough (OR); when several criteria are set, how they
+// combine depends on whether the rules are Filter.Include or Filter.Exclude.
 // +kubebuilder:validation:MinProperties=1
-type Filter struct {
-	// regex is a regular expression to match against entry title/description.
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	// +kubebuilder:validation:MinLength=1
-	Regex string `json:"regex,omitempty"`
-
-	// keywords is a list of keywords to match (OR logic).
+type FilterRules struct {
+	// keywords match, case-insensitively, as substrings of the entry's title
+	// or description. Any one keyword matching is enough.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=50
@@ -41,170 +38,307 @@ type Filter struct {
 	// +kubebuilder:validation:items:MinLength=1
 	Keywords []string `json:"keywords,omitempty"`
 
-	// excludeRegex is a regular expression to exclude matching entry title/description.
-	// Matching entries are rejected even if they match positive filter criteria.
+	// regex is an RE2 regular expression matched against the entry's title
+	// and description (joined by a newline). It is case-sensitive; prefix it
+	// with (?i) for a case-insensitive match.
 	// +optional
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:MinLength=1
-	ExcludeRegex string `json:"excludeRegex,omitempty"`
+	Regex string `json:"regex,omitempty"`
 
-	// excludeKeywords is a list of keywords to exclude (case-insensitive OR logic).
-	// Matching entries are rejected even if they match positive filter criteria.
+	// categories match the entry's RSS <category> / Atom <category term>
+	// values: case-insensitively, as whole values (not substrings). Any one
+	// category matching is enough.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:MaxLength=200
 	// +kubebuilder:validation:items:MinLength=1
-	ExcludeKeywords []string `json:"excludeKeywords,omitempty"`
+	Categories []string `json:"categories,omitempty"`
 }
 
-// EmbedImageStyleImage is the EmbedSpec.ImageStyle value that shows an
-// entry's image large, below the description. Any other value (including
-// unset) shows it as a small thumbnail.
-const EmbedImageStyleImage = "image"
-
-// EmbedSpec configures Discord's native embed rendering (the colored
-// "bubble" with title, description, thumbnail, author and footer) instead
-// of a plain text message.
+// Filter selects which entries of a feed are delivered.
 // +kubebuilder:validation:MinProperties=1
-// +kubebuilder:validation:XValidation:rule="(!has(self.authorURL) && !has(self.authorIconURL)) || has(self.authorName)",message="authorName is required when authorURL or authorIconURL is set"
-// +kubebuilder:validation:XValidation:rule="!has(self.footerIconURL) || has(self.footerText)",message="footerText is required when footerIconURL is set"
-type EmbedSpec struct {
-	// enabled switches a feed's messages from plain text content to a
-	// Discord embed.
-	// +default=false
+type Filter struct {
+	// include, when set, delivers only entries that match every criterion it
+	// sets (keywords AND regex AND categories).
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Include *FilterRules `json:"include,omitempty"`
 
-	// color is the embed's side-bar color, as a hex string (e.g. "#5865F2"
-	// or "5865F2").
-	// +kubebuilder:validation:Pattern=`^#?[0-9a-fA-F]{6}$`
-	// +kubebuilder:validation:MaxLength=7
+	// exclude drops an entry that matches any criterion it sets (keywords OR
+	// regex OR categories), even if it matched include.
+	// +optional
+	Exclude *FilterRules `json:"exclude,omitempty"`
+}
+
+// Embed image styles (EmbedSpec.ImageStyle).
+const (
+	// EmbedImageStyleThumbnail shows an entry's image as a small thumbnail
+	// beside the description. It is the default.
+	EmbedImageStyleThumbnail = "Thumbnail"
+	// EmbedImageStyleImage shows an entry's image large, below the description.
+	EmbedImageStyleImage = "Image"
+	// EmbedImageStyleNone shows no entry image.
+	EmbedImageStyleNone = "None"
+)
+
+// Embed timestamp sources (EmbedSpec.Timestamp).
+const (
+	// EmbedTimestampPublished shows the entry's published time on the embed
+	// (when the entry has one). It is the default.
+	EmbedTimestampPublished = "Published"
+	// EmbedTimestampNone shows no timestamp.
+	EmbedTimestampNone = "None"
+)
+
+// EmbedAuthor is an embed's author line.
+type EmbedAuthor struct {
+	// name is a template for the author line's text, with the same
+	// placeholders as MessageSpec.Content (e.g. "{{.Author}}").
+	// +required
+	// +kubebuilder:validation:MaxLength=256
 	// +kubebuilder:validation:MinLength=1
-	// +optional
-	Color string `json:"color,omitempty"`
+	Name string `json:"name"`
 
-	// descriptionFormat is the template used to render the embed's
-	// description. Supports the same placeholders as Format. Defaults to
+	// url is the link opened by clicking the author name.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
+	URL string `json:"url,omitempty"`
+
+	// iconURL is a small icon shown beside the author name.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
+	IconURL string `json:"iconURL,omitempty"`
+}
+
+// EmbedFooter is an embed's footer line.
+type EmbedFooter struct {
+	// text is a template for the footer's text, with the same placeholders
+	// as MessageSpec.Content (e.g. "{{.FeedTitle}}").
+	// +required
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:MinLength=1
+	Text string `json:"text"`
+
+	// iconURL is a small icon shown beside the footer text.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
+	IconURL string `json:"iconURL,omitempty"`
+}
+
+// EmbedSpec renders an entry as a Discord embed: the colored panel with a
+// linked title, description, image, author and footer. Every text field is a
+// template with the same placeholders as MessageSpec.Content.
+type EmbedSpec struct {
+	// title is a template for the embed's title, which links to the entry.
+	// Defaults to "{{.Title}}".
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:MinLength=1
+	Title string `json:"title,omitempty"`
+
+	// description is a template for the embed's body. Defaults to
 	// "{{.Description}}".
 	// +optional
 	// +kubebuilder:validation:MaxLength=4096
 	// +kubebuilder:validation:MinLength=1
-	DescriptionFormat string `json:"descriptionFormat,omitempty"`
+	Description string `json:"description,omitempty"`
 
-	// imageStyle chooses how an entry's image is shown: "thumbnail" (a small
-	// image beside the description, the default) or "image" (a large image
-	// below the description).
-	// +kubebuilder:validation:Enum=thumbnail;image
+	// color is the embed's side-bar color, as a hex string (e.g. "#5865F2"
+	// or "5865F2").
+	// +optional
+	// +kubebuilder:validation:Pattern=`^#?[0-9a-fA-F]{6}$`
+	// +kubebuilder:validation:MaxLength=7
+	// +kubebuilder:validation:MinLength=6
+	Color string `json:"color,omitempty"`
+
+	// author is the embed's author line.
+	// +optional
+	Author *EmbedAuthor `json:"author,omitempty"`
+
+	// footer is the embed's footer line.
+	// +optional
+	Footer *EmbedFooter `json:"footer,omitempty"`
+
+	// imageStyle chooses how an entry's image is shown: Thumbnail (small,
+	// beside the description), Image (large, below it) or None.
+	// +default="Thumbnail"
+	// +kubebuilder:validation:Enum=Thumbnail;Image;None
 	// +optional
 	ImageStyle string `json:"imageStyle,omitempty"`
 
-	// authorName is shown on the embed's author line.
+	// timestamp chooses the time shown on the embed: Published (the entry's
+	// published time, when it has one) or None.
+	// +default="Published"
+	// +kubebuilder:validation:Enum=Published;None
 	// +optional
-	// +kubebuilder:validation:MaxLength=256
-	// +kubebuilder:validation:MinLength=1
-	AuthorName string `json:"authorName,omitempty"`
-
-	// authorURL is the URL linked from the embed author name.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^https?://`
-	AuthorURL string `json:"authorURL,omitempty"`
-
-	// authorIconURL is the avatar icon URL displayed beside the author name.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^https?://`
-	AuthorIconURL string `json:"authorIconURL,omitempty"`
-
-	// footerText is shown in the embed's footer.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:MinLength=1
-	FooterText string `json:"footerText,omitempty"`
-
-	// footerIconURL is the small icon displayed beside the footer text.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^https?://`
-	FooterIconURL string `json:"footerIconURL,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
-// FeedSpec defines the configuration for a single RSS feed.
-type FeedSpec struct {
-	// name is an optional DNS-1123 label uniquely identifying this feed within
-	// the group. When set, status, delivery watermarks, and metrics track this
-	// identity across rssUrl updates.
+// Mentions are the Discord roles and users a message pings. Only the IDs
+// listed here can ping: mentions written in templates or in feed text never
+// do, and @everyone/@here are always suppressed.
+// +kubebuilder:validation:MinProperties=1
+type Mentions struct {
+	// roleIDs are the IDs of the roles to ping.
 	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^[0-9]{1,20}$`
+	// +kubebuilder:validation:items:MaxLength=20
+	RoleIDs []string `json:"roleIDs,omitempty"`
+
+	// userIDs are the IDs of the users to ping.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^[0-9]{1,20}$`
+	// +kubebuilder:validation:items:MaxLength=20
+	UserIDs []string `json:"userIDs,omitempty"`
+}
+
+// DefaultMessageContent is the content template used when neither the feed
+// nor the group sets a message.
+const DefaultMessageContent = "**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
+
+// MessageSpec describes the Discord message sent for each entry: text
+// content, an embed, or both. A feed's message replaces the group's as a
+// whole; the two are never merged. With neither set, the content is
+// DefaultMessageContent.
+// +kubebuilder:validation:XValidation:rule="has(self.content) || has(self.embed)",message="a message needs content, embed, or both"
+// +kubebuilder:validation:XValidation:rule="!has(self.embed) || !has(self.suppressLinkPreviews) || !self.suppressLinkPreviews",message="suppressLinkPreviews would also hide the embed; it can only be used without one"
+type MessageSpec struct {
+	// content is a template for the message text. Placeholders: {{.Title}},
+	// {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}}, {{.Published}},
+	// {{.PublishedUnix}}, {{.Author}}, {{.Categories}} and {{.FeedTitle}};
+	// helper functions: truncate, default, lower, upper, trim, replace and
+	// discordTime. Sent alongside the embed when both are set.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:MinLength=1
+	Content string `json:"content,omitempty"`
+
+	// embed renders the entry as a Discord embed.
+	// +optional
+	Embed *EmbedSpec `json:"embed,omitempty"`
+
+	// mentions are the roles and users each message pings. The mentions are
+	// put at the start of the message text.
+	// +optional
+	Mentions *Mentions `json:"mentions,omitempty"`
+
+	// silent posts messages without sending push or desktop notifications
+	// (Discord's @silent).
+	// +default=false
+	// +optional
+	Silent bool `json:"silent,omitempty"`
+
+	// suppressLinkPreviews stops Discord expanding links in the message text
+	// into previews. It cannot be combined with embed, which it would hide.
+	// +default=false
+	// +optional
+	SuppressLinkPreviews bool `json:"suppressLinkPreviews,omitempty"`
+}
+
+// ThreadTarget posts into an existing thread: a thread in a text channel, or
+// a post in a forum or media channel.
+type ThreadTarget struct {
+	// id is the thread's (or forum post's) Discord ID.
+	// +required
+	// +kubebuilder:validation:MaxLength=20
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[0-9]+$`
+	ID string `json:"id"`
+}
+
+// ForumPostSpec creates a new post for each entry, for a webhook that belongs
+// to a forum or media channel.
+type ForumPostSpec struct {
+	// name is a template for the post's title, with the same placeholders as
+	// MessageSpec.Content (e.g. "{{.Title}}").
+	// +required
+	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// appliedTagIDs are the IDs of the channel's forum tags to put on each
+	// post.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=5
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^[0-9]{1,20}$`
+	// +kubebuilder:validation:items:MaxLength=20
+	AppliedTagIDs []string `json:"appliedTagIDs,omitempty"`
+}
+
+// FeedSpec defines the configuration for a single feed.
+// +kubebuilder:validation:XValidation:rule="!has(self.thread) || !has(self.forumPost)",message="thread and forumPost are mutually exclusive"
+type FeedSpec struct {
+	// name identifies this feed within the group: status, delivery history
+	// and metrics are keyed by it, so a feed's url can change without losing
+	// its history. A DNS-1123 label.
+	// +required
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name,omitempty"`
+	Name string `json:"name"`
 
-	// rssUrl is the URL of the RSS feed to fetch. Only http:// and https:// are supported.
+	// url is the RSS or Atom feed to fetch. Only http:// and https:// are
+	// supported.
 	// +required
 	// +kubebuilder:validation:Pattern=`^https?://`
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:MinLength=1
-	RSSUrl string `json:"rssUrl"`
+	URL string `json:"url"`
 
-	// filter defines how to filter entries from this feed.
+	// suspend stops processing this feed. Its status and delivery history
+	// are kept.
+	// +default=false
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+
+	// filter selects which of this feed's entries are delivered.
 	// +optional
 	Filter *Filter `json:"filter,omitempty"`
 
-	// format is the template for Discord messages for this feed.
-	// Overrides the group-level format if set.
+	// message replaces the group's message for this feed. It is not merged
+	// with the group's: fields it leaves unset are not inherited.
 	// +optional
-	// +kubebuilder:validation:MaxLength=4096
-	// +kubebuilder:validation:MinLength=1
-	Format string `json:"format,omitempty"`
+	Message *MessageSpec `json:"message,omitempty"`
 
-	// embed configures Discord embed rendering for this feed. Overrides the
-	// group-level Embed config if set.
-	// +optional
-	Embed *EmbedSpec `json:"embed,omitempty"`
-
-	// username overrides the webhook's default display name for messages
-	// sent from this feed, overriding the group-level Username if set.
+	// username overrides the group's username for this feed.
 	// +optional
 	// +kubebuilder:validation:MaxLength=80
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:XValidation:rule="!self.lowerAscii().contains('clyde') && !self.lowerAscii().contains('discord')",message="username must not contain \"clyde\" or \"discord\" (Discord rejects these)"
+	// +kubebuilder:validation:XValidation:rule="!self.lowerAscii().contains('clyde') && !self.lowerAscii().contains('discord') && !self.contains('@') && !self.contains('#') && !self.contains(':') && !self.contains('```') && !(self.lowerAscii() in ['everyone', 'here'])",message="Discord rejects usernames containing \"clyde\", \"discord\", \"@\", \"#\", \":\" or \"```\", and the names \"everyone\" and \"here\""
 	Username string `json:"username,omitempty"`
 
-	// avatarURL overrides the webhook's default avatar for messages sent
-	// from this feed, overriding the group-level AvatarURL if set.
+	// avatarURL overrides the group's avatarURL for this feed.
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^https?://`
 	AvatarURL string `json:"avatarURL,omitempty"`
 
-	// forumThreadName creates a new forum post for each message, named from
-	// this template, when DiscordWebhookSecretRef points at a forum
-	// channel's webhook. Supports the same placeholders as Format. Leave
-	// unset for regular text channels.
+	// thread posts this feed's messages into an existing thread or forum
+	// post. Mutually exclusive with forumPost.
 	// +optional
-	// +kubebuilder:validation:MaxLength=100
-	// +kubebuilder:validation:MinLength=1
-	ForumThreadName string `json:"forumThreadName,omitempty"`
+	Thread *ThreadTarget `json:"thread,omitempty"`
 
-	// forumThreadID posts messages into an existing forum thread/post
-	// instead of creating a new one. Takes precedence over ForumThreadName.
+	// forumPost creates a new forum post per entry, for a forum or media
+	// channel's webhook. Mutually exclusive with thread.
 	// +optional
-	// +kubebuilder:validation:MaxLength=32
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^[0-9]+$`
-	ForumThreadID string `json:"forumThreadID,omitempty"`
-
-	// paused stops processing this feed if set to true.
-	// +default=false
-	// +optional
-	Paused bool `json:"paused,omitempty"`
+	ForumPost *ForumPostSpec `json:"forumPost,omitempty"`
 }
 
 // FeedGroupSpec defines the desired state of a FeedGroup.
@@ -214,8 +348,8 @@ type FeedGroupSpec struct {
 	// +required
 	DiscordWebhookSecretRef corev1.SecretKeySelector `json:"discordWebhookSecretRef"`
 
-	// suspend pauses reconciliation for the entire group without modifying
-	// individual feeds. Preserves delivery history and watermarks.
+	// suspend stops processing every feed in the group. Status and delivery
+	// history are kept.
 	// +default=false
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
@@ -232,46 +366,39 @@ type FeedGroupSpec struct {
 	// +optional
 	Interval string `json:"interval,omitempty"`
 
-	// format is the default template for Discord messages.
-	// Supports placeholders: {{.Title}}, {{.Description}}, {{.Content}}, {{.Link}}, {{.Image}},
-	// {{.Published}}, {{.PublishedUnix}}, {{.Author}}, {{.Categories}}, {{.FeedTitle}}, and the helper
-	// functions truncate, default, lower, upper, trim, replace and discordTime.
-	// +default="**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})"
+	// message is the Discord message sent for each entry, for every feed
+	// that doesn't set its own. Defaults to content DefaultMessageContent.
 	// +optional
-	// +kubebuilder:validation:MaxLength=4096
-	// +kubebuilder:validation:MinLength=1
-	Format string `json:"format,omitempty"`
+	Message *MessageSpec `json:"message,omitempty"`
 
-	// embed configures Discord embed rendering, used as the default for all
-	// feeds in this group unless a feed sets its own Embed.
-	// +optional
-	Embed *EmbedSpec `json:"embed,omitempty"`
-
-	// username overrides the webhook's default display name for messages
-	// sent from this group. Discord rejects names containing "clyde" or
-	// "discord" (case-insensitive) or over 80 characters, so both
-	// constraints are enforced here at admission rather than surfacing only
-	// as a runtime send failure.
+	// username overrides the webhook's default display name. A feed's
+	// username overrides this one.
 	// +kubebuilder:validation:MaxLength=80
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:XValidation:rule="!self.lowerAscii().contains('clyde') && !self.lowerAscii().contains('discord')",message="username must not contain \"clyde\" or \"discord\" (Discord rejects these)"
+	// +kubebuilder:validation:XValidation:rule="!self.lowerAscii().contains('clyde') && !self.lowerAscii().contains('discord') && !self.contains('@') && !self.contains('#') && !self.contains(':') && !self.contains('```') && !(self.lowerAscii() in ['everyone', 'here'])",message="Discord rejects usernames containing \"clyde\", \"discord\", \"@\", \"#\", \":\" or \"```\", and the names \"everyone\" and \"here\""
 	// +optional
 	Username string `json:"username,omitempty"`
 
-	// avatarURL overrides the webhook's default avatar for messages sent
-	// from this group.
+	// avatarURL overrides the webhook's default avatar. A feed's avatarURL
+	// overrides this one.
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^https?://`
 	AvatarURL string `json:"avatarURL,omitempty"`
 
-	// retries is the number of times to retry failed operations (fetch/send).
+	// retries is how many consecutive transient failures of a feed's fetch or
+	// send are counted, the first included, before they are reported as
+	// persistent (a RetriesExhausted Event): each one below the limit is
+	// retried after retryInterval, and from the limit on the feed is retried
+	// only at the normal interval. So 3 means two quick retries, and 0 and 1
+	// both mean none. A pointer, like catchUpLimit, so an explicit 0 survives
+	// typed clients' encoding instead of being replaced by the default.
 	// +default=3
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	// +optional
-	Retries int32 `json:"retries,omitempty"`
+	Retries *int32 `json:"retries,omitempty"`
 
 	// retryInterval is the duration between retries (e.g., "5m"), parsed by
 	// Go's time.ParseDuration. Must be at least 10s: a shorter interval
@@ -285,18 +412,17 @@ type FeedGroupSpec struct {
 	// +optional
 	RetryInterval string `json:"retryInterval,omitempty"`
 
-	// feeds is the list of RSS feed configurations in this group. Capped at
+	// feeds is the list of feeds in this group, keyed by name. Capped at
 	// maxConcurrentFetches (see feedgroup_controller.go) so a single
 	// reconcile can't fan out an unbounded number of simultaneous outbound
-	// fetches. RSS URLs must be unique within a group, since all per-feed
-	// status (LastSeenEntry, LastSent, ETag, ...) is keyed by URL: two feeds
-	// sharing a URL would silently clobber each other's status.
+	// fetches. URLs must also be unique within a group, so one feed is never
+	// fetched and delivered twice.
 	// +required
-	// +listType=atomic
+	// +listType=map
+	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:XValidation:rule="self.all(f, self.exists_one(g, g.rssUrl == f.rssUrl))",message="each feed's rssUrl must be unique within a FeedGroup"
-	// +kubebuilder:validation:XValidation:rule="self.all(f, !has(f.name) || self.exists_one(g, has(g.name) && g.name == f.name))",message="each feed's name must be unique within a FeedGroup when specified"
+	// +kubebuilder:validation:XValidation:rule="self.all(f, self.exists_one(g, g.url == f.url))",message="each feed's url must be unique within a FeedGroup"
 	Feeds []FeedSpec `json:"feeds"`
 
 	// catchUpLimit caps how many entries are sent to Discord when a feed has
@@ -321,7 +447,7 @@ type FeedGroupSpec struct {
 }
 
 // FeedStatus is the observed state of a single feed within a FeedGroup,
-// keyed by RSSUrl. Consolidating what used to be seven parallel
+// keyed by Name. Consolidating what used to be seven parallel
 // map[string]... fields on FeedGroupStatus (all keyed by the same URL) into
 // one struct per feed means a feed's full health -- timestamps, retry
 // count, and *why* it's failing -- reads as one coherent block in `kubectl
@@ -343,18 +469,19 @@ type FeedStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// name is the optional stable identifier of this feed from FeedSpec.Name.
-	// +optional
+	// name is the feed's FeedSpec.Name. Acts as the list-map key.
+	// +required
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name,omitempty"`
+	Name string `json:"name"`
 
-	// rssUrl identifies which feed (in FeedGroupSpec.Feeds) this status
-	// corresponds to. Acts as the list-map merge key.
-	// +required
+	// url is the feed URL this status was last synced from. When a feed's
+	// url changes, its delivery history is kept but its etag and
+	// lastModified are cleared, since they belong to the old URL.
+	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:MinLength=1
-	RSSUrl string `json:"rssUrl"`
+	URL string `json:"url,omitempty"`
 
 	// lastChecked is the last time this feed was successfully checked.
 	// A 304 or a fetch with no new entries still counts as a successful check;
@@ -385,11 +512,11 @@ type FeedStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	LastSeenEntry string `json:"lastSeenEntry,omitempty"`
 
-	// lastSent is a map of entry hash to timestamp (RFC3339), tracking
-	// which entries have been sent to Discord to avoid duplicates.
+	// lastSent maps the identity of each entry recently sent to Discord to
+	// when it was sent, so an entry is never sent twice.
 	// +optional
 	// +kubebuilder:validation:MinProperties=1
-	LastSent map[string]string `json:"lastSent,omitempty"`
+	LastSent map[string]metav1.Time `json:"lastSent,omitempty"`
 
 	// lastError is the last error message encountered for this feed, from
 	// whichever of fetch/render/send most recently failed. See Conditions
@@ -439,15 +566,15 @@ type FeedGroupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// feeds is the observed status of every feed in Spec.Feeds, keyed by
-	// RSSUrl.
+	// name.
 	// +optional
-	// +patchMergeKey=rssUrl
+	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +listType=map
-	// +listMapKey=rssUrl
+	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:MinItems=1
-	Feeds []FeedStatus `json:"feeds,omitempty" patchStrategy:"merge" patchMergeKey:"rssUrl"`
+	Feeds []FeedStatus `json:"feeds,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 
 	// observedGeneration is the most recent generation observed for this FeedGroup
 	// by the controller.
@@ -487,6 +614,7 @@ const FeedConditionTypeDelivered = "Delivered"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reachable",type="string",JSONPath=".status.conditions[?(@.type=='FeedReachable')].status"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='FeedReachable')].reason"
+// +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // FeedGroup is the Schema for the feedgroups API.
@@ -497,8 +625,8 @@ type FeedGroup struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// spec is the desired state of the FeedGroup.
-	// +optional
-	Spec FeedGroupSpec `json:"spec,omitempty"`
+	// +required
+	Spec FeedGroupSpec `json:"spec"`
 
 	// status is the observed state of the FeedGroup.
 	// +optional

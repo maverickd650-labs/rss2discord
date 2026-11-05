@@ -326,7 +326,8 @@ spec:
   retries: 2
   retryInterval: 10s
   feeds:
-    - rssUrl: https://feeds.invalid/feed.xml
+    - name: invalid
+      url: https://feeds.invalid/feed.xml
 `, feedGroupName, feedGroupNamespace)
 			manifestFile := filepath.Join("/tmp", feedGroupName+".yaml")
 			Expect(os.WriteFile(manifestFile, []byte(feedGroupManifest), 0o644)).To(Succeed())
@@ -426,7 +427,7 @@ spec:
 				g.Expect(output).To(ContainSubstring(`rss2discord_feed_operations_total{`))
 				g.Expect(output).To(ContainSubstring(fmt.Sprintf(`namespace="%s"`, feedGroupNamespace)))
 				g.Expect(output).To(ContainSubstring(fmt.Sprintf(`name="%s"`, feedGroupName)))
-				g.Expect(output).To(ContainSubstring(`feed="https://feeds.invalid/feed.xml"`))
+				g.Expect(output).To(ContainSubstring(`feed="invalid"`))
 				g.Expect(output).To(ContainSubstring(`outcome="fetch_error_dns_failure"`))
 			}
 			Eventually(verifyFeedGroupMetric, 2*time.Minute).Should(Succeed())

@@ -85,7 +85,7 @@ func (d entryDelivery) run(ctx context.Context) attemptVerdict {
 
 		err = d.sender.SendMessage(ctx, discordMessage)
 		if err != nil {
-			log.Error(err, "failed to send Discord message", "url", feed.RSSUrl)
+			log.Error(err, "failed to send Discord message", "url", feed.URL)
 			// Discord rate limits are per-webhook, so once one entry is
 			// limited every further POST this reconcile would 429 too: the
 			// scan stops, the unsent entries stay pending (validators aren't
@@ -109,7 +109,7 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 	log := logf.FromContext(ctx)
 	feed := d.renderer.feed
 
-	log.Error(err, "failed to render Discord message", "url", feed.RSSUrl)
+	log.Error(err, "failed to render Discord message", "url", feed.URL)
 	// A render error is deterministic for a given entry+template, so
 	// once retries are exhausted, retrying forever would just spin
 	// at RetryInterval without ever making progress. The attempt
@@ -124,7 +124,7 @@ func (d entryDelivery) renderFailed(ctx context.Context, entry rss.Entry, err er
 		// block every newer entry behind it forever. Drop it and carry
 		// on. If no entry renders, the templates themselves are broken
 		// and skipping would just drain the feed, so keep holding.
-		log.Error(err, "skipping entry after exhausting retries", "url", feed.RSSUrl, "entry", d.syncer.identity(entry))
+		log.Error(err, "skipping entry after exhausting retries", "url", feed.URL, "entry", d.syncer.identity(entry))
 		d.syncer.markHandled(entry)
 		d.attempt.record(attemptOutcome{kind: attemptEntrySkipped, entry: entry.Title}, err)
 		return attemptVerdict{}, true

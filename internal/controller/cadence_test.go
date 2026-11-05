@@ -40,7 +40,7 @@ func TestCadenceOf(t *testing.T) {
 	}{
 		{name: "empty uses fallbacks", wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
 		{name: "blank uses fallbacks", spec: v1beta1.FeedGroupSpec{Interval: "  ", RetryInterval: " "}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
-		{name: "valid values parsed", spec: v1beta1.FeedGroupSpec{Interval: "90s", RetryInterval: "1m", Retries: 3}, wantPoll: 90 * time.Second, wantRetry: time.Minute, wantMax: 3},
+		{name: "valid values parsed", spec: v1beta1.FeedGroupSpec{Interval: "90s", RetryInterval: "1m", Retries: new(int32(3))}, wantPoll: 90 * time.Second, wantRetry: time.Minute, wantMax: 3},
 		// "1ns" (or "0s") passes the CRD's Pattern but would requeue in a tight
 		// loop; the floor applies to both fields.
 		{name: "tiny durations are floored", spec: v1beta1.FeedGroupSpec{Interval: "1ns", RetryInterval: "0s"}, wantPoll: minParsedInterval, wantRetry: minParsedInterval, wantMax: 1},
@@ -49,10 +49,10 @@ func TestCadenceOf(t *testing.T) {
 		{name: "overflowing interval", spec: v1beta1.FeedGroupSpec{Interval: overflowingInterval}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1, wantContains: `spec.interval: invalid duration "` + overflowingInterval + `"`},
 		{name: "overflowing retryInterval", spec: v1beta1.FeedGroupSpec{Interval: "30m", RetryInterval: overflowingInterval}, wantPoll: 30 * time.Minute, wantRetry: fallbackRetryInterval, wantMax: 1, wantContains: `spec.retryInterval: invalid duration "` + overflowingInterval + `"`},
 		{name: "both invalid reports interval first", spec: v1beta1.FeedGroupSpec{Interval: notParsable, RetryInterval: notParsable}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1, wantContains: "spec.interval"},
-		{name: "negative retries minimum one", spec: v1beta1.FeedGroupSpec{Retries: -1}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
-		{name: "zero retries minimum one", spec: v1beta1.FeedGroupSpec{Retries: 0}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
-		{name: "one retry", spec: v1beta1.FeedGroupSpec{Retries: 1}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
-		{name: "positive retries kept", spec: v1beta1.FeedGroupSpec{Retries: 5}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 5},
+		{name: "negative retries minimum one", spec: v1beta1.FeedGroupSpec{Retries: new(int32(-1))}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
+		{name: "zero retries minimum one", spec: v1beta1.FeedGroupSpec{Retries: new(int32(0))}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
+		{name: "one retry", spec: v1beta1.FeedGroupSpec{Retries: new(int32(1))}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 1},
+		{name: "positive retries kept", spec: v1beta1.FeedGroupSpec{Retries: new(int32(5))}, wantPoll: fallbackInterval, wantRetry: fallbackRetryInterval, wantMax: 5},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

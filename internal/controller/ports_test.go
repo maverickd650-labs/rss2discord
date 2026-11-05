@@ -217,10 +217,10 @@ func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sender called %d times, want 1", len(sender.sent))
 	}
-	if got := feedStatusFor(fg, feed.RSSUrl).LastSent; len(got) != 0 {
+	if got := feedStatusFor(fg, feed.Name).LastSent; len(got) != 0 {
 		t.Fatalf("LastSent = %v, want the entry left unsent", got)
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeRateLimited)); got != 1 {
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), outcomeRateLimited)); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=%q} = %v, want 1", outcomeRateLimited, got)
 	}
 }
@@ -231,7 +231,7 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	ns, name := "ports-fake-5xx", "fg-fake-5xx"
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 503, Status: "503 Service Unavailable"}}}
 
 	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
@@ -239,7 +239,7 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	if !verdict.retry {
 		t.Fatal("verdict.retry = false, want a transient send failure to ask for a retry")
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
@@ -249,7 +249,7 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	if len(fs.LastSent) != 0 {
 		t.Fatalf("LastSent = %v, want the entry left unsent", fs.LastSent)
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, sendErrorOutcome(classServerError))); got != 1 {
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), sendErrorOutcome(classServerError))); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=send_error_server_error} = %v, want 1", got)
 	}
 }
@@ -268,7 +268,7 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	if verdict.retry {
 		t.Fatal("verdict.retry = true, want a permanent failure to back off instead")
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
@@ -276,7 +276,7 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); !fs.BackoffUntil.Equal(want) {
 		t.Fatalf("BackoffUntil = %v, want %v", fs.BackoffUntil, want)
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, sendErrorOutcome(classClientError))); got != 1 {
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), sendErrorOutcome(classClientError))); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=send_error_client_error} = %v, want 1", got)
 	}
 }
@@ -296,7 +296,7 @@ func TestProcessFeed_FakeSenderSuccess(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sender called %d times, want 1", len(sender.sent))
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, exampleFeedURL, outcomeSent)); got != 1 {
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), outcomeSent)); got != 1 {
 		t.Fatalf("feedOperationsTotal{outcome=sent} = %v, want 1", got)
 	}
 }
@@ -380,14 +380,15 @@ func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 	fg := &v1beta1.FeedGroup{}
 	feeds := make([]v1beta1.FeedSpec, n)
 	for i := range feeds {
-		feeds[i].RSSUrl = fmt.Sprintf("https://example.com/feed-%d.xml", i)
+		feeds[i].URL = fmt.Sprintf("https://example.com/feed-%d.xml", i)
+		feeds[i].Name = testFeedName(feeds[i].URL)
 	}
 	fg.Spec.Feeds = feeds
 	ensureFeedStatuses(fg)
-	errFor := map[string]error{feeds[3].RSSUrl: errors.New(testBoom)}
+	errFor := map[string]error{feeds[3].URL: errors.New(testBoom)}
 	// Feed 0 completes last, so outcomes in completion order would put it at
 	// the end; fetchAll must still return it first.
-	f := newConcurrencyFetcher(maxConcurrentFetches, feeds[0].RSSUrl, n-1, errFor)
+	f := newConcurrencyFetcher(maxConcurrentFetches, feeds[0].URL, n-1, errFor)
 
 	done := make(chan []fetchOutcome, 1)
 	go func() { done <- fetchAll(t.Context(), f, fg, feeds) }()
@@ -414,8 +415,8 @@ func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 		t.Fatalf("got %d outcomes from %d calls, want %d of each", len(got), f.calls, n)
 	}
 	for i, o := range got {
-		if o.result.FeedTitle != feeds[i].RSSUrl {
-			t.Fatalf("outcome %d is for %q, want %q (input order)", i, o.result.FeedTitle, feeds[i].RSSUrl)
+		if o.result.FeedTitle != feeds[i].URL {
+			t.Fatalf("outcome %d is for %q, want %q (input order)", i, o.result.FeedTitle, feeds[i].URL)
 		}
 		if (o.err != nil) != (i == 3) {
 			t.Fatalf("outcome %d err = %v, want error only at index 3", i, o.err)

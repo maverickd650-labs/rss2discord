@@ -15,9 +15,9 @@ A Kubernetes operator that watches RSS feeds and posts new entries to Discord vi
 
 - Define RSS feeds as Kubernetes CRDs
 - Post updates to Discord webhooks
-- Filter entries by regex or keywords
-- Customize the message format per feed group or per feed
-- Render entries as native Discord embeds (colored bubble, thumbnail, author/footer) instead of plain text
+- Filter entries by keywords, regex or categories, with include and exclude rules
+- Customize the message per feed group or per feed: text, a native Discord embed, or both
+- Ping roles or users, post silently, and post into threads or as tagged forum posts
 - Post into forum channels, either as a new thread per entry or into an existing thread
 - Override the webhook's display name/avatar per feed group
 - Conditional GET (ETag / If-Modified-Since) on RSS fetches — skips re-downloading and re-parsing unchanged feeds
@@ -75,35 +75,43 @@ spec:
   interval: "30m"
   retries: 3
   retryInterval: "5m"
-  format: |
-    **{{.Title}}**
-    {{.Description}}
-    [Read more]({{.Link}})
+  message:
+    content: |
+      **{{.Title}}**
+      {{.Description}}
+      [Read more]({{.Link}})
   feeds:
     - name: hackernews
-      rssUrl: "https://news.ycombinator.com/rss"
+      url: "https://news.ycombinator.com/rss"
       filter:
-        keywords:
-          - kubernetes
-          - golang
-        excludeKeywords:
-          - "hiring"
+        include:
+          keywords: [kubernetes, golang]
+        exclude:
+          keywords: [hiring]
     - name: reddit-golang
-      rssUrl: "https://www.reddit.com/r/golang/.rss"
-      paused: false
+      url: "https://www.reddit.com/r/golang/.rss"
 ```
 
-To render entries as embeds (with a colored bubble and thumbnail) instead of plain text, and to post each entry as a new forum thread:
+To render entries as embeds, ping a role alongside them, and post each entry as a new, tagged forum post:
 
 ```yaml
 spec:
-  embed:
-    enabled: true
-    color: "#5865F2"
-    footerText: "via tech-news"
+  message:
+    content: "New post from {{.FeedTitle}}"
+    mentions:
+      roleIDs: ["123456789012345678"]
+    embed:
+      color: "#5865F2"
+      author:
+        name: "{{.Author}}"
+      footer:
+        text: "via tech-news"
   feeds:
-    - rssUrl: "https://news.ycombinator.com/rss"
-      forumThreadName: "{{.Title}}"
+    - name: hackernews
+      url: "https://news.ycombinator.com/rss"
+      forumPost:
+        name: "{{.Title}}"
+        appliedTagIDs: ["234567890123456789"]
 ```
 
 ```bash
@@ -126,67 +134,74 @@ See [docs/schema.md](docs/schema.md) for the complete `v1beta1` schema specifica
 | --- | --- | --- | --- |
 | `discordWebhookSecretRef` | `SecretKeySelector` | required | Secret containing the Discord webhook URL |
 | `interval` | `string` | `30m` | How often to check feeds. At least `1m`; Go duration syntax (`ns`, `us`, `ms`, `s`, `m`, `h`) |
-| `retries` | `int` | `3` | Retries for failed operations (0–100) |
+| `retries` | `int` | `3` | Consecutive transient failures, the first included, counted before a feed is reported as persistently failing (0–100); each one below the limit is retried after `retryInterval`, so `3` means two quick retries |
 | `retryInterval` | `string` | `5m` | Delay between retries. At least `10s` |
-| `suspend` | `bool` | `false` | Suspends all reconciliation for the group when true without dropping status or watermarks |
-| `format` | `string` | see below | Discord message template (used when `embed` is not enabled) |
-| `embed` | `*Embed` | optional | Default embed config for all feeds in the group |
-| `username` | `string` | optional | Overrides the webhook's display name. Rejected at `kubectl apply` time (CEL validation) if it contains "clyde" or "discord", or is over 80 characters — Discord's own webhook API rejects these |
+| `suspend` | `bool` | `false` | Stops processing every feed in the group, keeping status and delivery history |
+| `message` | `Message` | see [below](#message) | The message sent for each entry, for every feed that doesn't set its own |
+| `username` | `string` | optional | Overrides the webhook's display name (at most 80 characters). Rejected at `kubectl apply` time if it contains "clyde", "discord", `@`, `#`, `:` or <code>```</code>, or is "everyone" or "here" -- Discord rejects these |
 | `avatarURL` | `string` | optional | Overrides the webhook's avatar. Must start with `http://` or `https://` |
 | `catchUpLimit` | `int` | `5` | Caps how many entries are sent when a feed has no usable watermark: on its first sync, or when its recorded last-seen entry has scrolled out of the feed (0–100). A normal fetch that finds the watermark is never capped. Set `0` to send no backlog: the first non-empty sync records the newest entry and only later entries are delivered. A feed that was empty on its first sync then delivers everything that appears later, uncapped; a watermark that later scrolls out falls back to the default cap of 5. Omitting the field keeps `5`. |
-| `feeds` | `[]Feed` | required | RSS feeds to monitor |
+| `feeds` | `[]Feed` | required | Feeds to monitor (1–50), keyed by `name`; each `url` must be unique too |
 
 ### Feed
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `rssUrl` | `string` | required | RSS feed URL |
-| `name` | `string` | optional | Stable feed identifier (RFC 1123 DNS label, unique within group); preserves delivery watermarks across `rssUrl` changes |
-| `filter` | `*Filter` | optional | Filter rules for entries |
-| `format` | `string` | optional | Overrides the group's format for this feed |
-| `embed` | `*Embed` | optional | Overrides the group's embed config for this feed |
-| `username` | `string` | optional | Overrides webhook display name for this feed (takes precedence over group username) |
-| `avatarURL` | `string` | optional | Overrides webhook avatar for this feed (takes precedence over group avatarURL) |
-| `forumThreadName` | `string` | optional | Template for a new forum post's title; set on FeedGroups whose webhook targets a forum channel |
-| `forumThreadID` | `string` | optional | Posts into an existing forum thread instead of creating a new one (takes precedence over `forumThreadName`). Digits only (a Discord ID) |
-| `paused` | `bool` | `false` | Stop processing this feed without removing it |
+| `name` | `string` | required | The feed's identity within the group (a DNS-1123 label). Status, delivery history and the `feed` metric label are keyed by it, so changing `url` keeps the history; renaming a feed starts it over |
+| `url` | `string` | required | RSS or Atom feed URL (`http://` or `https://`) |
+| `suspend` | `bool` | `false` | Stops processing this feed, keeping its status and delivery history |
+| `filter` | `Filter` | optional | Which entries are delivered |
+| `message` | `Message` | optional | Replaces the group's `message` for this feed. It is not merged: fields it leaves unset are not inherited |
+| `username` | `string` | optional | Overrides the group's `username` for this feed |
+| `avatarURL` | `string` | optional | Overrides the group's `avatarURL` for this feed |
+| `thread.id` | `string` | optional | Posts into an existing thread or forum post (a Discord ID) |
+| `forumPost` | `ForumPost` | optional | Creates a new post per entry, for a forum or media channel's webhook: `name` (a template for the post's title) and up to 5 `appliedTagIDs`. Mutually exclusive with `thread` |
 
 ### Filter
 
+`filter.include` delivers only entries that match **every** criterion it sets; `filter.exclude` drops an entry that matches **any** criterion it sets, even one `include` matched. Both take the same fields:
+
 | Field | Type | Description |
 | --- | --- | --- |
-| `regex` | `string` | Regex matched against title/description |
-| `keywords` | `[]string` | Keywords matched against title/description (OR) |
-| `excludeRegex` | `string` | Negative regex matched against title/description; any match immediately vetoes and rejects the entry |
-| `excludeKeywords` | `[]string` | Negative keywords matched against title/description; any match immediately vetoes and rejects the entry |
+| `keywords` | `[]string` | Case-insensitive substrings of the title or description; any one matching is enough |
+| `regex` | `string` | RE2 regex matched against the title and description. Case-sensitive; prefix with `(?i)` to ignore case |
+| `categories` | `[]string` | Entry categories (RSS `<category>`, Atom `<category term>`), matched case-insensitively and whole; any one matching is enough |
 
-### Embed
-
-When `enabled`, a feed's messages are sent as a native Discord embed (the colored bubble UI) instead of plain text. The embed's title/link/timestamp come directly from the entry; only the description is templated.
+### Message
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `false` | Render messages as embeds instead of plain text |
-| `color` | `string` | none | Side-bar color, as hex (`#5865F2` or `5865F2`) |
-| `descriptionFormat` | `string` | `{{.Description}}` | Template for the embed description |
-| `authorName` | `string` | optional | Shown on the embed's author line |
-| `authorURL` | `string` | optional | URL hyperlink for the author line (requires `authorName`) |
-| `authorIconURL` | `string` | optional | Icon image URL for the author line (requires `authorName`) |
-| `footerText` | `string` | optional | Shown in the embed's footer |
-| `footerIconURL` | `string` | optional | Icon image URL for the footer line (requires `footerText`) |
-| `imageStyle` | `string` | `thumbnail` | `thumbnail` shows the entry image small beside the description; `image` shows it large below |
+| `content` | `string` | see below | Template for the message text. Sent alongside the embed when both are set |
+| `embed` | `Embed` | optional | Render the entry as a Discord embed |
+| `mentions` | `Mentions` | optional | `roleIDs` and `userIDs` (up to 20 each) to ping, put at the start of the message text. Only these can ping: mentions in templates or feed text never do, and `@everyone`/`@here` are always suppressed |
+| `silent` | `bool` | `false` | Post without push or desktop notifications (Discord's `@silent`) |
+| `suppressLinkPreviews` | `bool` | `false` | Stop Discord expanding links in the text into previews. Can't be combined with `embed`, which it would hide |
 
-If the feed entry has a lead image (an RSS `<enclosure>` or Media RSS `<media:thumbnail>`/`<media:content>`, or an Atom `<link rel="enclosure">`), it's attached automatically as the embed's thumbnail (or as the large image with `imageStyle: image`).
-
-### Message template
-
-Default (used only when `embed.enabled` is false):
+A message needs `content`, `embed`, or both. With no `message` anywhere, the content is:
 
 ```YAML
 **{{.Title}}**
 {{.Description}}
 [Read more]({{.Link}})
 ```
+
+### Embed
+
+Every text field of an embed is a template, with the same fields and functions as `content`.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `title` | `string` | `{{.Title}}` | The embed's title, which links to the entry |
+| `description` | `string` | `{{.Description}}` | The embed's body |
+| `color` | `string` | none | Side-bar color, as hex (`#5865F2` or `5865F2`) |
+| `author` | `object` | optional | `name` (template, required), `url` and `iconURL` |
+| `footer` | `object` | optional | `text` (template, required) and `iconURL` |
+| `imageStyle` | `string` | `Thumbnail` | `Thumbnail` shows the entry image small beside the description; `Image` shows it large below; `None` shows no image |
+| `timestamp` | `string` | `Published` | `Published` shows the entry's published time (when it has one); `None` shows none |
+
+An author or footer whose template renders blank for an entry is left out of that entry's embed. If the feed entry has a lead image (an RSS `<enclosure>` or Media RSS `<media:thumbnail>`/`<media:content>`, or an Atom `<link rel="enclosure">`), it's attached according to `imageStyle`.
+
+### Template fields
 
 Available fields:
 
@@ -232,7 +247,7 @@ Webhook URLs copied from Discord's PTB or Canary clients (`ptb.discord.com`, `ca
 
 ### Forum channels
 
-If `discordWebhookSecretRef` points at a webhook created for a forum channel, set `forumThreadName` on a feed to create a new forum post per entry (templated, same placeholders as `format`), or `forumThreadID` to post into one specific existing thread instead.
+If `discordWebhookSecretRef` points at a webhook created for a forum or media channel, set `forumPost` on a feed to create a new post per entry (its `name` is a template, like `content`, and `appliedTagIDs` tags it), or `thread.id` to post into one specific existing thread or post instead. `thread.id` also works for a thread in a text channel.
 
 ## Development
 
@@ -343,6 +358,14 @@ helm uninstall rss2discord-operator -n rss2discord-operator-system
 
 ### Upgrades and rollbacks
 
+#### Upgrading to v1beta1
+
+The `v1beta1` API replaces `v1alpha1` with no conversion webhook: existing FeedGroups must be exported, converted and re-created, and their delivery history starts over (`catchUpLimit` caps what each feed re-sends). Run the `stateVersion` check below on the old release first. The steps are in [docs/schema.md](docs/schema.md#upgrading-from-v1alpha1).
+
+Once a FeedGroup has been re-created as `v1beta1`, an older controller can't read it, and the old CRD can't be installed over the new one. Rolling back means deleting the CRD, reinstalling the old release and re-applying your saved `v1alpha1` manifests: see [Rolling back to v1alpha1](docs/schema.md#rolling-back-to-v1alpha1). What to do if the upgrade is interrupted is in the same document.
+
+#### Releases before v1beta1
+
 Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. This release no longer reads feed statuses written before `stateVersion` 1 (releases before 0.14), so upgrade through 0.14.x or 0.15.x first. Before upgrading past that point, confirm that no feed is still on the old format; an empty output with exit status 0 means the cluster is safe to upgrade:
 
 ```bash
@@ -368,13 +391,13 @@ The controller exports these Prometheus metrics, all labeled by `namespace` and 
 
 | Metric | Type | Extra labels | What it tells you |
 | --- | --- | --- | --- |
-| `rss2discord_feed_operations_total` | counter | `feed`, `outcome` (`sent`, `fetch_error`, `send_error`, `render_error`, `rate_limited`) | Send-success ratios and a per-feed error breakdown (which feed in the group, and why; `feed` is `name` if set, else `rssUrl`) |
+| `rss2discord_feed_operations_total` | counter | `feed`, `outcome` (`sent`, `fetch_error`, `send_error`, `render_error`, `rate_limited`) | Send-success ratios and a per-feed error breakdown (which feed in the group, and why; `feed` is the feed's `name`) |
 | `rss2discord_feed_request_duration_seconds` | histogram | `operation` (`fetch`, `send`) | Latency of the operator's outbound RSS fetches and Discord sends (e.g. a feed host hanging up to its timeout) |
 | `rss2discord_feedgroup_reconcile_duration_seconds` | histogram | — | Wall-clock time of a full reconcile (every feed's fetch and send), so a FeedGroup creeping toward its requeue interval shows up before it starts missing it |
 | `rss2discord_message_overflow_chars` | histogram | — | Characters trimmed from a rendered Discord message before it was clamped to fit Discord's length limits; only recorded on actual overflow, so `histogram_count(rate(rss2discord_message_overflow_chars[5m]))` answers "how often does this FeedGroup's content get cut off" |
 | `rss2discord_feed_last_success_timestamp_seconds` | gauge | — | Unix time of the last successful check of this FeedGroup's feeds (a 304 or a fetch with nothing new still counts); group-level, so one healthy feed keeps it fresh while a sibling is dead (use the per-feed gauges below for that) |
-| `rss2discord_feed_healthy` | gauge | `feed` | Per feed (`name` if set, else `rssUrl`): `1` if the feed's persisted status has no `lastError`, else `0`. Read from status on every reconcile, so a feed in permanent backoff (retried only every 10m ... 6h, error counter flat in between) keeps reporting `0`, and it is populated right after an operator restart. **Paused feeds have no series** |
-| `rss2discord_feed_last_checked_timestamp_seconds` | gauge | `feed` | Per feed (`name` if set, else `rssUrl`): Unix time of the last successful check (`status.feeds[].lastChecked`). **Absent for a feed that has never been checked, and for paused feeds**, rather than exported as `0` |
+| `rss2discord_feed_healthy` | gauge | `feed` | Per feed (by `name`): `1` if the feed's persisted status has no `lastError`, else `0`. Read from status on every reconcile, so a feed in permanent backoff (retried only every 10m ... 6h, error counter flat in between) keeps reporting `0`, and it is populated right after an operator restart. **Suspended feeds have no series** |
+| `rss2discord_feed_last_checked_timestamp_seconds` | gauge | `feed` | Per feed (by `name`): Unix time of the last successful check (`status.feeds[].lastChecked`). **Absent for a feed that has never been checked, and for suspended feeds**, rather than exported as `0` |
 
 Series for a FeedGroup are removed from the registry when that FeedGroup is deleted, so a removed group can't leave a stale freshness reading behind.
 
@@ -445,7 +468,7 @@ Common issues:
 
 - `LastError: webhook - discord webhook URL is empty` — the secret or key in `discordWebhookSecretRef` is wrong.
 - FeedGroup not updating — check `interval` and the operator logs.
-- Messages formatted wrong — check template placeholders against the [available fields](#message-template).
+- Messages formatted wrong — check template placeholders against the [available fields](#template-fields).
 - A feed that keeps returning a "permanent" error (e.g. HTTP 404/403) is retried with exponential backoff capped at 6h, so it recovers on its own once the source is back; editing the spec retries it immediately.
 - A deleted or regenerated Discord webhook (HTTP 404 on send) backs the feed off the same way. Putting the new webhook URL in the Secret named by `discordWebhookSecretRef` clears its send backoff: any update to that Secret, including one to its data only, changes its `resourceVersion`, which the operator compares on every reconcile. With `--watch-webhook-secrets` (on for a namespace-scoped install, or with `rbac.clusterWideSecretWatch`) it watches the Secret's metadata (never its data) and retries immediately; otherwise the change is noticed at the next scheduled reconcile.
 - An entry that can't be rendered is skipped (Warning Event `EntrySkipped`, `skipped` metric outcome) once the group's `retries` are exhausted, so it doesn't block newer entries — but only if other entries in the feed do render. If the template fails for every entry, they are held until you fix it.

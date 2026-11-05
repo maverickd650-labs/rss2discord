@@ -228,14 +228,14 @@ type feedRun struct {
 // *feedPanic, which Reconcile recovers to write the group's status before
 // failing the reconcile.
 func processFeed(ctx context.Context, run feedRun) attemptVerdict {
-	fs := feedStatusFor(run.group, run.feed.RSSUrl)
+	fs := feedStatusFor(run.group, run.feed.Name)
 	before := fs.DeepCopy()
 	syncer := openFeedSync(fs, run.fetched.result, feedSyncSpecFor(run.group, run.now))
 	attempt := run.newAttempt(fs)
 	defer func() {
 		if p := recover(); p != nil {
 			syncer.secureAfterPanic(before, attempt, errDeliveryPanicked)
-			panic(&feedPanic{url: run.feed.RSSUrl, value: p, stack: debug.Stack()})
+			panic(&feedPanic{url: run.feed.URL, value: p, stack: debug.Stack()})
 		}
 	}()
 	return syncer.apply(ctx, run, attempt)
@@ -363,12 +363,12 @@ func fetchAll(ctx context.Context, f FeedFetcher, feedGroup *v1beta1.FeedGroup, 
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			fs := feedStatusFor(feedGroup, feed.RSSUrl)
+			fs := feedStatusFor(feedGroup, feed.Name)
 			validators := rss.CacheValidators{
 				ETag:         fs.ETag,
 				LastModified: fs.LastModified,
 			}
-			outcomes[i].result, outcomes[i].err = f.FetchEntries(ctx, feed.RSSUrl, validators)
+			outcomes[i].result, outcomes[i].err = f.FetchEntries(ctx, feed.URL, validators)
 		})
 	}
 	wg.Wait()

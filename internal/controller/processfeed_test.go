@@ -52,7 +52,7 @@ func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	feed.Filter = &v1beta1.Filter{Regex: "("}
+	feed.Filter = &v1beta1.Filter{Include: &v1beta1.FilterRules{Regex: "("}}
 	fg.Spec.Feeds[0] = feed
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
@@ -65,7 +65,7 @@ func TestProcessFeed_InvalidFilterRegex(t *testing.T) {
 	if rateLimitRetryAfter != 0 {
 		t.Fatalf("expected no rate-limit backoff, got %v", rateLimitRetryAfter)
 	}
-	if feedStatusFor(fg, feed.RSSUrl).LastError == "" {
+	if feedStatusFor(fg, feed.Name).LastError == "" {
 		t.Fatal("expected LastError to be set for the invalid filter regex")
 	}
 	if discordServer.MessageCount() != 0 {
@@ -108,7 +108,7 @@ func TestProcessFeed_InvalidMessageTemplate(t *testing.T) {
 	discordServer := NewMockDiscordServer(t)
 	defer discordServer.Close()
 
-	fg, feed := newMetricsFeedGroup(ns, name, "{{.Unclosed")
+	fg, feed := newMetricsFeedGroup(ns, name, tmplUnclosed)
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	verdict := processFeed(ctx, testRun(t, fg, feed, oneEntryFetch(), nil, client))
@@ -117,7 +117,7 @@ func TestProcessFeed_InvalidMessageTemplate(t *testing.T) {
 	if wantRetry {
 		t.Fatal("expected no retry for a deterministic message template compile error")
 	}
-	if feedStatusFor(fg, feed.RSSUrl).LastError == "" {
+	if feedStatusFor(fg, feed.Name).LastError == "" {
 		t.Fatal("expected LastError to be set for the invalid template")
 	}
 	if discordServer.MessageCount() != 0 {
@@ -137,7 +137,7 @@ func TestProcessFeed_InvalidForumThreadNameTemplate(t *testing.T) {
 	defer discordServer.Close()
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	feed.ForumThreadName = "{{.Unclosed"
+	feed.ForumPost = &v1beta1.ForumPostSpec{Name: tmplUnclosed}
 	fg.Spec.Feeds[0] = feed
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
@@ -147,7 +147,7 @@ func TestProcessFeed_InvalidForumThreadNameTemplate(t *testing.T) {
 	if wantRetry {
 		t.Fatal("expected no retry for a deterministic forum thread name template compile error")
 	}
-	if feedStatusFor(fg, feed.RSSUrl).LastError == "" {
+	if feedStatusFor(fg, feed.Name).LastError == "" {
 		t.Fatal("expected LastError to be set for the invalid forum thread name template")
 	}
 	if discordServer.MessageCount() != 0 {
@@ -171,8 +171,8 @@ func TestProcessFeed_NotModifiedPersistsLastModified(t *testing.T) {
 	if wantRetry {
 		t.Fatal("expected no retry on a 304 response")
 	}
-	if got := feedStatusFor(fg, feed.RSSUrl).LastModified; got != fetchResult.LastModified {
-		t.Fatalf("LastModified[%q] = %q, want %q", feed.RSSUrl, got, fetchResult.LastModified)
+	if got := feedStatusFor(fg, feed.Name).LastModified; got != fetchResult.LastModified {
+		t.Fatalf("LastModified[%q] = %q, want %q", feed.URL, got, fetchResult.LastModified)
 	}
 }
 
@@ -187,12 +187,12 @@ func TestProcessFeed_LastCheckedTracksSuccessNotAttempts(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 
 	processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{}, errors.New("boom"), nil))
-	if got := feedStatusFor(fg, feed.RSSUrl).LastChecked; got != nil {
+	if got := feedStatusFor(fg, feed.Name).LastChecked; got != nil {
 		t.Fatal("expected LastChecked not to be set after a fetch error")
 	}
 
 	processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{NotModified: true}, nil, nil))
-	if got := feedStatusFor(fg, feed.RSSUrl).LastChecked; got == nil || !got.Time.Equal(testReconcileInstant) {
+	if got := feedStatusFor(fg, feed.Name).LastChecked; got == nil || !got.Time.Equal(testReconcileInstant) {
 		t.Fatalf("LastChecked after a 304 = %v, want it set to the check time", got)
 	}
 }
@@ -210,7 +210,7 @@ func TestProcessFeed_AlreadySentEntrySkipped(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fetchResult := oneEntryFetch()
 	entryKey := computeEntryKey(fetchResult.Entries[0])
-	feedStatusFor(fg, feed.RSSUrl).LastSent = map[string]string{entryKey: "2025-12-31T00:00:00Z"}
+	feedStatusFor(fg, feed.Name).LastSent = map[string]metav1.Time{entryKey: ts("2025-12-31T00:00:00Z")}
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	verdict := processFeed(ctx, testRun(t, fg, feed, fetchResult, nil, client))
@@ -242,8 +242,8 @@ func TestProcessFeed_RecoversFromStaleErrorWithNoNewEntries(t *testing.T) {
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fetchResult := oneEntryFetch()
 	entryKey := computeEntryKey(fetchResult.Entries[0])
-	fs := feedStatusFor(fg, feed.RSSUrl)
-	fs.LastSent = map[string]string{entryKey: "2025-12-31T00:00:00Z"}
+	fs := feedStatusFor(fg, feed.Name)
+	fs.LastSent = map[string]metav1.Time{entryKey: ts("2025-12-31T00:00:00Z")}
 	fs.LastError = "previous attempt: connection refused"
 	fs.RetryCount = 3
 	fs.BackoffUntil = metav1TimeRFC3339("2025-12-31T01:00:00Z")
@@ -255,7 +255,7 @@ func TestProcessFeed_RecoversFromStaleErrorWithNoNewEntries(t *testing.T) {
 	if wantRetry {
 		t.Fatal("expected no retry once the feed recovers")
 	}
-	got := feedStatusFor(fg, feed.RSSUrl)
+	got := feedStatusFor(fg, feed.Name)
 	if got.LastError != "" {
 		t.Fatalf("expected LastError to clear, got %q", got.LastError)
 	}
@@ -289,7 +289,7 @@ func TestProcessFeed_PermanentFetchFailureSetsBackoff(t *testing.T) {
 		t.Fatalf("expected no rate-limit backoff, got %v", rateLimitRetryAfter)
 	}
 
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.BackoffUntil == nil {
 		t.Fatal("expected BackoffUntil to be set after a permanent failure")
 	}
@@ -322,7 +322,7 @@ func TestProcessFeed_BlockedAddressSetsPermanentBackoff(t *testing.T) {
 		t.Fatalf("expected no rate-limit backoff, got %v", rateLimitRetryAfter)
 	}
 
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.BackoffUntil == nil {
 		t.Fatal("expected BackoffUntil to be set for a blocked address")
 	}
@@ -344,7 +344,7 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 	fg.Spec.RetryInterval = "5m"
 	// RetryCount=6 means after the increment it becomes 7, and
 	// 5m * 2^7 = 640m > 6h, which is the first capped retry.
-	feedStatusFor(fg, feed.RSSUrl).RetryCount = 6
+	feedStatusFor(fg, feed.Name).RetryCount = 6
 	notFoundErr := &rss.HTTPStatusError{StatusCode: 404, Status: http404Status}
 
 	recorder := events.NewFakeRecorder(10)
@@ -354,7 +354,7 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 	if wantRetry {
 		t.Fatal("expected no group-level retry for a capped permanent failure")
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if want := nextBackoffUntil(testReconcileInstant, maxPermanentBackoff); !fs.BackoffUntil.Time.Equal(want.Time) {
 		t.Errorf("BackoffUntil = %v, want %v", fs.BackoffUntil, want)
 	}
@@ -371,7 +371,7 @@ func TestProcessFeed_PermanentFetchFailureCapKeepsRetrying(t *testing.T) {
 		t.Fatalf("unexpected repeat Event: %s", ev)
 	default:
 	}
-	capped := retryStateOf(feedStatusFor(fg, feed.RSSUrl))
+	capped := retryStateOf(feedStatusFor(fg, feed.Name))
 	if !capped.active(testReconcileInstant.Add(maxPermanentBackoff - time.Minute)) {
 		t.Error("feed should stay in backoff until the cap elapses")
 	}
@@ -389,12 +389,12 @@ func TestProcessFeed_PermanentFailureClearedOnSuccess(t *testing.T) {
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	// Simulate a feed that was previously in permanent backoff.
-	feedStatusFor(fg, feed.RSSUrl).BackoffUntil = metav1TimeRFC3339("2030-01-01T00:00:00Z")
-	feedStatusFor(fg, feed.RSSUrl).RetryCount = 3
+	feedStatusFor(fg, feed.Name).BackoffUntil = metav1TimeRFC3339("2030-01-01T00:00:00Z")
+	feedStatusFor(fg, feed.Name).RetryCount = 3
 
 	processFeed(ctx, testRun(t, fg, feed, rss.FetchResult{NotModified: true}, nil, nil))
 
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.BackoffUntil != nil {
 		t.Errorf("BackoffUntil = %v, want nil after successful check", fs.BackoffUntil)
 	}
@@ -419,7 +419,7 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	// {{.Title.Nope}} fails at execution time (it indexes into a string); the
 	// guard makes only the "bad" entry hit it, so the other one renders.
 	fg, feed := newMetricsFeedGroup(ns, name, `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`)
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "https://example.com/bad", Title: "bad", Seq: 1},
 		{ID: "https://example.com/good", Title: "good", Seq: 0},
@@ -430,7 +430,7 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	for range 2 {
 		processFeed(ctx, testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.LastSeenEntry != "" || discordServer.MessageCount() != 0 {
 		t.Fatalf("entries must stay held while retries remain: seen=%q sent=%d", fs.LastSeenEntry, discordServer.MessageCount())
 	}
@@ -444,7 +444,7 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	if got := discordServer.MessageCount(); got != 1 {
 		t.Fatalf("expected the entry behind the poison one to be sent, got %d messages", got)
 	}
-	fs = feedStatusFor(fg, feed.RSSUrl)
+	fs = feedStatusFor(fg, feed.Name)
 	if _, ok := fs.LastSent[computeEntryKey(fetch.Entries[0])]; !ok {
 		t.Error("skipped entry should be recorded in LastSent so it isn't retried")
 	}
@@ -474,12 +474,12 @@ func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title.Nope}}") // fails for every entry
-	fg.Spec.Retries = 1
+	fg.Spec.Retries = new(int32(1))
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "https://example.com/entry-a", Title: "a", Seq: 1},
 		{ID: "https://example.com/entry-b", Title: "b", Seq: 0},
 	}}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	fs.RetryCount = 5 // far past the retry limit
 
 	recorder := events.NewFakeRecorder(10)
@@ -501,9 +501,9 @@ func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 // deterministic misconfiguration has no RetryCount to gate it on.
 func TestRecordConfigError_EventFiresOncePerDistinctError(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("config-error-ns", "config-error", "")
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	recorder := events.NewFakeRecorder(10)
-	attempt := testAttempt(t, fg, fs, feed.RSSUrl, testReconcileInstant).withRecorder(recorder)
+	attempt := testAttempt(t, fg, fs, feed.URL, testReconcileInstant).withRecorder(recorder)
 	configError := attemptOutcome{kind: attemptConfigError}
 
 	attempt.record(configError, errors.New("bad regex"))
@@ -593,7 +593,7 @@ func TestProcessFeed_Initialization(t *testing.T) {
 			fg.Spec.CatchUpLimit = new(int32(0))
 			client := discordServer.DiscordClientBuilder()(discordServer.URL())
 			processFeed(t.Context(), testRun(t, fg, feed, tc.result, tc.fetchErr, client))
-			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs := feedStatusFor(fg, feed.Name)
 			if fs.Initialized != tc.initialized || fs.LastSeenEntry != "" {
 				t.Fatalf("initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 			}
@@ -646,11 +646,11 @@ func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
 		{name: "oversized identity", newestID: "guid-" + strings.Repeat("x", maxStatusTextBytes+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fg, feed := newMetricsFeedGroup("backlog-restart", tc.name, "{{.Title}}")
+			fg, feed := newMetricsFeedGroup("backlog-restart", tc.name, tmplTitle)
 			forgetMetricsAfter(t, fg.Namespace, fg.Name)
 			fg.Generation = 7
 			fg.Spec.CatchUpLimit = new(int32(0))
-			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs := feedStatusFor(fg, feed.Name)
 			fs.LastError, fs.RetryCount, fs.BackoffUntil = "old failure", 2, metav1TimeRFC3339("2031-01-01T00:00:00Z")
 			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
@@ -692,7 +692,7 @@ func TestProcessFeed_BacklogWatermarkSurvivesRestart(t *testing.T) {
 			if got := discordServer.Bodies(); len(got) != 1 || !strings.Contains(got[0], `"content":"fresh"`) {
 				t.Fatalf("expected only the fresh entry, got %v", got)
 			}
-			fs = feedStatusFor(fg, feed.RSSUrl)
+			fs = feedStatusFor(fg, feed.Name)
 			condition := apimeta.FindStatusCondition(fs.Conditions, v1beta1.FeedConditionTypeDelivered)
 			if fs.LastSeenEntry != freshID || len(fs.LastSent) != 1 || condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason == reasonBacklogSkipped {
 				t.Fatalf("delivery did not advance status: %+v", fs)
@@ -734,10 +734,10 @@ func TestProcessFeed_CatchUpCapsAndWatermarks(t *testing.T) {
 		{name: "zero with matching watermark resumes", limit: new(int32(0)), lastSeen: "entry-1", wantStart: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, "{{.Title}}")
+			fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, tmplTitle)
 			forgetMetricsAfter(t, fg.Namespace, fg.Name)
 			fg.Spec.CatchUpLimit = tc.limit
-			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs := feedStatusFor(fg, feed.Name)
 			fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
 			discordServer := NewMockDiscordServer(t)
 			defer discordServer.Close()
@@ -781,7 +781,7 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
 	fg.Spec.CatchUpLimit = new(int32(0))
-	feed.Filter = &v1beta1.Filter{Regex: "("} // does not compile
+	feed.Filter = &v1beta1.Filter{Include: &v1beta1.FilterRules{Regex: "("}} // does not compile
 	fg.Spec.Feeds[0] = feed
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
@@ -790,7 +790,7 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 		{ID: configErrURLPrefix + "older", Title: "older", Link: configErrURLPrefix + "older", Seq: 1},
 	}
 	processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: entries}, nil, client))
-	if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
+	if fs := feedStatusFor(fg, feed.Name); fs.Initialized || fs.LastSeenEntry != "" {
 		t.Fatalf("config error left initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 	}
 
@@ -800,7 +800,7 @@ func TestProcessFeed_ConfigErrorOnFirstSyncDoesNotInitialize(t *testing.T) {
 	if got := discordServer.MessageCount(); got != 0 {
 		t.Fatalf("sent=%d after fixing config, want the backlog skipped", got)
 	}
-	if fs := feedStatusFor(fg, feed.RSSUrl); !fs.Initialized || fs.LastSeenEntry == "" {
+	if fs := feedStatusFor(fg, feed.Name); !fs.Initialized || fs.LastSeenEntry == "" {
 		t.Fatalf("after fix initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 	}
 }
@@ -813,11 +813,11 @@ func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) 
 		name   string
 		break_ func(*v1beta1.FeedSpec)
 	}{
-		{"message template", func(f *v1beta1.FeedSpec) { f.Format = "{{.Open" }},
+		{"message template", func(f *v1beta1.FeedSpec) { f.Message = &v1beta1.MessageSpec{Content: "{{.Open"} }},
 		{"embed description template", func(f *v1beta1.FeedSpec) {
-			f.Embed = &v1beta1.EmbedSpec{Enabled: true, DescriptionFormat: "{{if .Title}}"}
+			f.Message = &v1beta1.MessageSpec{Embed: &v1beta1.EmbedSpec{Description: "{{if .Title}}"}}
 		}},
-		{"forum thread name template", func(f *v1beta1.FeedSpec) { f.ForumThreadName = "{{end}}" }},
+		{"forum thread name template", func(f *v1beta1.FeedSpec) { f.ForumPost = &v1beta1.ForumPostSpec{Name: "{{end}}"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, name := initializationUnitNS, "render-config-error-"+strings.ReplaceAll(tc.name, " ", "-")
@@ -835,7 +835,7 @@ func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) 
 				{ID: configErrURLPrefix + "o-" + name, Title: "older", Link: configErrURLPrefix + "o-" + name, Seq: 1},
 			}
 			processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: entries}, nil, client))
-			if fs := feedStatusFor(fg, feed.RSSUrl); fs.Initialized || fs.LastSeenEntry != "" {
+			if fs := feedStatusFor(fg, feed.Name); fs.Initialized || fs.LastSeenEntry != "" {
 				t.Fatalf("config error left initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 			}
 
@@ -843,7 +843,7 @@ func TestProcessFeed_RenderConfigErrorsOnFirstSyncDoNotInitialize(t *testing.T) 
 			if got := discordServer.MessageCount(); got != 0 {
 				t.Fatalf("sent=%d after fixing config, want the backlog skipped", got)
 			}
-			if fs := feedStatusFor(fg, feed.RSSUrl); !fs.Initialized || fs.LastSeenEntry == "" {
+			if fs := feedStatusFor(fg, feed.Name); !fs.Initialized || fs.LastSeenEntry == "" {
 				t.Fatalf("after fix initialized=%t watermark=%q", fs.Initialized, fs.LastSeenEntry)
 			}
 		})
@@ -907,7 +907,7 @@ func processTwice(t *testing.T, fg *v1beta1.FeedGroup, feed v1beta1.FeedSpec, en
 	if got := sentContents(t, server); !slices.Equal(got, want) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
-	if fs := feedStatusFor(fg, feed.RSSUrl); fs.StateVersion != currentStateVersion {
+	if fs := feedStatusFor(fg, feed.Name); fs.StateVersion != currentStateVersion {
 		t.Fatalf("stateVersion=%d, want %d", fs.StateVersion, currentStateVersion)
 	}
 }
@@ -915,7 +915,7 @@ func processTwice(t *testing.T, fg *v1beta1.FeedGroup, feed v1beta1.FeedSpec, en
 // Links that differ only by fragment or ref are distinct entries when they
 // have no GUID, so neither is skipped as a duplicate of the other.
 func TestProcessFeed_LinkFragmentAndRefAreDistinctIdentities(t *testing.T) {
-	fg, feed := newMetricsFeedGroup(identityStateNS, "fragment-and-ref", "{{.Title}}")
+	fg, feed := newMetricsFeedGroup(identityStateNS, "fragment-and-ref", tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	entries := []rss.Entry{
 		linkEntry(identityURLPrefix+"changelog#v1.2", 0),
@@ -936,7 +936,7 @@ func TestProcessFeed_LinkFragmentAndRefAreDistinctIdentities(t *testing.T) {
 // entries, nor lose the watermark: both fall back to the link without them
 // when no other entry shares it. A genuinely new entry is still delivered.
 func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
-	fg, feed := newMetricsFeedGroup(identityStateNS, "rotating-target", "{{.Title}}")
+	fg, feed := newMetricsFeedGroup(identityStateNS, "rotating-target", tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	titled := func(link, title string, i int) rss.Entry {
 		entry := linkEntry(identityURLPrefix+link, i)
@@ -952,7 +952,7 @@ func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
 		titled("rotate/post-3?ref=b", "three", 2),
 	}
 	processTwice(t, fg, feed, rotated, "three")
-	if fs := feedStatusFor(fg, feed.RSSUrl); fs.LastSeenEntry != entryIdentity(rotated[2]) {
+	if fs := feedStatusFor(fg, feed.Name); fs.LastSeenEntry != entryIdentity(rotated[2]) {
 		t.Fatalf("watermark=%q, want %q", fs.LastSeenEntry, entryIdentity(rotated[2]))
 	}
 }
@@ -961,7 +961,7 @@ func TestProcessFeed_RotatingLinkTargetIsNotResent(t *testing.T) {
 // different entry, not a rotation of it, so it is delivered even though the
 // GUID was already sent.
 func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
-	fg, feed := newMetricsFeedGroup(identityStateNS, "stripped-to-guid", "{{.Title}}")
+	fg, feed := newMetricsFeedGroup(identityStateNS, "stripped-to-guid", tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	guid := guidEntry(identityURLPrefix+"guid-collide/post", 0)
 	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
@@ -973,7 +973,7 @@ func TestProcessFeed_LinkStrippedToAnotherGUIDIsDelivered(t *testing.T) {
 // shares a stripped form with is an already-sent GUID that has since left
 // the feed: neither the GUID's dedup key nor its watermark may stand in for it.
 func TestProcessFeed_LinkAfterGUIDWithSameBaseIsDelivered(t *testing.T) {
-	fg, feed := newMetricsFeedGroup(identityStateNS, "link-after-guid", "{{.Title}}")
+	fg, feed := newMetricsFeedGroup(identityStateNS, "link-after-guid", tmplTitle)
 	forgetMetricsAfter(t, fg.Namespace, fg.Name)
 	guid := guidEntry(identityURLPrefix+"after-guid/post", 0)
 	processTwice(t, fg, feed, []rss.Entry{guid}, guid.Title)
@@ -1022,7 +1022,7 @@ func TestProcessFeed_EmptyIdentityEntriesKeepWatermark(t *testing.T) {
 	}
 
 	processTwice(t, fg, feed, backlog)
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.LastSeenEntry == "" || !ledgerResumes(backlog, fs.LastSeenEntry) {
 		t.Fatalf("backlog skip stored watermark %q", fs.LastSeenEntry)
 	}
@@ -1052,7 +1052,7 @@ func runSkipProbe(
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, skipProbeTemplate)
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	if prepare != nil {
 		prepare(fg, &feed)
 	}
@@ -1064,7 +1064,7 @@ func runSkipProbe(
 	}
 	processFeed(ctx, testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
 
-	return discordServer, feedStatusFor(fg, feed.RSSUrl)
+	return discordServer, feedStatusFor(fg, feed.Name)
 }
 
 // TestProcessFeed_SkipProbeDoesNotRecordOverflow asserts the diagnostic
@@ -1103,11 +1103,11 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 	}
 	ns, name := "processfeed-probe-sent", "fg-probe-sent"
 	server, fs := runSkipProbe(t, ns, name, entries, func(fg *v1beta1.FeedGroup, feed *v1beta1.FeedSpec) {
-		st := feedStatusFor(fg, feed.RSSUrl)
+		st := feedStatusFor(fg, feed.Name)
 		if st.LastSent == nil {
-			st.LastSent = map[string]string{}
+			st.LastSent = map[string]metav1.Time{}
 		}
-		newDeliveryLedger(st, entries).markHandled(entries[0], testReconcileTime)
+		newDeliveryLedger(st, entries).markHandled(entries[0], ts(testReconcileTime))
 	})
 
 	if got := server.MessageCount(); got != 0 {
@@ -1134,7 +1134,7 @@ func TestProcessFeed_SkipProbeIgnoresFilteredSibling(t *testing.T) {
 	}
 	ns, name := "processfeed-probe-filtered", "fg-probe-filtered"
 	server, fs := runSkipProbe(t, ns, name, entries, func(_ *v1beta1.FeedGroup, feed *v1beta1.FeedSpec) {
-		feed.Filter = &v1beta1.Filter{Regex: probeKeepText}
+		feed.Filter = &v1beta1.Filter{Include: &v1beta1.FilterRules{Regex: probeKeepText}}
 	})
 
 	if got := server.MessageCount(); got != 0 {
@@ -1163,7 +1163,7 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, "")
-	fg.Spec.Retries = 5
+	fg.Spec.Retries = new(int32(5))
 	fetch := rss.FetchResult{Entries: []rss.Entry{{
 		ID: "https://example.com/attempts", Title: "t", Link: "https://example.com/attempts",
 		Description: strings.Repeat("x", discord.MaxContentLength+500),
@@ -1192,7 +1192,7 @@ func failFetchRun(t *testing.T, fg *v1beta1.FeedGroup, feed v1beta1.FeedSpec, n 
 	for range n {
 		processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{}, fetchErr, nil))
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if !apimeta.IsStatusConditionFalse(fs.Conditions, v1beta1.FeedConditionTypeReachable) ||
 		fs.RetryCount != int32(n) || fs.LastError == "" {
 		t.Fatalf("precondition: want a fetch-phase failure run of %d, got %+v", n, fs)
@@ -1212,7 +1212,7 @@ func TestProcessFeed_FetchRecoveryStartsDeliveryRetriesFresh(t *testing.T) {
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
 	fg, feed := newMetricsFeedGroup(ns, name, `{{if eq .Title "bad"}}{{.Title.Nope}}{{else}}ok {{.Title}}{{end}}`)
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "https://example.com/bad", Title: "bad", Seq: 1},
 		{ID: "https://example.com/ok-entry", Title: "fine", Seq: 0},
@@ -1222,7 +1222,7 @@ func TestProcessFeed_FetchRecoveryStartsDeliveryRetriesFresh(t *testing.T) {
 	recorder := events.NewFakeRecorder(10)
 	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
 
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Errorf("RetryCount = %d, want 1: the render failure is the first of a new run", fs.RetryCount)
 	}
@@ -1253,7 +1253,7 @@ func TestProcessFeed_FetchRecoveryBacksOffSendFailureFromOne(t *testing.T) {
 	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 400, Status: "400 Bad Request"}}}
 	processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Errorf("RetryCount = %d, want 1", fs.RetryCount)
 	}
@@ -1269,12 +1269,12 @@ func TestProcessFeed_DeliveryRunSurvivesSuccessfulFetches(t *testing.T) {
 	ns, name := "processfeed-delivery-run", "fg-delivery-run"
 
 	fg, feed := newMetricsFeedGroup(ns, name, "{{.Title.Nope}}")
-	fg.Spec.Retries = 10
+	fg.Spec.Retries = new(int32(10))
 	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "https://example.com/only-entry", Title: "only"}}}
 
 	for want := int32(1); want <= 3; want++ {
 		processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, &fakeSender{}))
-		if got := feedStatusFor(fg, feed.RSSUrl).RetryCount; got != want {
+		if got := feedStatusFor(fg, feed.Name).RetryCount; got != want {
 			t.Fatalf("after render failure %d: RetryCount = %d, want %d", want, got, want)
 		}
 	}
@@ -1290,7 +1290,7 @@ func TestProcessFeed_Filter(t *testing.T) {
 	}{
 		{
 			name:   "regex match",
-			filter: &v1beta1.Filter{Regex: "Kubernetes|K8s"},
+			filter: &v1beta1.Filter{Include: &v1beta1.FilterRules{Regex: "Kubernetes|K8s"}},
 			entries: []rss.Entry{
 				{ID: "k8s-1", Title: "Kubernetes Release v1.30", Description: "New Kubernetes version released", Seq: 1},
 				{ID: "python-conf", Title: "Python Conference Schedule", Description: "Python conference talks announced", Seq: 0},
@@ -1300,7 +1300,7 @@ func TestProcessFeed_Filter(t *testing.T) {
 		},
 		{
 			name:   "keyword match in title",
-			filter: &v1beta1.Filter{Keywords: []string{"Python", "Django"}},
+			filter: &v1beta1.Filter{Include: &v1beta1.FilterRules{Keywords: []string{"Python", "Django"}}},
 			entries: []rss.Entry{
 				{ID: "python-1", Title: "Python Tutorial", Description: "Learn Python basics", Seq: 1},
 				{ID: "js-1", Title: "JavaScript Best Practices", Description: "Advanced JS patterns", Seq: 0},
@@ -1310,7 +1310,7 @@ func TestProcessFeed_Filter(t *testing.T) {
 		},
 		{
 			name:   "keyword match in description",
-			filter: &v1beta1.Filter{Keywords: []string{"Django"}},
+			filter: &v1beta1.Filter{Include: &v1beta1.FilterRules{Keywords: []string{"Django"}}},
 			entries: []rss.Entry{
 				{ID: "web-frameworks", Title: "Web Frameworks", Description: "Deep dive into Django internals", Seq: 1},
 				{ID: "unrelated", Title: "Rust Updates", Description: "Rust 2026 edition", Seq: 0},
@@ -1320,7 +1320,7 @@ func TestProcessFeed_Filter(t *testing.T) {
 		},
 		{
 			name:   "zero matches does not send or advance watermark",
-			filter: &v1beta1.Filter{Keywords: []string{"Nomatch"}},
+			filter: &v1beta1.Filter{Include: &v1beta1.FilterRules{Keywords: []string{"Nomatch"}}},
 			entries: []rss.Entry{
 				{ID: "filtered-1", Title: "Article 1", Description: "Desc 1", Seq: 1},
 				{ID: "filtered-2", Title: "Article 2", Description: "Desc 2", Seq: 0},
@@ -1350,7 +1350,7 @@ func TestProcessFeed_Filter(t *testing.T) {
 					t.Fatalf("sent content = %q, want %q", sender.sent[0].Content, tc.wantContent)
 				}
 			}
-			fs := feedStatusFor(fg, feed.RSSUrl)
+			fs := feedStatusFor(fg, feed.Name)
 			if fs.LastSeenEntry != tc.wantLastSeen {
 				t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, tc.wantLastSeen)
 			}
@@ -1359,7 +1359,7 @@ func TestProcessFeed_Filter(t *testing.T) {
 }
 
 func TestProcessFeed_StripHTMLFromDescription(t *testing.T) {
-	fg, feed := newMetricsFeedGroup("processfeed-strip-html", "fg-strip-html", defaultDescriptionFormat)
+	fg, feed := newMetricsFeedGroup("processfeed-strip-html", "fg-strip-html", defaultEmbedDescription)
 	sender := &fakeSender{}
 
 	fetch := rss.FetchResult{Entries: []rss.Entry{{
@@ -1386,11 +1386,8 @@ func TestProcessFeed_StripHTMLFromDescription(t *testing.T) {
 func TestProcessFeed_EmbedRendering(t *testing.T) {
 	const embedTitle = "Embed Article"
 	fg, feed := newMetricsFeedGroup("processfeed-embed", "fg-embed", "")
-	fg.Spec.Embed = &v1beta1.EmbedSpec{
-		Enabled: true,
-		Color:   "#00FF00",
-	}
-	feed.ForumThreadName = tmplTitle
+	fg.Spec.Message = &v1beta1.MessageSpec{Embed: &v1beta1.EmbedSpec{Color: "#00FF00"}}
+	feed.ForumPost = &v1beta1.ForumPostSpec{Name: tmplTitle}
 	fg.Spec.Feeds[0] = feed
 	sender := &fakeSender{}
 
@@ -1429,7 +1426,7 @@ func TestProcessFeed_EmbedRendering(t *testing.T) {
 
 func TestProcessFeed_EmbedDropsUnsafeURLs(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-embed-unsafe", "fg-embed-unsafe", "")
-	fg.Spec.Embed = &v1beta1.EmbedSpec{Enabled: true}
+	fg.Spec.Message = &v1beta1.MessageSpec{Embed: &v1beta1.EmbedSpec{}}
 	fg.Spec.Feeds[0] = feed
 	sender := &fakeSender{}
 
@@ -1482,7 +1479,7 @@ func TestProcessFeed_NoDateCatchUpAndAdvance(t *testing.T) {
 	if sender.sent[0].Content != articleB || sender.sent[1].Content != articleC {
 		t.Fatalf("sent = [%q, %q], want [%s, %s]", sender.sent[0].Content, sender.sent[1].Content, articleB, articleC)
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.LastSeenEntry != "c" {
 		t.Fatalf("LastSeenEntry = %q, want 'c'", fs.LastSeenEntry)
 	}
@@ -1522,7 +1519,7 @@ func TestProcessFeed_ScrolledOutWatermarkFallsBackToCatchUp(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sent %d messages, want 1", len(sender.sent))
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.LastSeenEntry != "original-article" {
 		t.Fatalf("LastSeenEntry = %q, want original-article", fs.LastSeenEntry)
 	}
@@ -1559,7 +1556,7 @@ func TestProcessFeed_ScrolledOutWatermarkFallsBackToCatchUp(t *testing.T) {
 
 func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-render-event", "fg-render-event", "{{.Bogus}}")
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
 	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "e1", Title: "Title 1"}}}
 	recorder := events.NewFakeRecorder(10)
@@ -1569,7 +1566,7 @@ func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 	if !verdict.retry {
 		t.Fatal("verdict.retry = false, want true")
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
@@ -1612,7 +1609,7 @@ func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 
 func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-event", "fg-send-event", "")
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
 	fetch := oneEntryFetch()
 	recorder := events.NewFakeRecorder(10)
@@ -1622,7 +1619,7 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	if !verdict.retry {
 		t.Fatal("verdict.retry = false, want true")
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}
@@ -1666,7 +1663,7 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 
 func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-halt", "fg-send-halt", tmplTitle)
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fg.Spec.Feeds[0] = feed
 	fetch := rss.FetchResult{Entries: []rss.Entry{
 		{ID: "older-article", Title: "Older Article", Seq: 1},
@@ -1679,7 +1676,7 @@ func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sender called %d times, want 1 (newer must not be attempted)", len(sender.sent))
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.LastSeenEntry != "" {
 		t.Fatalf("LastSeenEntry = %q, want empty (must not advance past failed entry)", fs.LastSeenEntry)
 	}
@@ -1700,7 +1697,7 @@ func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
 
 func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-etag", "fg-send-etag", "")
-	fg.Spec.Retries = 2
+	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
 	fetch := oneEntryFetch()
 	fetch.ETag = `"v1"`
@@ -1710,7 +1707,7 @@ func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
 		processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender))
 	}
 
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 2 {
 		t.Fatalf("RetryCount = %d, want 2", fs.RetryCount)
 	}
@@ -1731,7 +1728,7 @@ func TestProcessFeed_SendFailureDoesNotStoreETag(t *testing.T) {
 
 func TestProcessFeed_PermanentSendFailureBackoff(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-perm-send", "fg-perm-send", "")
-	fg.Spec.Retries = 3
+	fg.Spec.Retries = new(int32(3))
 	fg.Spec.RetryInterval = "5m"
 	fg.Spec.Feeds[0] = feed
 
@@ -1743,7 +1740,7 @@ func TestProcessFeed_PermanentSendFailureBackoff(t *testing.T) {
 	if verdict.retry {
 		t.Fatal("verdict.retry = true, want false for permanent send failure")
 	}
-	fs := feedStatusFor(fg, feed.RSSUrl)
+	fs := feedStatusFor(fg, feed.Name)
 	if fs.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
 	}

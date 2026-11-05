@@ -63,7 +63,7 @@ func (run feedRun) withClock(clock func() time.Time) feedRun {
 
 // testAttempt is the feedAttempt for fg's feed at url, with no Event recorder.
 func testAttempt(t testing.TB, fg *v1beta1.FeedGroup, fs *v1beta1.FeedStatus, url string, now time.Time) feedAttempt {
-	return testRun(t, fg, v1beta1.FeedSpec{RSSUrl: url}, rss.FetchResult{}, nil, nil).withNow(now).newAttempt(fs)
+	return testRun(t, fg, v1beta1.FeedSpec{Name: testFeedName(url), URL: url}, rss.FetchResult{}, nil, nil).withNow(now).newAttempt(fs)
 }
 
 func (a feedAttempt) withRecorder(recorder events.EventRecorder) feedAttempt {

@@ -20,34 +20,29 @@ package v1beta1
 // EmbedSpecApplyConfiguration represents a declarative configuration of the EmbedSpec type for use
 // with apply.
 //
-// EmbedSpec configures Discord's native embed rendering (the colored
-// "bubble" with title, description, thumbnail, author and footer) instead
-// of a plain text message.
+// EmbedSpec renders an entry as a Discord embed: the colored panel with a
+// linked title, description, image, author and footer. Every text field is a
+// template with the same placeholders as MessageSpec.Content.
 type EmbedSpecApplyConfiguration struct {
-	// enabled switches a feed's messages from plain text content to a
-	// Discord embed.
-	Enabled *bool `json:"enabled,omitempty"`
+	// title is a template for the embed's title, which links to the entry.
+	// Defaults to "{{.Title}}".
+	Title *string `json:"title,omitempty"`
+	// description is a template for the embed's body. Defaults to
+	// "{{.Description}}".
+	Description *string `json:"description,omitempty"`
 	// color is the embed's side-bar color, as a hex string (e.g. "#5865F2"
 	// or "5865F2").
 	Color *string `json:"color,omitempty"`
-	// descriptionFormat is the template used to render the embed's
-	// description. Supports the same placeholders as Format. Defaults to
-	// "{{.Description}}".
-	DescriptionFormat *string `json:"descriptionFormat,omitempty"`
-	// imageStyle chooses how an entry's image is shown: "thumbnail" (a small
-	// image beside the description, the default) or "image" (a large image
-	// below the description).
+	// author is the embed's author line.
+	Author *EmbedAuthorApplyConfiguration `json:"author,omitempty"`
+	// footer is the embed's footer line.
+	Footer *EmbedFooterApplyConfiguration `json:"footer,omitempty"`
+	// imageStyle chooses how an entry's image is shown: Thumbnail (small,
+	// beside the description), Image (large, below it) or None.
 	ImageStyle *string `json:"imageStyle,omitempty"`
-	// authorName is shown on the embed's author line.
-	AuthorName *string `json:"authorName,omitempty"`
-	// authorURL is the URL linked from the embed author name.
-	AuthorURL *string `json:"authorURL,omitempty"`
-	// authorIconURL is the avatar icon URL displayed beside the author name.
-	AuthorIconURL *string `json:"authorIconURL,omitempty"`
-	// footerText is shown in the embed's footer.
-	FooterText *string `json:"footerText,omitempty"`
-	// footerIconURL is the small icon displayed beside the footer text.
-	FooterIconURL *string `json:"footerIconURL,omitempty"`
+	// timestamp chooses the time shown on the embed: Published (the entry's
+	// published time, when it has one) or None.
+	Timestamp *string `json:"timestamp,omitempty"`
 }
 
 // EmbedSpecApplyConfiguration constructs a declarative configuration of the EmbedSpec type for use with
@@ -56,11 +51,19 @@ func EmbedSpec() *EmbedSpecApplyConfiguration {
 	return &EmbedSpecApplyConfiguration{}
 }
 
-// WithEnabled sets the Enabled field in the declarative configuration to the given value
+// WithTitle sets the Title field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Enabled field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithEnabled(value bool) *EmbedSpecApplyConfiguration {
-	b.Enabled = &value
+// If called multiple times, the Title field is set to the value of the last call.
+func (b *EmbedSpecApplyConfiguration) WithTitle(value string) *EmbedSpecApplyConfiguration {
+	b.Title = &value
+	return b
+}
+
+// WithDescription sets the Description field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Description field is set to the value of the last call.
+func (b *EmbedSpecApplyConfiguration) WithDescription(value string) *EmbedSpecApplyConfiguration {
+	b.Description = &value
 	return b
 }
 
@@ -72,11 +75,19 @@ func (b *EmbedSpecApplyConfiguration) WithColor(value string) *EmbedSpecApplyCon
 	return b
 }
 
-// WithDescriptionFormat sets the DescriptionFormat field in the declarative configuration to the given value
+// WithAuthor sets the Author field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the DescriptionFormat field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithDescriptionFormat(value string) *EmbedSpecApplyConfiguration {
-	b.DescriptionFormat = &value
+// If called multiple times, the Author field is set to the value of the last call.
+func (b *EmbedSpecApplyConfiguration) WithAuthor(value *EmbedAuthorApplyConfiguration) *EmbedSpecApplyConfiguration {
+	b.Author = value
+	return b
+}
+
+// WithFooter sets the Footer field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Footer field is set to the value of the last call.
+func (b *EmbedSpecApplyConfiguration) WithFooter(value *EmbedFooterApplyConfiguration) *EmbedSpecApplyConfiguration {
+	b.Footer = value
 	return b
 }
 
@@ -88,42 +99,10 @@ func (b *EmbedSpecApplyConfiguration) WithImageStyle(value string) *EmbedSpecApp
 	return b
 }
 
-// WithAuthorName sets the AuthorName field in the declarative configuration to the given value
+// WithTimestamp sets the Timestamp field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AuthorName field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithAuthorName(value string) *EmbedSpecApplyConfiguration {
-	b.AuthorName = &value
-	return b
-}
-
-// WithAuthorURL sets the AuthorURL field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AuthorURL field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithAuthorURL(value string) *EmbedSpecApplyConfiguration {
-	b.AuthorURL = &value
-	return b
-}
-
-// WithAuthorIconURL sets the AuthorIconURL field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AuthorIconURL field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithAuthorIconURL(value string) *EmbedSpecApplyConfiguration {
-	b.AuthorIconURL = &value
-	return b
-}
-
-// WithFooterText sets the FooterText field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the FooterText field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithFooterText(value string) *EmbedSpecApplyConfiguration {
-	b.FooterText = &value
-	return b
-}
-
-// WithFooterIconURL sets the FooterIconURL field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the FooterIconURL field is set to the value of the last call.
-func (b *EmbedSpecApplyConfiguration) WithFooterIconURL(value string) *EmbedSpecApplyConfiguration {
-	b.FooterIconURL = &value
+// If called multiple times, the Timestamp field is set to the value of the last call.
+func (b *EmbedSpecApplyConfiguration) WithTimestamp(value string) *EmbedSpecApplyConfiguration {
+	b.Timestamp = &value
 	return b
 }

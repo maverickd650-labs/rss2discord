@@ -20,38 +20,33 @@ package v1beta1
 // FeedSpecApplyConfiguration represents a declarative configuration of the FeedSpec type for use
 // with apply.
 //
-// FeedSpec defines the configuration for a single RSS feed.
+// FeedSpec defines the configuration for a single feed.
 type FeedSpecApplyConfiguration struct {
-	// name is an optional DNS-1123 label uniquely identifying this feed within
-	// the group. When set, status, delivery watermarks, and metrics track this
-	// identity across rssUrl updates.
+	// name identifies this feed within the group: status, delivery history
+	// and metrics are keyed by it, so a feed's url can change without losing
+	// its history. A DNS-1123 label.
 	Name *string `json:"name,omitempty"`
-	// rssUrl is the URL of the RSS feed to fetch. Only http:// and https:// are supported.
-	RSSUrl *string `json:"rssUrl,omitempty"`
-	// filter defines how to filter entries from this feed.
+	// url is the RSS or Atom feed to fetch. Only http:// and https:// are
+	// supported.
+	URL *string `json:"url,omitempty"`
+	// suspend stops processing this feed. Its status and delivery history
+	// are kept.
+	Suspend *bool `json:"suspend,omitempty"`
+	// filter selects which of this feed's entries are delivered.
 	Filter *FilterApplyConfiguration `json:"filter,omitempty"`
-	// format is the template for Discord messages for this feed.
-	// Overrides the group-level format if set.
-	Format *string `json:"format,omitempty"`
-	// embed configures Discord embed rendering for this feed. Overrides the
-	// group-level Embed config if set.
-	Embed *EmbedSpecApplyConfiguration `json:"embed,omitempty"`
-	// username overrides the webhook's default display name for messages
-	// sent from this feed, overriding the group-level Username if set.
+	// message replaces the group's message for this feed. It is not merged
+	// with the group's: fields it leaves unset are not inherited.
+	Message *MessageSpecApplyConfiguration `json:"message,omitempty"`
+	// username overrides the group's username for this feed.
 	Username *string `json:"username,omitempty"`
-	// avatarURL overrides the webhook's default avatar for messages sent
-	// from this feed, overriding the group-level AvatarURL if set.
+	// avatarURL overrides the group's avatarURL for this feed.
 	AvatarURL *string `json:"avatarURL,omitempty"`
-	// forumThreadName creates a new forum post for each message, named from
-	// this template, when DiscordWebhookSecretRef points at a forum
-	// channel's webhook. Supports the same placeholders as Format. Leave
-	// unset for regular text channels.
-	ForumThreadName *string `json:"forumThreadName,omitempty"`
-	// forumThreadID posts messages into an existing forum thread/post
-	// instead of creating a new one. Takes precedence over ForumThreadName.
-	ForumThreadID *string `json:"forumThreadID,omitempty"`
-	// paused stops processing this feed if set to true.
-	Paused *bool `json:"paused,omitempty"`
+	// thread posts this feed's messages into an existing thread or forum
+	// post. Mutually exclusive with forumPost.
+	Thread *ThreadTargetApplyConfiguration `json:"thread,omitempty"`
+	// forumPost creates a new forum post per entry, for a forum or media
+	// channel's webhook. Mutually exclusive with thread.
+	ForumPost *ForumPostSpecApplyConfiguration `json:"forumPost,omitempty"`
 }
 
 // FeedSpecApplyConfiguration constructs a declarative configuration of the FeedSpec type for use with
@@ -68,11 +63,19 @@ func (b *FeedSpecApplyConfiguration) WithName(value string) *FeedSpecApplyConfig
 	return b
 }
 
-// WithRSSUrl sets the RSSUrl field in the declarative configuration to the given value
+// WithURL sets the URL field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RSSUrl field is set to the value of the last call.
-func (b *FeedSpecApplyConfiguration) WithRSSUrl(value string) *FeedSpecApplyConfiguration {
-	b.RSSUrl = &value
+// If called multiple times, the URL field is set to the value of the last call.
+func (b *FeedSpecApplyConfiguration) WithURL(value string) *FeedSpecApplyConfiguration {
+	b.URL = &value
+	return b
+}
+
+// WithSuspend sets the Suspend field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Suspend field is set to the value of the last call.
+func (b *FeedSpecApplyConfiguration) WithSuspend(value bool) *FeedSpecApplyConfiguration {
+	b.Suspend = &value
 	return b
 }
 
@@ -84,19 +87,11 @@ func (b *FeedSpecApplyConfiguration) WithFilter(value *FilterApplyConfiguration)
 	return b
 }
 
-// WithFormat sets the Format field in the declarative configuration to the given value
+// WithMessage sets the Message field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Format field is set to the value of the last call.
-func (b *FeedSpecApplyConfiguration) WithFormat(value string) *FeedSpecApplyConfiguration {
-	b.Format = &value
-	return b
-}
-
-// WithEmbed sets the Embed field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Embed field is set to the value of the last call.
-func (b *FeedSpecApplyConfiguration) WithEmbed(value *EmbedSpecApplyConfiguration) *FeedSpecApplyConfiguration {
-	b.Embed = value
+// If called multiple times, the Message field is set to the value of the last call.
+func (b *FeedSpecApplyConfiguration) WithMessage(value *MessageSpecApplyConfiguration) *FeedSpecApplyConfiguration {
+	b.Message = value
 	return b
 }
 
@@ -116,26 +111,18 @@ func (b *FeedSpecApplyConfiguration) WithAvatarURL(value string) *FeedSpecApplyC
 	return b
 }
 
-// WithForumThreadName sets the ForumThreadName field in the declarative configuration to the given value
+// WithThread sets the Thread field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ForumThreadName field is set to the value of the last call.
-func (b *FeedSpecApplyConfiguration) WithForumThreadName(value string) *FeedSpecApplyConfiguration {
-	b.ForumThreadName = &value
+// If called multiple times, the Thread field is set to the value of the last call.
+func (b *FeedSpecApplyConfiguration) WithThread(value *ThreadTargetApplyConfiguration) *FeedSpecApplyConfiguration {
+	b.Thread = value
 	return b
 }
 
-// WithForumThreadID sets the ForumThreadID field in the declarative configuration to the given value
+// WithForumPost sets the ForumPost field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ForumThreadID field is set to the value of the last call.
-func (b *FeedSpecApplyConfiguration) WithForumThreadID(value string) *FeedSpecApplyConfiguration {
-	b.ForumThreadID = &value
-	return b
-}
-
-// WithPaused sets the Paused field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Paused field is set to the value of the last call.
-func (b *FeedSpecApplyConfiguration) WithPaused(value bool) *FeedSpecApplyConfiguration {
-	b.Paused = &value
+// If called multiple times, the ForumPost field is set to the value of the last call.
+func (b *FeedSpecApplyConfiguration) WithForumPost(value *ForumPostSpecApplyConfiguration) *FeedSpecApplyConfiguration {
+	b.ForumPost = value
 	return b
 }

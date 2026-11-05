@@ -93,7 +93,7 @@ var _ = Describe("Reconcile triggering under a running manager", func() {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fg.Name, Namespace: loopNamespace}, &got); err != nil {
 				return 0
 			}
-			if fs := feedStatusFor(&got, rssServer.URL); fs != nil {
+			if fs := feedStatusFor(&got, testFeedName(rssServer.URL)); fs != nil {
 				return fs.RetryCount
 			}
 			return 0

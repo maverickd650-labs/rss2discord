@@ -1,10 +1,10 @@
 # FeedGroup v1beta1 Schema Reference
 
-`rss2discord.maverickd650.dev/v1beta1` is the current served and storage API version for the `FeedGroup` custom resource definition in `rss2discord-operator`.
+`rss2discord.maverickd650.dev/v1beta1` is the served and storage API version of the `FeedGroup` custom resource. It is intended to become `v1` unchanged after a bedding-in period, so its shape is meant to be final: new features should arrive as new optional fields, not as changes to these.
 
 ## Overview
 
-A `FeedGroup` resource declaratively defines a collection of RSS/Atom feeds to monitor and dispatch to a designated Discord webhook. The operator periodically polls each feed, parses entries, filters and templates them into Discord messages, and tracks delivery state per feed in `.status`.
+A `FeedGroup` declares a set of RSS/Atom feeds that post to one Discord webhook. The operator polls each feed, filters and renders its new entries into Discord messages, and records each feed's delivery state in `.status`.
 
 ```yaml
 apiVersion: rss2discord.maverickd650.dev/v1beta1
@@ -17,28 +17,36 @@ spec:
     name: discord-webhook
     key: url
   interval: 30m
-  retries: 3
-  retryInterval: 5m
   username: "Engineering Feeds"
   avatarURL: "https://example.com/avatar.png"
+  message:
+    content: "New on {{.FeedTitle}}"
+    mentions:
+      roleIDs: ["123456789012345678"]
+    embed:
+      color: "#326CE5"
+      author:
+        name: "{{.Author}}"
+        url: "https://kubernetes.io/blog/"
+        iconURL: "https://kubernetes.io/images/favicon.png"
+      footer:
+        text: "Delivered via rss2discord"
   feeds:
     - name: k8s-blog
-      rssUrl: "https://blog.kubernetes.io/feed.xml"
-      username: "Kubernetes Blog"
+      url: "https://kubernetes.io/feed.xml"
       filter:
-        keywords:
-          - "release"
-          - "security"
-        excludeKeywords:
-          - "internship"
-      embed:
-        enabled: true
-        color: "#326CE5"
-        authorName: "Kubernetes"
-        authorURL: "https://blog.kubernetes.io"
-        authorIconURL: "https://kubernetes.io/images/favicon.png"
-        footerText: "Delivered via rss2discord"
-        footerIconURL: "https://kubernetes.io/images/favicon.png"
+        include:
+          categories: ["release", "security"]
+        exclude:
+          keywords: ["internship"]
+    - name: k8s-forum
+      url: "https://discuss.kubernetes.io/latest.rss"
+      message:
+        content: "**{{.Title}}**\n{{.Link}}"
+        silent: true
+      forumPost:
+        name: "{{.Title}}"
+        appliedTagIDs: ["234567890123456789"]
 ```
 
 ---
@@ -49,74 +57,88 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `discordWebhookSecretRef` | `corev1.SecretKeySelector` | **Yes** | — | Reference to a Kubernetes Secret and key containing the Discord webhook URL. |
-| `interval` | `string` | No | `30m` | Base polling cadence for feeds in the group. Minimum `1m`. Uses standard Go duration format (e.g. `15m`, `1h`). |
-| `retries` | `int32` | No | `3` | Maximum consecutive retry attempts for transient fetch or send errors before backing off. Range: `0` to `100`. |
-| `retryInterval` | `string` | No | `5m` | Delay between retry attempts. Minimum `10s`. Uses standard Go duration format. |
-| `suspend` | `bool` | No | `false` | When `true`, suspends all reconciliation for this group without deleting state or watermarks. |
-| `username` | `string` | No | — | Default webhook username override for all feeds in the group. Max 80 chars; cannot contain "clyde" or "discord" (case-insensitive). |
-| `avatarURL` | `string` | No | — | Default avatar image URL for messages sent by this group. Must start with `http://` or `https://`. |
-| `format` | `string` | No | `**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})` | Default Go text template for plain-text Discord messages (used when embed is not enabled). |
-| `embed` | `*EmbedSpec` | No | — | Default embed configuration for all feeds in the group. |
-| `catchUpLimit` | `*int32` | No | `5` | Caps how many entries are sent when a feed has no usable watermark (e.g. initial sync or scrolled-past watermark). Range: `0` to `100`. Setting `0` skips initial backlogs entirely. |
-| `feeds` | `[]FeedSpec` | **Yes** | — | List of up to 50 feeds to poll and process in this group. |
-
----
+| `discordWebhookSecretRef` | `SecretKeySelector` | **Yes** | — | Secret and key holding the Discord webhook URL. |
+| `suspend` | `bool` | No | `false` | Stops processing every feed in the group. Status and delivery history are kept. |
+| `interval` | `string` | No | `30m` | How often feeds are checked. Go duration syntax; at least `1m`. |
+| `retries` | `int32` | No | `3` | How many consecutive transient fetch or send failures, the first included, are counted before they are reported as persistent (0–100). Each one below the limit is retried after `retryInterval`, so `3` means two quick retries and `0` or `1` mean none. |
+| `retryInterval` | `string` | No | `5m` | Delay between retries, and the base of the permanent-failure backoff. At least `10s`. |
+| `message` | `MessageSpec` | No | content `**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})` | The message sent for each entry, for every feed that doesn't set its own. |
+| `username` | `string` | No | — | Overrides the webhook's display name. 1–80 characters; must not contain `clyde`, `discord` (any case), `@`, `#`, `:` or <code>```</code>, or be `everyone`/`here`. |
+| `avatarURL` | `string` | No | — | Overrides the webhook's avatar. `http://` or `https://`. |
+| `catchUpLimit` | `int32` | No | `5` | Caps how many entries are sent when a feed has no usable watermark (first sync, or the watermark scrolled out of the feed). `0` sends no backlog. 0–100. |
+| `feeds` | `[]FeedSpec` | **Yes** | — | 1–50 feeds, keyed by `name`. Each `url` must also be unique. |
 
 ### `FeedSpec`
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `rssUrl` | `string` | **Yes** | — | Absolute HTTP or HTTPS URL of the RSS or Atom feed. |
-| `name` | `string` | No | — | Optional stable feed identifier formatted as an RFC 1123 DNS label (lowercase alphanumeric and hyphens, max 63 characters). Must be unique within the `FeedGroup`. |
-| `paused` | `bool` | No | `false` | Pauses polling and processing for this specific feed without dropping its status or watermarks. |
-| `username` | `string` | No | — | Webhook username override specific to this feed. Overrides `spec.username`. Max 80 chars; cannot contain "clyde" or "discord". |
-| `avatarURL` | `string` | No | — | Webhook avatar image URL override specific to this feed. Overrides `spec.avatarURL`. Must start with `http://` or `https://`. |
-| `filter` | `*Filter` | No | — | Filtering rules determining which entries are published. |
-| `format` | `string` | No | — | Overrides `spec.format` for this specific feed. |
-| `embed` | `*EmbedSpec` | No | — | Overrides `spec.embed` for this specific feed. |
-| `forumThreadName` | `string` | No | — | Template for creating a new forum thread per entry when targeting a Discord forum channel webhook. |
-| `forumThreadID` | `string` | No | — | Discord snowflake ID of an existing forum thread to post into. Takes precedence over `forumThreadName`. |
+| `name` | `string` | **Yes** | — | The feed's identity within the group: a DNS-1123 label (lowercase alphanumerics and `-`, at most 63). The list-map key of `spec.feeds` and `status.feeds`, and the `feed` label of per-feed metrics. |
+| `url` | `string` | **Yes** | — | RSS or Atom feed URL, `http://` or `https://`. |
+| `suspend` | `bool` | No | `false` | Stops processing this feed. Status and delivery history are kept. |
+| `filter` | `Filter` | No | — | Which entries are delivered. |
+| `message` | `MessageSpec` | No | the group's | Replaces the group's `message` for this feed, as a whole. |
+| `username` | `string` | No | the group's | Overrides the group's `username`. Same rules. |
+| `avatarURL` | `string` | No | the group's | Overrides the group's `avatarURL`. |
+| `thread` | `ThreadTarget` | No | — | `id`: post into this existing thread or forum post. |
+| `forumPost` | `ForumPostSpec` | No | — | Create a new post per entry, for a forum or media channel's webhook. |
 
----
+`thread` and `forumPost` are mutually exclusive.
 
-### `Filter`
+### `Filter` and `FilterRules`
 
-Filters control which entries are eligible for dispatch. Positive filters require matches; negative filters act as immediate vetoes.
+`filter.include` and `filter.exclude` are both `FilterRules`. An entry is delivered when it matches **every** criterion `include` sets and **none** of the criteria `exclude` sets. A `FilterRules` must set at least one field.
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `keywords` | `[]string` | No | — | Case-insensitive positive keywords matched against title or description (OR semantics). |
-| `regex` | `string` | No | — | Regular expression matched against entry title or description. |
-| `excludeKeywords` | `[]string` | No | — | Case-insensitive exclusion keywords. Any match rejects the entry immediately. |
-| `excludeRegex` | `string` | No | — | Regular expression exclusion. Any match rejects the entry immediately. |
+| Field | Type | Matching |
+|---|---|---|
+| `keywords` | `[]string` | Case-insensitive substring of the title or description. Any one keyword is enough. |
+| `regex` | `string` | RE2 regex over the title and description (joined by a newline). Case-sensitive; use `(?i)` to ignore case. |
+| `categories` | `[]string` | The entry's categories (RSS `<category>`, Atom `<category term>`), compared whole and case-insensitively. Any one category is enough. |
 
-#### Filtering Evaluation Logic
-1. **Exclusion Veto:** If `excludeRegex` is provided and matches, the entry is dropped.
-2. **Exclusion Keywords:** If any keyword in `excludeKeywords` matches the entry's title or description, the entry is dropped.
-3. **Positive Regex:** If `regex` is provided and does not match, the entry is dropped.
-4. **Positive Keywords:** If `keywords` is provided and none match, the entry is dropped.
-5. Entries passing all checks proceed to rendering and dispatch.
+So `include: {keywords: [a, b], categories: [c]}` means "(a or b) and c", and `exclude: {keywords: [x], regex: y}` means "drop if x or y".
 
----
+### `MessageSpec`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `content` | `string` | — | Template for the message text, sent alongside the embed when both are set. |
+| `embed` | `EmbedSpec` | — | Render the entry as an embed. |
+| `mentions` | `Mentions` | — | `roleIDs`, `userIDs` (each up to 20 Discord IDs) to ping. They are put at the start of the message text. |
+| `silent` | `bool` | `false` | Post without push or desktop notifications. |
+| `suppressLinkPreviews` | `bool` | `false` | Don't expand links in the text into previews. Not allowed with `embed`. |
+
+A message must set `content`, `embed`, or both.
+
+**Mentions are an allow-list.** Discord is told to ping exactly the configured `roleIDs` and `userIDs` and nothing else, so a mention written in a template, or appearing in feed text, never pings, and `@everyone`/`@here` are always suppressed. An entry whose `content` renders blank (with no embed) is a render error, whatever the mentions.
+
+**Overrides replace, they don't merge.** A feed's `message` is used instead of the group's whole: to change one field for a feed, repeat the others. This keeps "what does this feed send" answerable from one place, and lets a feed drop the group's embed by setting a message without one.
 
 ### `EmbedSpec`
 
-Controls formatting entries as rich Discord embeds instead of plain text.
+Every text field is a template with the same placeholders and functions as `content`.
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `enabled` | `bool` | No | `false` | Enables rich embed formatting. |
-| `color` | `string` | No | — | Hex color code for the embed border (e.g., `#5865F2` or `5865F2`). |
-| `descriptionFormat` | `string` | No | `{{.Description}}` | Go template rendering the embed description body. |
-| `authorName` | `string` | No | — | Author display text on the embed header. Discord requires this for the author section to render. |
-| `authorURL` | `string` | No | — | Hyperlink target for the author name. Must start with `http://` or `https://`. Only sent if `authorName` is provided. |
-| `authorIconURL` | `string` | No | — | Small icon displayed next to the author name. Must start with `http://` or `https://`. Only sent if `authorName` is provided. |
-| `footerText` | `string` | No | — | Footer text at the bottom of the embed. Discord requires this for the footer section to render. |
-| `footerIconURL` | `string` | No | — | Small icon displayed next to the footer text. Must start with `http://` or `https://`. Only sent if `footerText` is provided. |
-| `imageStyle` | `string` | No | `thumbnail` | Layout style for lead images: `thumbnail` (compact right side) or `image` (large banner below description). |
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `title` | `string` | `{{.Title}}` | The title, which links to the entry. |
+| `description` | `string` | `{{.Description}}` | The body. |
+| `color` | `string` | — | Side-bar color as hex: `#5865F2` or `5865F2`. |
+| `author` | `EmbedAuthor` | — | `name` (required), `url`, `iconURL`. |
+| `footer` | `EmbedFooter` | — | `text` (required), `iconURL`. |
+| `imageStyle` | `Thumbnail` \| `Image` \| `None` | `Thumbnail` | How the entry's lead image is shown. |
+| `timestamp` | `Published` \| `None` | `Published` | Which time the embed shows. |
 
-Kubernetes admission requires `authorName` whenever `authorURL` or `authorIconURL` is set, and requires `footerText` whenever `footerIconURL` is set. Configurations that provide only an author URL/icon or footer icon are rejected instead of being silently omitted from the Discord payload.
+An author or footer whose template renders blank for an entry is left out of that entry's embed, since Discord requires their text. All URLs must be `http://` or `https://`; image URLs taken from feed entries that aren't are dropped.
+
+### `ThreadTarget` and `ForumPostSpec`
+
+| Field | Type | Description |
+|---|---|---|
+| `thread.id` | `string` | The Discord ID of an existing thread (in a text channel) or post (in a forum or media channel). |
+| `forumPost.name` | `string` | Template for each new post's title (at most 100 characters once rendered). Required. |
+| `forumPost.appliedTagIDs` | `[]string` | Up to 5 IDs of the channel's forum tags to apply to each post. |
+
+### Template placeholders
+
+`{{.Title}}`, `{{.Description}}`, `{{.Content}}`, `{{.Link}}`, `{{.Image}}`, `{{.Published}}`, `{{.PublishedUnix}}`, `{{.Author}}`, `{{.Categories}}`, `{{.FeedTitle}}`, and the functions `truncate`, `default`, `lower`, `upper`, `trim`, `replace` and `discordTime`. See the [README](../README.md#template-fields) for what each holds.
 
 ---
 
@@ -126,85 +148,123 @@ Kubernetes admission requires `authorName` whenever `authorURL` or `authorIconUR
 
 | Field | Type | Description |
 |---|---|---|
-| `observedGeneration` | `int64` | The most recent metadata generation observed by the controller. |
-| `conditions` | `[]metav1.Condition` | Group-level conditions (`Ready`, `FeedReachable`). |
-| `webhookSecretResourceVersion` | `string` | The resource version of the referenced webhook Secret at the time it was last read. Used to detect secret updates and clear send backoffs. |
-| `feeds` | `[]FeedStatus` | Array of per-feed runtime statuses, maintained in `spec.feeds` order. |
+| `observedGeneration` | `int64` | The generation the controller last reconciled. |
+| `conditions` | `[]Condition` | `Ready` (`Unknown`/`Suspended` while suspended) and `FeedReachable`. |
+| `webhookSecretResourceVersion` | `string` | The webhook Secret's resourceVersion when last read; a change gives send-backed-off feeds an immediate retry. |
+| `feeds` | `[]FeedStatus` | One entry per `spec.feeds` item, in spec order, keyed by `name`. |
 
 ### `FeedStatus`
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `string` | Stable feed name matching `spec.feeds[i].name`. |
-| `rssUrl` | `string` | Feed URL currently associated with this status entry. |
-| `initialized` | `bool` | Whether the feed has completed at least one successful sync cycle. |
-| `lastChecked` | `*metav1.Time` | RFC 3339 timestamp of the most recent fetch attempt. |
-| `lastSeenEntry` | `string` | Delivery watermark representing the newest entry processed. |
-| `lastSent` | `map[string]string` | De-duplication ledger mapping entry identity hashes to their RFC 3339 send timestamp. Bounded to prevent unbounded status growth. |
-| `etag` | `string` | HTTP `ETag` validator stored from the most recent successful 200 response for conditional GETs. |
-| `lastModified` | `string` | HTTP `Last-Modified` header string stored from the most recent 200 response for conditional GETs. |
-| `retryCount` | `int32` | Number of consecutive failed attempts in the current failure phase. |
-| `backoffUntil` | `*metav1.Time` | RFC 3339 timestamp until which the feed is in backoff and skipped by periodic reconciles. |
-| `lastError` | `string` | Error message from the most recent failure, clamped to 2048 bytes. |
-| `conditions` | `[]metav1.Condition` | Per-feed conditions (`Reachable`, `Delivered`). |
+| `name` | `string` | The feed's `spec.feeds[].name`. |
+| `url` | `string` | The URL this status was last synced from. |
+| `conditions` | `[]Condition` | `Reachable` (fetch) and `Delivered` (render/send), with machine-readable reasons such as `HTTP404`. |
+| `initialized` | `bool` | The feed has been fetched successfully with a usable configuration. |
+| `stateVersion` | `int32` | Format of `lastSeenEntry` and `lastSent` (currently 1). |
+| `lastChecked` | `Time` | When the feed was last checked successfully (a 304 counts). |
+| `lastSeenEntry` | `string` | The delivery watermark: the newest entry handled. |
+| `lastSent` | `map[string]Time` | When each recently sent entry was sent, keyed by entry identity hash. Bounded at 50 per feed. |
+| `etag`, `lastModified` | `string` | Conditional-GET validators from the last 200 response. |
+| `retryCount` | `int32` | Consecutive failures in the current failure run. |
+| `backoffUntil` | `Time` | Permanent-failure backoff: the feed isn't fetched before this. |
+| `lastError` | `string` | The last failure's message, at most 2048 bytes. |
+
+### What a URL change keeps
+
+Because a feed is identified by its `name`, changing its `url` keeps its delivery history (`lastSeenEntry`, `lastSent`, `initialized`), so entries already posted aren't posted again. Everything that described the old URL's server is cleared: `etag` and `lastModified` (sending another server's validators could earn a wrong `304 Not Modified`), `lastChecked` (so the new URL is checked right away) and the retry state. Renaming a feed is a different feed: its old status is dropped and it starts over.
 
 ---
 
-## Key Features in v1beta1
+## Upgrading from v1alpha1
 
-### 1. Stable Feed Identity (`name`)
-In `v1alpha1`, feed statuses were keyed solely by `rssUrl`. Changing a feed's URL caused the controller to treat it as a new feed, discarding its watermark (`lastSeenEntry`), de-duplication ledger (`lastSent`), and conditional-GET headers (`etag`, `lastModified`).
+v1beta1 renames and restructures fields and makes each feed's `name` required, so existing objects can't be re-read as v1beta1 in place. There is no conversion webhook: FeedGroups are exported, converted, and re-created. Delivery history is not carried over, so each feed re-sends at most `catchUpLimit` of its newest entries (none with `catchUpLimit: 0`) on its first sync.
 
-In `v1beta1`, `name` provides a durable identifier:
-- **Durable Watermarks:** When a feed with a `name` has its `rssUrl` changed in `spec.feeds`, the controller matches by `name` first, updates `rssUrl` in `.status.feeds`, and retains the full delivery history.
-- **Reservation Safety:** Name matching reserves prior statuses before URL fallbacks run, guaranteeing that each prior status is claimed at most once.
-- **Prometheus Metric Series:** Per-feed vectors (`rss2discord_feed_operations_total`, `rss2discord_feed_healthy`, `rss2discord_feed_last_checked_timestamp_seconds`) use the feed's `name` as their `feed` metric label when provided, falling back to `rssUrl` if unnamed. When a feed identity changes or is removed, obsolete series are immediately dropped via `forgetFeed`.
-- **Validation:** Names must be RFC 1123 DNS labels (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, max 63 characters). CEL validation ensures that any configured feed names within a group are unique.
-- **History matching:** A named feed preserves its history across URL changes when its name matches. URL fallback is permitted only when the new feed or previous status is unnamed; differently named feeds never inherit each other's delivery history.
+1. **On the old release**, run the `stateVersion` check from the README's [Upgrades and rollbacks](../README.md#upgrades-and-rollbacks) section, then export every FeedGroup:
 
-### 2. Group Suspension (`spec.suspend`)
-Setting `spec.suspend: true` temporarily pauses all processing for the entire `FeedGroup`:
-- Reconciles short-circuit immediately without reading Secrets or hitting external networks.
-- Condition `Ready` is marked `Status=Unknown` with `Reason=Suspended`.
-- Existing watermarks, ledgers, and feed conditions are preserved.
-- Prometheus gauge metrics drop their series (identical to paused feeds) so suspended groups do not trigger false alerts.
-- Periodic polling requeues are unscheduled until the group is resumed or its specification changes.
+   ```bash
+   kubectl get feedgroups -A -o yaml > feedgroups-v1alpha1.yaml
+   ```
 
-### 3. Sender Override Precedence
-Messages sent to Discord resolve their sender identity using a three-tier fallback hierarchy:
-$$\text{FeedSpec override} \longrightarrow \text{FeedGroupSpec default} \longrightarrow \text{Discord Webhook configuration}$$
+2. Convert the export. From a checkout of this release:
 
-- `feed.username` takes precedence over `group.username`, falling back to Discord.
-- `feed.avatarURL` takes precedence over `group.avatarURL`, falling back to Discord.
-- Username and avatar overrides can be mixed (e.g. custom username with group avatar).
+   ```bash
+   go run ./cmd/convert-v1alpha1 < feedgroups-v1alpha1.yaml > feedgroups-v1beta1.yaml
+   ```
 
-### 4. Exclusion Vetoes (`filter.excludeKeywords`, `filter.excludeRegex`)
-Negative filters allow rejecting unwanted entries (e.g., job postings, sponsored articles, recurring automated digests):
-- Any match against `excludeKeywords` or `excludeRegex` immediately drops the entry, regardless of whether it matched positive criteria.
-- `excludeKeywords` is case-insensitive.
-- `excludeRegex` allows full regex syntax, including flags like `(?i)` for case insensitivity.
+   The converter names each feed from its URL (`https://kubernetes.io/feed.xml` becomes `kubernetes-io`), maps every field, and gives a feed its own `message` only where what it sent differs from the group's. It writes notes to stderr for anything to check by hand: an embed author or footer containing `{{` (now a template), or a feed that set both `forumThreadID` and `forumThreadName` (the ID won, and v1beta1 rejects both). Review the output, and rename feeds if you like: names are permanent identities from here on.
 
-### 5. Extended Discord Embeds
-Embed authors and footers now support links and icon avatars:
-- `authorURL` and `authorIconURL` attach links and icons to the author banner.
-- `footerIconURL` attaches an icon beside the footer text.
-- To prevent Discord webhook rejection (`400 Bad Request`), Discord requires author names and footer texts when those objects exist. The operator only constructs author or footer objects when `authorName` or `footerText` is non-empty.
-- All URLs are validated and restricted to `http://` or `https://` schemes.
+3. Delete the old FeedGroups, then upgrade the operator (its CRD now serves only v1beta1):
 
-### 6. Standardized Typed Timestamps
-- `lastChecked` and `backoffUntil` are native `*metav1.Time` fields.
-- Malformed timestamps cannot be applied through typed clients or the Kubernetes API server.
-- `lastModified` remains a string because it holds HTTP-date formatted headers (RFC 7231 / RFC 1123, e.g. `Wed, 21 Oct 2026 07:28:00 GMT`), not RFC 3339 timestamps.
+   ```bash
+   kubectl delete feedgroups -A --all
+   ```
 
----
+   Deleting first means no v1alpha1 objects are left in storage. Any that remain would be readable only as broken v1beta1 objects.
 
-## Upgrading from v1alpha1 to v1beta1
+4. Apply the converted manifests:
 
-`v1beta1` is a clean break promotion with no conversion webhooks or dual-version serving. To migrate existing resources:
+   ```bash
+   kubectl apply -f feedgroups-v1beta1.yaml
+   ```
 
-1. Update your YAML manifests:
-   - Change `apiVersion: rss2discord.maverickd650.dev/v1alpha1` to `apiVersion: rss2discord.maverickd650.dev/v1beta1`.
-   - Optionally add `name: <label>` to feeds to lock in stable identity for future URL changes.
-2. Re-apply your resources using `kubectl apply -f <manifest>.yaml`.
-3. If you are adding a stable `name` to an existing unnamed feed, keep its current `rssUrl` unchanged for this first apply. Wait for the controller to persist the name in `.status.feeds`, then change `rssUrl` in a second apply. Adding a name and changing the URL in the same update cannot be matched to the old unnamed status, so the feed starts with fresh delivery history.
-4. If you maintain external Prometheus queries, recording rules, or alerts, replace the former `rss_url` metric label with `feed`. The value is the configured feed name when present and the URL otherwise.
+5. Optionally, record that nothing is stored as v1alpha1 any more, so a future release can drop it from the CRD:
+
+   ```bash
+   kubectl patch crd feedgroups.rss2discord.maverickd650.dev --subresource=status --type=merge \
+     -p '{"status":{"storedVersions":["v1beta1"]}}'
+   ```
+
+6. If you have your own Prometheus queries, recording rules or alerts, replace the old `rss_url` metric label with `feed`, which is now the feed's `name`.
+
+| v1alpha1 | v1beta1 |
+|---|---|
+| `feeds[].rssUrl` | `feeds[].url`, plus a required `feeds[].name` |
+| `feeds[].paused` | `feeds[].suspend` |
+| `format`, `feeds[].format` | `message.content` |
+| `embed`, `feeds[].embed` (with `enabled: true`) | `message.embed` |
+| `embed.descriptionFormat` | `message.embed.description` |
+| `embed.authorName` | `message.embed.author.name` (now a template) |
+| `embed.footerText` | `message.embed.footer.text` (now a template) |
+| `embed.imageStyle: thumbnail` / `image` | `Thumbnail` / `Image` |
+| `filter.regex`, `filter.keywords` | `filter.include.regex`, `filter.include.keywords` |
+| `feeds[].forumThreadID` | `feeds[].thread.id` |
+| `feeds[].forumThreadName` | `feeds[].forumPost.name` |
+| status keyed by `rssUrl` | status keyed by `name`; `lastSent` values are timestamps |
+
+### If the upgrade is interrupted
+
+Each case below is rehearsed against a real API server in `test/upgrade` (run by `mise run test`).
+
+- **Stopped after deleting the old FeedGroups, before upgrading.** Nothing is lost: carry on from step 3's upgrade with `feedgroups-v1beta1.yaml`, or go back by re-applying `feedgroups-v1alpha1.yaml` on the old release.
+- **Upgraded without deleting the old FeedGroups.** They now read as v1beta1 objects with their renamed fields missing, and fail validation on any update. Delete them (`kubectl delete feedgroups -A --all`) and apply `feedgroups-v1beta1.yaml`.
+- **Upgraded before exporting.** An export taken now is the broken v1beta1 view, which the converter refuses. The data is still in storage, and the new CRD still holds the v1alpha1 schema, so serve it again long enough to export:
+
+  ```bash
+  kubectl patch crd feedgroups.rss2discord.maverickd650.dev --type=json -p '[
+    {"op":"replace","path":"/spec/versions/0/served","value":true},
+    {"op":"replace","path":"/spec/versions/0/storage","value":true},
+    {"op":"replace","path":"/spec/versions/1/served","value":false},
+    {"op":"replace","path":"/spec/versions/1/storage","value":false}]'
+  kubectl get feedgroups.v1alpha1.rss2discord.maverickd650.dev -A -o yaml > feedgroups-v1alpha1.yaml
+  ```
+
+  (`versions/0` is `v1alpha1` and `versions/1` is `v1beta1`; check with `kubectl get crd feedgroups.rss2discord.maverickd650.dev -o jsonpath='{.spec.versions[*].name}'`.) Then continue from step 2, and re-run the upgrade, which restores the CRD.
+
+  This is safe with the new controller running: until the objects are exported, any write to them through v1beta1 that leaves their feeds as they are, including the controller's status writes and `kubectl label`/`annotate`, fails validation (the old feeds have no `name` or `url`), so it can't overwrite the stored v1alpha1 data. Two things do lose it, so avoid both until you have the export: deleting the objects, and editing or applying a spec over them (for example `kubectl apply -f feedgroups-v1beta1.yaml` before deleting them), since valid v1beta1 feeds pass validation and replace the old spec.
+
+## Rolling back to v1alpha1
+
+An older controller watches v1alpha1, which this CRD no longer serves, so rolling back the image alone stops all reconciliation. Installing the old CRD over this one is also refused: `v1beta1` is now in the CRD's `status.storedVersions` (even after step 5's cleanup) and the old CRD doesn't list it, so a plain `helm rollback` or `kubectl apply` of the old release fails. Instead, with your saved `feedgroups-v1alpha1.yaml`:
+
+1. Delete the CRD. This deletes every FeedGroup with it, which rolling back requires anyway:
+
+   ```bash
+   kubectl delete crd feedgroups.rss2discord.maverickd650.dev
+   ```
+
+   With Helm and the default `crd.keep: false`, `helm uninstall` does the same.
+2. Install the old release, which re-creates its CRD.
+3. Re-apply the saved manifests: `kubectl apply -f feedgroups-v1alpha1.yaml`.
+
+Delivery history starts over again, so each feed re-sends up to `catchUpLimit` entries.
