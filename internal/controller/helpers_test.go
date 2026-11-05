@@ -15,6 +15,7 @@ import (
 )
 
 // metav1TimeRFC3339 parses an RFC3339 timestamp string into a *metav1.Time.
+// It panics on malformed fixture input rather than silently returning a zero time.
 func metav1TimeRFC3339(s string) *metav1.Time {
 	if s == "" {
 		return nil
