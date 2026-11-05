@@ -1446,6 +1446,27 @@ var _ = Describe("FeedGroup Controller", func() {
 			}
 		})
 
+		It("should accept complete embed author and footer fields", func() {
+			feedGroup := &rss2discordv1beta1.FeedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-embed-complete", Namespace: namespace},
+				Spec: rss2discordv1beta1.FeedGroupSpec{
+					DiscordWebhookSecretRef: corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "any-secret"},
+						Key:                  secretURLKey,
+					},
+					Embed: &rss2discordv1beta1.EmbedSpec{
+						AuthorName:    "Example",
+						AuthorURL:     "https://example.com",
+						AuthorIconURL: "https://example.com/icon.png",
+						FooterText:    "Example footer",
+						FooterIconURL: "https://example.com/footer.png",
+					},
+					Feeds: []rss2discordv1beta1.FeedSpec{{RSSUrl: exampleFeedURL}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
+		})
+
 		It("should accept a FeedGroup with distinct feed URLs", func() {
 			feedGroup := &rss2discordv1beta1.FeedGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-feedgroup-distinct-url", Namespace: namespace},
