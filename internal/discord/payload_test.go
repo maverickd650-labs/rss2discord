@@ -390,6 +390,43 @@ func TestFit_CombinedEmbedClamp(t *testing.T) {
 	}
 }
 
+// The author and footer URL and icon fields aren't text Discord counts
+// toward the 6000-character total, so Fit must pass them through unchanged
+// and leave them out of the combined clamp, even with author name and
+// footer text at their limits.
+func TestFit_AuthorAndFooterURLsAreKeptAndNotCounted(t *testing.T) {
+	longURL := "https://example.com/" + strings.Repeat("u", 3000)
+	e := &Embed{
+		Description:   strings.Repeat("d", 3000),
+		AuthorName:    strings.Repeat("a", MaxEmbedAuthorNameLength),
+		AuthorURL:     longURL,
+		AuthorIconURL: longURL + ".png",
+		FooterText:    strings.Repeat("f", MaxEmbedFooterTextLength),
+		FooterIconURL: longURL + ".ico",
+	}
+	// 3000+256+2048 = 5304 counted runes: under the cap, so nothing is
+	// trimmed, however long the URLs are.
+	got, trimmed := Fit(Message{Embed: e})
+	if trimmed != 0 {
+		t.Fatalf("trimmed = %d, want 0: URLs must not count toward the combined limit", trimmed)
+	}
+	if *got.Embed != *e {
+		t.Fatalf("Fit changed an embed within every limit: %+v", got.Embed)
+	}
+
+	// Over the per-field limits, only the author name and footer text are
+	// cut; their URLs and icons survive untouched.
+	e.AuthorName = strings.Repeat("a", MaxEmbedAuthorNameLength+5)
+	e.FooterText = strings.Repeat("f", MaxEmbedFooterTextLength+7)
+	got, trimmed = Fit(Message{Embed: e})
+	if trimmed != 5+7 {
+		t.Fatalf("trimmed = %d, want 12", trimmed)
+	}
+	if got.Embed.AuthorURL != e.AuthorURL || got.Embed.AuthorIconURL != e.AuthorIconURL || got.Embed.FooterIconURL != e.FooterIconURL {
+		t.Fatal("Fit changed an author/footer URL")
+	}
+}
+
 func TestFit_SumsEveryField(t *testing.T) {
 	msg := Message{
 		Content:    strings.Repeat("c", MaxContentLength+1),

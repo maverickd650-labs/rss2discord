@@ -1829,6 +1829,7 @@ var _ = Describe("Reconcile API error paths", func() {
 		Expect(ready).NotTo(BeNil())
 		Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		Expect(ready.Reason).To(Equal(reasonSuspended))
+		Expect(ready.Message).To(Equal("Reconciliation is suspended for this FeedGroup"))
 		Expect(fg.Status.ObservedGeneration).To(Equal(fg.Generation))
 	})
 

@@ -100,7 +100,7 @@ func (g *groupSync) settleSuspend(ctx context.Context) (ctrl.Result, error) {
 		Type:               v1beta1.ConditionTypeReady,
 		Status:             metav1.ConditionUnknown,
 		Reason:             reasonSuspended,
-		Message:            "FeedGroup reconciliation is suspended",
+		Message:            "Reconciliation is suspended for this FeedGroup",
 		ObservedGeneration: g.group.Generation,
 	})
 
