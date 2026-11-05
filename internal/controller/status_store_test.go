@@ -692,6 +692,8 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 				{
 					RSSUrl:        exampleFeedURL,
 					LastSeenEntry: "wm-1",
+					RetryCount:    4,
+					BackoffUntil:  metav1TimeRFC3339("2026-11-04T15:00:00Z"),
 				},
 			},
 		},
@@ -713,9 +715,23 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 	if ready == nil || ready.Status != metav1.ConditionUnknown || ready.Reason != "Suspended" {
 		t.Fatalf("Ready condition = %+v, want Status=Unknown, Reason=Suspended", ready)
 	}
-	// Watermark must be preserved
-	if fs := feedStatusFor(fg, exampleFeedURL); fs == nil || fs.LastSeenEntry != "wm-1" {
+	// Watermark and retry backoff must be preserved during suspension
+	fs := feedStatusFor(fg, exampleFeedURL)
+	if fs == nil || fs.LastSeenEntry != "wm-1" {
 		t.Fatalf("feed status watermark not preserved: %+v", fs)
+	}
+	if fs.RetryCount != 4 || fs.BackoffUntil == nil {
+		t.Fatalf("expected RetryCount and BackoffUntil preserved during suspension: %+v", fs)
+	}
+
+	// Resuming clears permanent backoffs when generation changes
+	fgResume := fg.DeepCopy()
+	fgResume.Spec.Suspend = false
+	fgResume.Generation = 3
+	r.openGroupSync(fgResume)
+	fsResume := feedStatusFor(fgResume, exampleFeedURL)
+	if fsResume.RetryCount != 0 || fsResume.BackoffUntil != nil {
+		t.Fatalf("expected RetryCount and BackoffUntil cleared on resume: %+v", fsResume)
 	}
 
 	// Unchanged suspend skips write

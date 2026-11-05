@@ -28,7 +28,7 @@ import (
 
 // groupSync owns a FeedGroup's status lifecycle across one Reconcile:
 // normalizing Status.Feeds to Spec.Feeds, pruning dropped-feed metrics,
-// resetting permanent backoffs on a spec change, snapshotting pre-reconcile
+// resetting permanent backoffs on a non-suspended spec change, snapshotting pre-reconcile
 // status to skip no-op API writes, summarizing Ready/FeedReachable conditions,
 // advancing ObservedGeneration when appropriate, and writing via SSA.
 type groupSync struct {
@@ -41,15 +41,16 @@ type groupSync struct {
 
 // openGroupSync begins the FeedGroup's status lifecycle for one Reconcile:
 // normalizing Status.Feeds to Spec.Feeds (ensureFeedStatuses), pruning metrics
-// for dropped feeds, resetting permanent backoffs on a spec change so the new
-// generation gets a fresh retry cycle, snapshotting the pre-reconcile status to
-// detect no-op writes, and resolving the group's cadence.
+// for dropped feeds, resetting permanent backoffs on a spec change (skipped while
+// suspended so suspension preserves retry state) so the new generation gets a
+// fresh retry cycle, snapshotting the pre-reconcile status to detect no-op writes,
+// and resolving the group's cadence.
 func (r *FeedGroupReconciler) openGroupSync(feedGroup *v1beta1.FeedGroup) *groupSync {
 	for _, url := range ensureFeedStatuses(feedGroup) {
 		metricsFor(feedGroup).forgetFeed(url)
 	}
 	specChanged := feedGroup.Generation > feedGroup.Status.ObservedGeneration
-	if specChanged {
+	if specChanged && !feedGroup.Spec.Suspend {
 		clearPermanentBackoffs(feedGroup)
 	}
 	return &groupSync{
