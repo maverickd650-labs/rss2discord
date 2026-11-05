@@ -44,16 +44,19 @@ func run(in io.Reader, out io.Writer) error {
 	var resource struct {
 		Spec yaml.Node `yaml:"spec"`
 	}
-	if err := yaml.Unmarshal(input, &resource); err != nil {
+	if err := yaml.Load(input, &resource, yaml.WithSingleDocument()); err != nil {
 		return fmt.Errorf("parsing PrometheusRule YAML: %w", err)
 	}
 	if resource.Spec.IsZero() {
 		return fmt.Errorf("input has no top-level 'spec' key -- is this a rendered PrometheusRule?")
 	}
 
-	encoder := yaml.NewEncoder(out)
-	if err := encoder.Encode(&resource.Spec); err != nil {
+	// V3 defaults keep the generated rules file byte-identical to
+	// what the classic encoder wrote, so test/promrules diffs stay meaningful.
+	rules, err := yaml.Dump(&resource.Spec, yaml.WithV3Defaults())
+	if err != nil {
 		return fmt.Errorf("writing rules file: %w", err)
 	}
-	return encoder.Close()
+	_, err = out.Write(rules)
+	return err
 }
