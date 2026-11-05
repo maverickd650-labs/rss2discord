@@ -1405,6 +1405,47 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(err.Error()).To(ContainSubstring("rssUrl must be unique"))
 		})
 
+		It("should reject embed author and footer URLs without their required text", func() {
+			for _, tc := range []struct {
+				name         string
+				resourceName string
+				groupEmbed   *rss2discordv1beta1.EmbedSpec
+				feedEmbed    *rss2discordv1beta1.EmbedSpec
+				want         string
+			}{
+				{
+					name:         "group author URL without author name",
+					resourceName: "test-embed-author",
+					groupEmbed:   &rss2discordv1beta1.EmbedSpec{AuthorURL: "https://example.com"},
+					want:         "authorName is required",
+				},
+				{
+					name:         "feed footer icon without footer text",
+					resourceName: "test-embed-footer",
+					feedEmbed:    &rss2discordv1beta1.EmbedSpec{FooterIconURL: "https://example.com/icon.png"},
+					want:         "footerText is required",
+				},
+			} {
+				feedGroup := &rss2discordv1beta1.FeedGroup{
+					ObjectMeta: metav1.ObjectMeta{Name: tc.resourceName, Namespace: namespace},
+					Spec: rss2discordv1beta1.FeedGroupSpec{
+						DiscordWebhookSecretRef: corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "any-secret"},
+							Key:                  secretURLKey,
+						},
+						Embed: tc.groupEmbed,
+						Feeds: []rss2discordv1beta1.FeedSpec{{
+							RSSUrl: exampleFeedURL,
+							Embed:  tc.feedEmbed,
+						}},
+					},
+				}
+				err := k8sClient.Create(ctx, feedGroup)
+				Expect(err).To(HaveOccurred(), tc.name)
+				Expect(err.Error()).To(ContainSubstring(tc.want), tc.name)
+			}
+		})
+
 		It("should accept a FeedGroup with distinct feed URLs", func() {
 			feedGroup := &rss2discordv1beta1.FeedGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-feedgroup-distinct-url", Namespace: namespace},
