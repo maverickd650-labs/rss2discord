@@ -134,7 +134,7 @@ See [docs/schema.md](docs/schema.md) for the complete `v1beta1` schema specifica
 | --- | --- | --- | --- |
 | `discordWebhookSecretRef` | `SecretKeySelector` | required | Secret containing the Discord webhook URL |
 | `interval` | `string` | `30m` | How often to check feeds. At least `1m`; Go duration syntax (`ns`, `us`, `ms`, `s`, `m`, `h`) |
-| `retries` | `int` | `3` | Retries for failed operations (0–100) |
+| `retries` | `int` | `3` | Consecutive transient failures, the first included, counted before a feed is reported as persistently failing (0–100); each one below the limit is retried after `retryInterval`, so `3` means two quick retries |
 | `retryInterval` | `string` | `5m` | Delay between retries. At least `10s` |
 | `suspend` | `bool` | `false` | Stops processing every feed in the group, keeping status and delivery history |
 | `message` | `Message` | see [below](#message) | The message sent for each entry, for every feed that doesn't set its own |

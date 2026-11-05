@@ -1237,10 +1237,13 @@ spec:
               retries:
                 default: 3
                 description: |-
-                  retries is the number of times to retry failed operations (fetch/send).
-                  A pointer, like catchUpLimit, so an explicit 0 survives typed clients'
-                  encoding instead of being replaced by the default; 0 and 1 both allow a
-                  single retry.
+                  retries is how many consecutive transient failures of a feed's fetch or
+                  send are counted, the first included, before they are reported as
+                  persistent (a RetriesExhausted Event): each one below the limit is
+                  retried after retryInterval, and from the limit on the feed is retried
+                  only at the normal interval. So 3 means two quick retries, and 0 and 1
+                  both mean none. A pointer, like catchUpLimit, so an explicit 0 survives
+                  typed clients' encoding instead of being replaced by the default.
                 format: int32
                 maximum: 100
                 minimum: 0

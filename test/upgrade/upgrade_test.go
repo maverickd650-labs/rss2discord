@@ -356,6 +356,22 @@ func seedV1alpha1(c *cluster) (saved, exported []byte) {
 	return []byte(v1alpha1Manifests), c.export(alphaGVR)
 }
 
+// patchCRDVersions applies docs/schema.md's forgotten-export recovery patch,
+// verbatim: serve v1alpha1, and store it, again.
+func (c *cluster) patchCRDVersions(t *testing.T) {
+	t.Helper()
+	const patch = `[
+    {"op":"replace","path":"/spec/versions/0/served","value":true},
+    {"op":"replace","path":"/spec/versions/0/storage","value":true},
+    {"op":"replace","path":"/spec/versions/1/served","value":false},
+    {"op":"replace","path":"/spec/versions/1/storage","value":false}]`
+	crds := c.crd.ApiextensionsV1().CustomResourceDefinitions()
+	if _, err := crds.Patch(c.ctx, crdName, types.JSONPatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		t.Fatalf("documented recovery patch: %v", err)
+	}
+	c.waitEstablished(readCRD(t, "testdata/v1alpha1-crd.yaml"))
+}
+
 func firstFeedURL(obj *unstructured.Unstructured) string {
 	feeds, _, _ := unstructured.NestedSlice(obj.Object, "spec", "feeds")
 	feed, _ := feeds[0].(map[string]any)
@@ -608,6 +624,55 @@ func TestInterruptedUpgrade(t *testing.T) {
 		}
 	})
 
+	t.Run("no write through v1beta1 can overwrite unconverted objects", func(t *testing.T) {
+		t.Parallel()
+		c := startCluster(t)
+		saved, _ := seedV1alpha1(c)
+		c.mustInstallCRD(readCRD(t, repoPath("dist", "install.yaml")))
+
+		// Each write the new controller or a user could make to a stored
+		// v1alpha1 object through v1beta1 -- the controller's server-side
+		// status apply, kubectl label's metadata patch, a status merge patch --
+		// is rejected: every old feed lacks the required name and url. So
+		// nothing can re-encode the object without its old fields before the
+		// forgotten-export recovery below runs.
+		res := c.dyn.Resource(betaGVR).Namespace(namespace)
+		statusApply := feedGroup(t, "news", "")
+		delete(statusApply.Object, "spec")
+		statusApply.SetNamespace(namespace)
+		statusApply.Object["status"] = map[string]any{"observedGeneration": int64(1)}
+		writes := map[string]func() error{
+			"controller status apply": func() error {
+				_, err := res.ApplyStatus(c.ctx, "news", statusApply,
+					metav1.ApplyOptions{FieldManager: "feedgroup-controller", Force: true})
+				return err
+			},
+			"metadata merge patch": func() error {
+				_, err := res.Patch(c.ctx, "news", types.MergePatchType,
+					[]byte(`{"metadata":{"labels":{"x":"y"}}}`), metav1.PatchOptions{})
+				return err
+			},
+			"status merge patch": func() error {
+				_, err := res.Patch(c.ctx, "embeds", types.MergePatchType,
+					[]byte(`{"status":{"observedGeneration":1}}`), metav1.PatchOptions{}, "status")
+				return err
+			},
+		}
+		for name, write := range writes {
+			if err := write(); err == nil {
+				t.Errorf("%s succeeded; want it rejected", name)
+			}
+		}
+
+		c.patchCRDVersions(t)
+		exported := c.export(alphaGVR)
+		for _, want := range objects(t, saved) {
+			if !bytes.Contains(exported, []byte("rssUrl: "+firstFeedURL(want))) {
+				t.Fatalf("%s lost its v1alpha1 spec:\n%s", want.GetName(), exported)
+			}
+		}
+	})
+
 	t.Run("forgotten export: serving v1alpha1 again recovers the objects", func(t *testing.T) {
 		t.Parallel()
 		c := startCluster(t)
@@ -617,17 +682,7 @@ func TestInterruptedUpgrade(t *testing.T) {
 		// The new CRD still carries the v1alpha1 schema, unserved. Serving it
 		// and making it the storage version again reads the stored objects
 		// back whole, so they can be exported after all.
-		// docs/schema.md's patch, verbatim.
-		const patch = `[
-    {"op":"replace","path":"/spec/versions/0/served","value":true},
-    {"op":"replace","path":"/spec/versions/0/storage","value":true},
-    {"op":"replace","path":"/spec/versions/1/served","value":false},
-    {"op":"replace","path":"/spec/versions/1/storage","value":false}]`
-		crds := c.crd.ApiextensionsV1().CustomResourceDefinitions()
-		if _, err := crds.Patch(c.ctx, crdName, types.JSONPatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
-			t.Fatalf("documented recovery patch: %v", err)
-		}
-		c.waitEstablished(readCRD(t, "testdata/v1alpha1-crd.yaml"))
+		c.patchCRDVersions(t)
 		exported := c.export(alphaGVR)
 		for _, want := range objects(t, saved) {
 			if !bytes.Contains(exported, []byte("rssUrl: "+firstFeedURL(want))) {

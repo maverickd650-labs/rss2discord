@@ -60,7 +60,7 @@ spec:
 | `discordWebhookSecretRef` | `SecretKeySelector` | **Yes** | — | Secret and key holding the Discord webhook URL. |
 | `suspend` | `bool` | No | `false` | Stops processing every feed in the group. Status and delivery history are kept. |
 | `interval` | `string` | No | `30m` | How often feeds are checked. Go duration syntax; at least `1m`. |
-| `retries` | `int32` | No | `3` | Retries for a transient fetch or send failure before it is reported as persistent (0–100). |
+| `retries` | `int32` | No | `3` | How many consecutive transient fetch or send failures, the first included, are counted before they are reported as persistent (0–100). Each one below the limit is retried after `retryInterval`, so `3` means two quick retries and `0` or `1` mean none. |
 | `retryInterval` | `string` | No | `5m` | Delay between retries, and the base of the permanent-failure backoff. At least `10s`. |
 | `message` | `MessageSpec` | No | content `**{{.Title}}**\n{{.Description}}\n[Read more]({{.Link}})` | The message sent for each entry, for every feed that doesn't set its own. |
 | `username` | `string` | No | — | Overrides the webhook's display name. 1–80 characters; must not contain `clyde`, `discord` (any case), `@`, `#`, `:` or <code>```</code>, or be `everyone`/`here`. |
@@ -250,6 +250,8 @@ Each case below is rehearsed against a real API server in `test/upgrade` (run by
   ```
 
   (`versions/0` is `v1alpha1` and `versions/1` is `v1beta1`; check with `kubectl get crd feedgroups.rss2discord.maverickd650.dev -o jsonpath='{.spec.versions[*].name}'`.) Then continue from step 2, and re-run the upgrade, which restores the CRD.
+
+  This is safe even with the new controller running: until the objects are converted, every write to them through v1beta1, the controller's status writes included, is rejected (their feeds have no `name` or `url`), so nothing can overwrite the stored v1alpha1 data. Don't delete them before exporting, though: deletion is the one thing that loses it.
 
 ## Rolling back to v1alpha1
 
