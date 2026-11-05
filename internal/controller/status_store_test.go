@@ -528,8 +528,54 @@ func TestEnsureFeedStatuses_NamedFeedPreservesHistoryAcrossURLChange(t *testing.
 	}
 
 	// Lookup by name works too
-	if byName := feedStatusFor(fg, "my-feed"); byName == nil || byName != fs {
-		t.Errorf("feedStatusFor(fg, 'my-feed') = %+v, want same pointer as by URL", byName)
+	if byName := feedStatusFor(fg, namedFeedName); byName == nil || byName != fs {
+		t.Errorf("feedStatusFor(fg, %q) = %+v, want same pointer as by URL", namedFeedName, byName)
+	}
+}
+
+func TestEnsureFeedStatuses_NameMatchReservesStatusBeforeURLFallback(t *testing.T) {
+	const (
+		namedFeed = "feed-a"
+		oldURL    = "https://example.com/old.xml"
+		newURL    = "https://example.com/new.xml"
+	)
+
+	// Existing status has feed-a pointing to oldURL with delivery history
+	fg := &v1beta1.FeedGroup{
+		Spec: v1beta1.FeedGroupSpec{
+			Feeds: []v1beta1.FeedSpec{
+				// Unnamed feed placed first in Spec with oldURL
+				{RSSUrl: oldURL},
+				// Named feed placed second with changed URL
+				{Name: namedFeed, RSSUrl: newURL},
+			},
+		},
+		Status: v1beta1.FeedGroupStatus{
+			Feeds: []v1beta1.FeedStatus{
+				{
+					Name:          namedFeed,
+					RSSUrl:        oldURL,
+					LastSeenEntry: "wm-named",
+				},
+			},
+		},
+	}
+
+	pruned := ensureFeedStatuses(fg)
+	if len(pruned) != 0 {
+		t.Fatalf("pruned URLs = %v, want none since oldURL and newURL are both in spec", pruned)
+	}
+
+	// Named feed must receive its prior status and watermark
+	statusNamed := feedStatusFor(fg, namedFeed)
+	if statusNamed == nil || statusNamed.LastSeenEntry != "wm-named" || statusNamed.RSSUrl != newURL {
+		t.Fatalf("statusNamed = %+v, want LastSeenEntry=wm-named and RSSUrl=%s", statusNamed, newURL)
+	}
+
+	// Unnamed feed with oldURL must NOT steal the named feed's history
+	statusUnnamed := feedStatusFor(fg, oldURL)
+	if statusUnnamed == nil || statusUnnamed.LastSeenEntry != "" || statusUnnamed.Name != "" {
+		t.Fatalf("statusUnnamed = %+v, want empty LastSeenEntry and empty Name", statusUnnamed)
 	}
 }
 

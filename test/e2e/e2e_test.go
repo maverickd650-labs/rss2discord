@@ -313,7 +313,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to create discord webhook secret")
 
 			By("applying a FeedGroup pointing at an unresolvable host")
-			feedGroupManifest := fmt.Sprintf(`apiVersion: rss2discord.maverickd650.dev/v1alpha1
+			feedGroupManifest := fmt.Sprintf(`apiVersion: rss2discord.maverickd650.dev/v1beta1
 kind: FeedGroup
 metadata:
   name: %s

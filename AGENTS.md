@@ -315,7 +315,7 @@ mise run helm-rollback                                    # Rollback to previous
 helm install my-release ./<output-dir>/chart/ --namespace <ns> --create-namespace
 ```
 
-**Refreshing the chart:** whenever `api/v1alpha1/*_types.go`, `config/manager`, or `config/rbac`
+**Refreshing the chart:** whenever `api/v1beta1/*_types.go`, `config/manager`, or `config/rbac`
 change, `dist/chart/` needs regenerating to match. Run:
 ```bash
 mise run helm-chart-refresh

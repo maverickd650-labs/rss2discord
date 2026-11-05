@@ -260,6 +260,20 @@ func TestEmbedToPayload_AuthorAndFooterDetails(t *testing.T) {
 	if p.Footer == nil || p.Footer.Text != e.FooterText || p.Footer.IconURL != e.FooterIconURL {
 		t.Fatalf("unexpected Footer: %+v", p.Footer)
 	}
+
+	// Discord requires name for author and text for footer. URL/IconURL without
+	// the required text must not create payload objects.
+	pMissing := embedToPayload(Embed{
+		AuthorURL:     "https://example.com/author",
+		AuthorIconURL: "https://example.com/author.png",
+		FooterIconURL: "https://example.com/footer.png",
+	})
+	if pMissing.Author != nil {
+		t.Fatalf("expected Author to be nil when AuthorName is empty, got %+v", pMissing.Author)
+	}
+	if pMissing.Footer != nil {
+		t.Fatalf("expected Footer to be nil when FooterText is empty, got %+v", pMissing.Footer)
+	}
 }
 
 func TestTruncate(t *testing.T) {

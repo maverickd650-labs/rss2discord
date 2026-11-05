@@ -18,8 +18,9 @@ spec:
           - "jobs"
           - "hiring"
       embed:
-        author: Kubernetes
-        authorUrl: https://blog.kubernetes.io/
-        authorIconUrl: https://kubernetes.io/images/favicon.png
-        footer: RSS2Discord
-        footerIconUrl: https://kubernetes.io/images/favicon.png
+        enabled: true
+        authorName: Kubernetes
+        authorURL: https://blog.kubernetes.io/
+        authorIconURL: https://kubernetes.io/images/favicon.png
+        footerText: RSS2Discord
+        footerIconURL: https://kubernetes.io/images/favicon.png

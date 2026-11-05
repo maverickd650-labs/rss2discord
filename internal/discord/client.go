@@ -465,14 +465,14 @@ func embedToPayload(e Embed) discordEmbed {
 	if e.ImageURL != "" {
 		payload.Image = &discordEmbedMedia{URL: e.ImageURL}
 	}
-	if e.AuthorName != "" || e.AuthorURL != "" || e.AuthorIconURL != "" {
+	if e.AuthorName != "" {
 		payload.Author = &discordEmbedAuthor{
 			Name:    e.AuthorName,
 			URL:     e.AuthorURL,
 			IconURL: e.AuthorIconURL,
 		}
 	}
-	if e.FooterText != "" || e.FooterIconURL != "" {
+	if e.FooterText != "" {
 		payload.Footer = &discordEmbedFooter{
 			Text:    e.FooterText,
 			IconURL: e.FooterIconURL,

@@ -82,33 +82,48 @@ func errText(err error) string {
 // digests. It returns the RSSUrls it pruned so the caller can drop their
 // metric series; it does not touch Prometheus.
 func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
+	originalUrls := make(map[string]struct{}, len(feedGroup.Status.Feeds))
 	existingByUrl := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
 	existingByName := make(map[string]v1beta1.FeedStatus, len(feedGroup.Status.Feeds))
 	for _, fs := range feedGroup.Status.Feeds {
+		originalUrls[fs.RSSUrl] = struct{}{}
 		existingByUrl[fs.RSSUrl] = fs
 		if fs.Name != "" {
 			existingByName[fs.Name] = fs
 		}
 	}
 
+	// First pass: reserve prior statuses matched by stable Name in Spec order.
+	// Reserving them upfront ensures URL fallback cannot steal or duplicate
+	// a prior status that belongs to a named feed whose URL has changed.
+	claimedByFeedIndex := make(map[int]v1beta1.FeedStatus, len(feedGroup.Spec.Feeds))
+	reservedUrls := make(map[string]bool, len(feedGroup.Spec.Feeds))
+	for i, feed := range feedGroup.Spec.Feeds {
+		if feed.Name != "" {
+			if existing, ok := existingByName[feed.Name]; ok {
+				claimedByFeedIndex[i] = existing
+				reservedUrls[existing.RSSUrl] = true
+				delete(existingByName, feed.Name)
+			}
+		}
+	}
+	for url := range reservedUrls {
+		delete(existingByUrl, url)
+	}
+
 	rebuilt := make([]v1beta1.FeedStatus, 0, len(feedGroup.Spec.Feeds))
 
-	for _, feed := range feedGroup.Spec.Feeds {
+	for i, feed := range feedGroup.Spec.Feeds {
 		var fs v1beta1.FeedStatus
 		var matched bool
 
-		if feed.Name != "" {
-			if existing, ok := existingByName[feed.Name]; ok {
-				fs = existing
-				matched = true
-			}
-		}
-
-		if !matched {
-			if existing, ok := existingByUrl[feed.RSSUrl]; ok {
-				fs = existing
-				matched = true
-			}
+		if existing, ok := claimedByFeedIndex[i]; ok {
+			fs = existing
+			matched = true
+		} else if existing, ok := existingByUrl[feed.RSSUrl]; ok {
+			fs = existing
+			matched = true
+			delete(existingByUrl, feed.RSSUrl)
 		}
 
 		if !matched {
@@ -135,7 +150,7 @@ func ensureFeedStatuses(feedGroup *v1beta1.FeedGroup) []string {
 		activeUrls[fs.RSSUrl] = true
 	}
 	var pruned []string
-	for oldURL := range existingByUrl {
+	for oldURL := range originalUrls {
 		if !activeUrls[oldURL] {
 			pruned = append(pruned, oldURL)
 		}

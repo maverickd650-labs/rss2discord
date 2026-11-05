@@ -63,7 +63,7 @@ kubectl create secret generic discord-webhook \
 2. Create a `FeedGroup`:
 
 ```yaml
-apiVersion: rss2discord.maverickd650.dev/v1alpha1
+apiVersion: rss2discord.maverickd650.dev/v1beta1
 kind: FeedGroup
 metadata:
   name: tech-news
@@ -80,12 +80,16 @@ spec:
     {{.Description}}
     [Read more]({{.Link}})
   feeds:
-    - rssUrl: "https://news.ycombinator.com/rss"
+    - name: hackernews
+      rssUrl: "https://news.ycombinator.com/rss"
       filter:
         keywords:
           - kubernetes
           - golang
-    - rssUrl: "https://www.reddit.com/r/golang/.rss"
+        excludeKeywords:
+          - "hiring"
+    - name: reddit-golang
+      rssUrl: "https://www.reddit.com/r/golang/.rss"
       paused: false
 ```
 
@@ -114,6 +118,8 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 
 ## Configuration reference
 
+See [docs/schema.md](docs/schema.md) for the complete `v1beta1` schema specification, field references, and migration guide.
+
 ### FeedGroup spec
 
 | Field | Type | Default | Description |
@@ -122,6 +128,7 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | `interval` | `string` | `30m` | How often to check feeds. At least `1m`; Go duration syntax (`ns`, `us`, `ms`, `s`, `m`, `h`) |
 | `retries` | `int` | `3` | Retries for failed operations (0–100) |
 | `retryInterval` | `string` | `5m` | Delay between retries. At least `10s` |
+| `suspend` | `bool` | `false` | Suspends all reconciliation for the group when true without dropping status or watermarks |
 | `format` | `string` | see below | Discord message template (used when `embed` is not enabled) |
 | `embed` | `*Embed` | optional | Default embed config for all feeds in the group |
 | `username` | `string` | optional | Overrides the webhook's display name. Rejected at `kubectl apply` time (CEL validation) if it contains "clyde" or "discord", or is over 80 characters — Discord's own webhook API rejects these |
@@ -134,9 +141,12 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `rssUrl` | `string` | required | RSS feed URL |
+| `name` | `string` | optional | Stable feed identifier (RFC 1123 DNS label, unique within group); preserves delivery watermarks across `rssUrl` changes |
 | `filter` | `*Filter` | optional | Filter rules for entries |
 | `format` | `string` | optional | Overrides the group's format for this feed |
 | `embed` | `*Embed` | optional | Overrides the group's embed config for this feed |
+| `username` | `string` | optional | Overrides webhook display name for this feed (takes precedence over group username) |
+| `avatarURL` | `string` | optional | Overrides webhook avatar for this feed (takes precedence over group avatarURL) |
 | `forumThreadName` | `string` | optional | Template for a new forum post's title; set on FeedGroups whose webhook targets a forum channel |
 | `forumThreadID` | `string` | optional | Posts into an existing forum thread instead of creating a new one (takes precedence over `forumThreadName`). Digits only (a Discord ID) |
 | `paused` | `bool` | `false` | Stop processing this feed without removing it |
@@ -147,6 +157,8 @@ kubectl logs -n rss2discord-operator-system -l control-plane=controller-manager 
 | --- | --- | --- |
 | `regex` | `string` | Regex matched against title/description |
 | `keywords` | `[]string` | Keywords matched against title/description (OR) |
+| `excludeRegex` | `string` | Negative regex matched against title/description; any match immediately vetoes and rejects the entry |
+| `excludeKeywords` | `[]string` | Negative keywords matched against title/description; any match immediately vetoes and rejects the entry |
 
 ### Embed
 
@@ -158,7 +170,10 @@ When `enabled`, a feed's messages are sent as a native Discord embed (the colore
 | `color` | `string` | none | Side-bar color, as hex (`#5865F2` or `5865F2`) |
 | `descriptionFormat` | `string` | `{{.Description}}` | Template for the embed description |
 | `authorName` | `string` | optional | Shown on the embed's author line |
+| `authorURL` | `string` | optional | URL hyperlink for the author line (requires `authorName`) |
+| `authorIconURL` | `string` | optional | Icon image URL for the author line (requires `authorName`) |
 | `footerText` | `string` | optional | Shown in the embed's footer |
+| `footerIconURL` | `string` | optional | Icon image URL for the footer line (requires `footerText`) |
 | `imageStyle` | `string` | `thumbnail` | `thumbnail` shows the entry image small beside the description; `image` shows it large below |
 
 If the feed entry has a lead image (an RSS `<enclosure>` or Media RSS `<media:thumbnail>`/`<media:content>`, or an Atom `<link rel="enclosure">`), it's attached automatically as the embed's thumbnail (or as the large image with `imageStyle: image`).
@@ -257,7 +272,7 @@ mise run docker-push
 ## Project layout
 
 ```
-api/v1alpha1/          FeedGroup CRD types
+api/v1beta1/          FeedGroup CRD types (v1beta1)
 internal/controller/   Reconciliation logic
 internal/discord/      Discord webhook client
 internal/rss/          RSS feed client
