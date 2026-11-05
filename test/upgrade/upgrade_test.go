@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,11 @@ type cluster struct {
 func startCluster(t *testing.T) *cluster {
 	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		// CI runs `mise run test`, which sets it: never let the rehearsal
+		// skip silently there.
+		if os.Getenv("CI") != "" {
+			t.Fatal("KUBEBUILDER_ASSETS is not set in CI; the upgrade rehearsal must not be skipped")
+		}
 		t.Skip("KUBEBUILDER_ASSETS is not set; run via `mise run test`")
 	}
 	env := &envtest.Environment{}
@@ -372,11 +378,28 @@ func (c *cluster) patchCRDVersions(t *testing.T) {
 	c.waitEstablished(readCRD(t, "testdata/v1alpha1-crd.yaml"))
 }
 
-func firstFeedURL(obj *unstructured.Unstructured) string {
-	feeds, _, _ := unstructured.NestedSlice(obj.Object, "spec", "feeds")
-	feed, _ := feeds[0].(map[string]any)
-	url, _ := feed["rssUrl"].(string)
-	return url
+// assertSpecsUnchanged checks every FeedGroup in after (a List export) has
+// exactly the spec it had in before.
+func assertSpecsUnchanged(t *testing.T, before, after []byte) {
+	t.Helper()
+	specs := func(export []byte) map[string]any {
+		var list struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := yaml.Unmarshal(export, &list); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]any{}
+		for _, item := range list.Items {
+			name, _, _ := unstructured.NestedString(item, "metadata", "name")
+			out[name] = item["spec"]
+		}
+		return out
+	}
+	want, got := specs(before), specs(after)
+	if len(want) == 0 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("recovered specs differ from the pre-upgrade export:\nbefore: %v\nafter:  %v", want, got)
+	}
 }
 
 func names(items []unstructured.Unstructured) string {
@@ -624,59 +647,79 @@ func TestInterruptedUpgrade(t *testing.T) {
 		}
 	})
 
-	t.Run("no write through v1beta1 can overwrite unconverted objects", func(t *testing.T) {
+	t.Run("writes through v1beta1 short of a spec replacement can't overwrite unconverted objects", func(t *testing.T) {
 		t.Parallel()
 		c := startCluster(t)
-		saved, _ := seedV1alpha1(c)
+		_, before := seedV1alpha1(c)
 		c.mustInstallCRD(readCRD(t, repoPath("dist", "install.yaml")))
 
 		// Each write the new controller or a user could make to a stored
-		// v1alpha1 object through v1beta1 -- the controller's server-side
-		// status apply, kubectl label's metadata patch, a status merge patch --
-		// is rejected: every old feed lacks the required name and url. So
-		// nothing can re-encode the object without its old fields before the
-		// forgotten-export recovery below runs.
+		// v1alpha1 object through v1beta1 without supplying new feeds -- the
+		// controller's server-side status apply, kubectl label's metadata
+		// patch, a status merge patch -- fails validation of the old feeds,
+		// which lack v1beta1's required name and url. So none can re-encode
+		// the object without its old fields before the recovery below runs.
 		res := c.dyn.Resource(betaGVR).Namespace(namespace)
 		statusApply := feedGroup(t, "news", "")
 		delete(statusApply.Object, "spec")
 		statusApply.SetNamespace(namespace)
 		statusApply.Object["status"] = map[string]any{"observedGeneration": int64(1)}
-		writes := map[string]func() error{
-			"controller status apply": func() error {
+		writes := []struct {
+			name, want string
+			write      func() error
+		}{
+			{"controller status apply", `omits all key fields ["name"]`, func() error {
 				_, err := res.ApplyStatus(c.ctx, "news", statusApply,
 					metav1.ApplyOptions{FieldManager: "feedgroup-controller", Force: true})
 				return err
-			},
-			"metadata merge patch": func() error {
+			}},
+			{"metadata merge patch", "spec.feeds[0].name: Required value", func() error {
 				_, err := res.Patch(c.ctx, "news", types.MergePatchType,
 					[]byte(`{"metadata":{"labels":{"x":"y"}}}`), metav1.PatchOptions{})
 				return err
-			},
-			"status merge patch": func() error {
+			}},
+			{"status merge patch", "spec.feeds", func() error {
 				_, err := res.Patch(c.ctx, "embeds", types.MergePatchType,
 					[]byte(`{"status":{"observedGeneration":1}}`), metav1.PatchOptions{}, "status")
 				return err
-			},
+			}},
 		}
-		for name, write := range writes {
-			if err := write(); err == nil {
-				t.Errorf("%s succeeded; want it rejected", name)
+		for _, w := range writes {
+			if err := w.write(); err == nil || !strings.Contains(err.Error(), w.want) {
+				t.Errorf("%s: err = %v; want a validation error mentioning %q", w.name, err, w.want)
 			}
 		}
 
 		c.patchCRDVersions(t)
-		exported := c.export(alphaGVR)
-		for _, want := range objects(t, saved) {
-			if !bytes.Contains(exported, []byte("rssUrl: "+firstFeedURL(want))) {
-				t.Fatalf("%s lost its v1alpha1 spec:\n%s", want.GetName(), exported)
-			}
+		assertSpecsUnchanged(t, before, c.export(alphaGVR))
+	})
+
+	t.Run("a spec replacement through v1beta1 does overwrite unconverted objects", func(t *testing.T) {
+		t.Parallel()
+		c := startCluster(t)
+		_, _ = seedV1alpha1(c)
+		c.mustInstallCRD(readCRD(t, repoPath("dist", "install.yaml")))
+
+		// The boundary of the case above, and why docs/schema.md says not
+		// to edit unconverted objects: a write that supplies valid v1beta1
+		// feeds passes validation and replaces the stored v1alpha1 spec.
+		res := c.dyn.Resource(betaGVR).Namespace(namespace)
+		replacement := `{"spec":{"feeds":[{"name":"a","url":"https://a.example.com/"}],` +
+			`"discordWebhookSecretRef":{"name":"hook","key":"url"}}}`
+		_, err := res.Patch(c.ctx, "embeds", types.MergePatchType, []byte(replacement), metav1.PatchOptions{})
+		if err != nil {
+			t.Fatalf("spec replacement: %v", err)
+		}
+		c.patchCRDVersions(t)
+		if exported := c.export(alphaGVR); bytes.Contains(exported, []byte("https://b.example.com/feed")) {
+			t.Fatal("the replaced spec's old feeds survived; the docs' warning would be unneeded")
 		}
 	})
 
 	t.Run("forgotten export: serving v1alpha1 again recovers the objects", func(t *testing.T) {
 		t.Parallel()
 		c := startCluster(t)
-		saved, _ := seedV1alpha1(c)
+		_, before := seedV1alpha1(c)
 		c.mustInstallCRD(readCRD(t, repoPath("dist", "install.yaml")))
 
 		// The new CRD still carries the v1alpha1 schema, unserved. Serving it
@@ -684,11 +727,7 @@ func TestInterruptedUpgrade(t *testing.T) {
 		// back whole, so they can be exported after all.
 		c.patchCRDVersions(t)
 		exported := c.export(alphaGVR)
-		for _, want := range objects(t, saved) {
-			if !bytes.Contains(exported, []byte("rssUrl: "+firstFeedURL(want))) {
-				t.Fatalf("recovered export lacks %s's feeds:\n%s", want.GetName(), exported)
-			}
-		}
+		assertSpecsUnchanged(t, before, exported)
 		_ = convert(t, exported)
 	})
 

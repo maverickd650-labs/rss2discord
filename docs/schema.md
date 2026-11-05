@@ -251,7 +251,7 @@ Each case below is rehearsed against a real API server in `test/upgrade` (run by
 
   (`versions/0` is `v1alpha1` and `versions/1` is `v1beta1`; check with `kubectl get crd feedgroups.rss2discord.maverickd650.dev -o jsonpath='{.spec.versions[*].name}'`.) Then continue from step 2, and re-run the upgrade, which restores the CRD.
 
-  This is safe even with the new controller running: until the objects are converted, every write to them through v1beta1, the controller's status writes included, is rejected (their feeds have no `name` or `url`), so nothing can overwrite the stored v1alpha1 data. Don't delete them before exporting, though: deletion is the one thing that loses it.
+  This is safe with the new controller running: until the objects are exported, any write to them through v1beta1 that leaves their feeds as they are, including the controller's status writes and `kubectl label`/`annotate`, fails validation (the old feeds have no `name` or `url`), so it can't overwrite the stored v1alpha1 data. Two things do lose it, so avoid both until you have the export: deleting the objects, and editing or applying a spec over them (for example `kubectl apply -f feedgroups-v1beta1.yaml` before deleting them), since valid v1beta1 feeds pass validation and replace the old spec.
 
 ## Rolling back to v1alpha1
 
