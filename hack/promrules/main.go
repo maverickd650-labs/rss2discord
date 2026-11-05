@@ -25,7 +25,7 @@ import (
 	"io"
 	"os"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 func main() {
@@ -44,16 +44,17 @@ func run(in io.Reader, out io.Writer) error {
 	var resource struct {
 		Spec yaml.Node `yaml:"spec"`
 	}
-	if err := yaml.Unmarshal(input, &resource); err != nil {
+	if err := yaml.Load(input, &resource, yaml.WithSingleDocument()); err != nil {
 		return fmt.Errorf("parsing PrometheusRule YAML: %w", err)
 	}
 	if resource.Spec.IsZero() {
 		return fmt.Errorf("input has no top-level 'spec' key -- is this a rendered PrometheusRule?")
 	}
 
-	encoder := yaml.NewEncoder(out)
-	if err := encoder.Encode(&resource.Spec); err != nil {
+	rules, err := yaml.Dump(&resource.Spec)
+	if err != nil {
 		return fmt.Errorf("writing rules file: %w", err)
 	}
-	return encoder.Close()
+	_, err = out.Write(rules)
+	return err
 }

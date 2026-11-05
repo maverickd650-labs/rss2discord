@@ -34,7 +34,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // update regenerates every golden file from the current chart output
@@ -362,7 +362,7 @@ func TestChartManagerRoleRulesMatchConfig(t *testing.T) {
 	var config struct {
 		Rules []any `yaml:"rules"`
 	}
-	if err := yaml.Unmarshal(raw, &config); err != nil {
+	if err := yaml.Load(raw, &config, yaml.WithSingleDocument()); err != nil {
 		t.Fatal(err)
 	}
 	// --watch-webhook-secrets adds list/watch on Secrets on top of the generated
