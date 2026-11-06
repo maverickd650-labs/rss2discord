@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.18.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.17.0...v0.18.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** a cluster whose FeedGroup CRD still lists v1alpha1 in status.storedVersions can't take this CRD. Upgrade through 0.17.x and confirm storedVersions is [v1beta1] first.
+
+### Features
+
+* **api:** remove v1alpha1 and the v1alpha1 converter ([#401](https://github.com/maverickd650-labs/rss2discord/issues/401)) ([06ba327](https://github.com/maverickd650-labs/rss2discord/commit/06ba32792d5086027ac9531d511c8ded8640b021))
+
 ## [0.17.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.16.1...v0.17.0) (2026-11-06)
 
 
