@@ -358,11 +358,24 @@ helm uninstall rss2discord-operator -n rss2discord-operator-system
 
 ### Upgrades and rollbacks
 
-#### Upgrading to v1beta1
+#### Upgrading from v1alpha1
 
-The `v1beta1` API replaces `v1alpha1` with no conversion webhook: existing FeedGroups must be exported, converted and re-created, and their delivery history starts over (`catchUpLimit` caps what each feed re-sends). Run the `stateVersion` check below on the old release first. The steps are in [docs/schema.md](docs/schema.md#upgrading-from-v1alpha1).
+v1alpha1 is no longer served or shipped, and there is no converter. This release's CRD only lists `v1beta1`, so the API server refuses to install it over a cluster whose CRD still records `v1alpha1` in `status.storedVersions`, even after every FeedGroup has been migrated. If you still have v1alpha1 FeedGroups, upgrade through [0.17.x](https://github.com/maverickd650-labs/rss2discord/blob/v0.17.0/docs/schema.md#upgrading-from-v1alpha1) first (it includes `go run ./cmd/convert-v1alpha1`).
 
-Once a FeedGroup has been re-created as `v1beta1`, an older controller can't read it, and the old CRD can't be installed over the new one. Rolling back means deleting the CRD, reinstalling the old release and re-applying your saved `v1alpha1` manifests: see [Rolling back to v1alpha1](docs/schema.md#rolling-back-to-v1alpha1). What to do if the upgrade is interrupted is in the same document.
+Before upgrading to this release, check what the CRD stores:
+
+```bash
+kubectl get crd feedgroups.rss2discord.maverickd650.dev -o jsonpath='{.status.storedVersions}'
+```
+
+If the output still includes `v1alpha1`, clearing it is required, not optional. First confirm that no v1alpha1 objects remain (all FeedGroups were re-created as `v1beta1`), then record that:
+
+```bash
+kubectl patch crd feedgroups.rss2discord.maverickd650.dev --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1beta1"]}}'
+```
+
+Rolling back to 0.17.x is an ordinary rollback: 0.17.0 already stores and serves `v1beta1`, so your FeedGroups are kept. Rolling back to 0.16.x or earlier is different. Those releases watch v1alpha1, which this CRD doesn't serve, and their CRD can't replace one that records `v1beta1`. Follow [Rolling back to v1alpha1](https://github.com/maverickd650-labs/rss2discord/blob/v0.17.0/docs/schema.md#rolling-back-to-v1alpha1) in the 0.17.0 docs (delete the CRD, reinstall the old release, re-apply saved v1alpha1 manifests); that deletes every FeedGroup.
 
 #### Releases before v1beta1
 
