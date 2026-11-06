@@ -360,11 +360,22 @@ helm uninstall rss2discord-operator -n rss2discord-operator-system
 
 #### Upgrading from v1alpha1
 
-v1alpha1 is no longer served or shipped, and there is no converter. This release's CRD only lists `v1beta1`, so the API server refuses to install it over a cluster whose CRD still records `v1alpha1` in `status.storedVersions`. If you still have v1alpha1 FeedGroups, upgrade through 0.17.x (which includes `go run ./cmd/convert-v1alpha1` and the steps in its `docs/schema.md`) first, then confirm the CRD stores only `v1beta1`:
+v1alpha1 is no longer served or shipped, and there is no converter. This release's CRD only lists `v1beta1`, so the API server refuses to install it over a cluster whose CRD still records `v1alpha1` in `status.storedVersions`, even after every FeedGroup has been migrated. If you still have v1alpha1 FeedGroups, upgrade through [0.17.x](https://github.com/maverickd650-labs/rss2discord/blob/v0.17.0/docs/schema.md#upgrading-from-v1alpha1) first (it includes `go run ./cmd/convert-v1alpha1`).
+
+Before upgrading to this release, check what the CRD stores:
 
 ```bash
 kubectl get crd feedgroups.rss2discord.maverickd650.dev -o jsonpath='{.status.storedVersions}'
 ```
+
+If the output still includes `v1alpha1`, clearing it is required, not optional. First confirm that no v1alpha1 objects remain (all FeedGroups were re-created as `v1beta1`), then record that:
+
+```bash
+kubectl patch crd feedgroups.rss2discord.maverickd650.dev --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1beta1"]}}'
+```
+
+Rolling back to 0.17.x or earlier is not just an image change: those releases watch v1alpha1, which this CRD doesn't serve, and their CRD can't replace one that records `v1beta1`. Follow [Rolling back to v1alpha1](https://github.com/maverickd650-labs/rss2discord/blob/v0.17.0/docs/schema.md#rolling-back-to-v1alpha1) in the 0.17.0 docs (delete the CRD, reinstall the old release, re-apply saved v1alpha1 manifests).
 
 #### Releases before v1beta1
 
