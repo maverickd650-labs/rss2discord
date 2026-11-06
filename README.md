@@ -375,7 +375,7 @@ kubectl patch crd feedgroups.rss2discord.maverickd650.dev --subresource=status -
   -p '{"status":{"storedVersions":["v1beta1"]}}'
 ```
 
-Rolling back to 0.17.x or earlier is not just an image change: those releases watch v1alpha1, which this CRD doesn't serve, and their CRD can't replace one that records `v1beta1`. Follow [Rolling back to v1alpha1](https://github.com/maverickd650-labs/rss2discord/blob/v0.17.0/docs/schema.md#rolling-back-to-v1alpha1) in the 0.17.0 docs (delete the CRD, reinstall the old release, re-apply saved v1alpha1 manifests).
+Rolling back to 0.17.x is an ordinary rollback: 0.17.0 already stores and serves `v1beta1`, so your FeedGroups are kept. Rolling back to 0.16.x or earlier is different. Those releases watch v1alpha1, which this CRD doesn't serve, and their CRD can't replace one that records `v1beta1`. Follow [Rolling back to v1alpha1](https://github.com/maverickd650-labs/rss2discord/blob/v0.17.0/docs/schema.md#rolling-back-to-v1alpha1) in the 0.17.0 docs (delete the CRD, reinstall the old release, re-apply saved v1alpha1 manifests); that deletes every FeedGroup.
 
 #### Releases before v1beta1
 
