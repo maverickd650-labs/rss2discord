@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.16.1...v0.17.0) (2026-11-06)
+
+
+### Features
+
+* **api,controller:** promote FeedGroup to v1beta1 ([#390](https://github.com/maverickd650-labs/rss2discord/issues/390)) ([16308ef](https://github.com/maverickd650-labs/rss2discord/commit/16308ef2a5b6c7c6b920e2b7192067d85235861b))
+* **deps:** update dependency promtool (3.15.1 → 3.16.0) ([#396](https://github.com/maverickd650-labs/rss2discord/issues/396)) ([5ad8bc5](https://github.com/maverickd650-labs/rss2discord/commit/5ad8bc545e8a3d265481a11e9c88b21e74391bac))
+
+
+### Bug Fixes
+
+* **go:** Update image golang (0c050fe → e519d3b) ([#399](https://github.com/maverickd650-labs/rss2discord/issues/399)) ([1083882](https://github.com/maverickd650-labs/rss2discord/commit/10838824bd13056b9555866f218d4d35059d71e7))
+* **go:** Update image golang (2920bb1 → c292963) ([#391](https://github.com/maverickd650-labs/rss2discord/issues/391)) ([192329d](https://github.com/maverickd650-labs/rss2discord/commit/192329d3b744cf6a13afdf30b60627d2407777ab))
+* **go:** Update image golang (c292963 → 0c050fe) ([#394](https://github.com/maverickd650-labs/rss2discord/issues/394)) ([076130b](https://github.com/maverickd650-labs/rss2discord/commit/076130b5ca6a4f8c693ed44e1299d1136e2ae21e))
+
 ## [0.16.1](https://github.com/maverickd650-labs/rss2discord/compare/v0.16.0...v0.16.1) (2026-11-04)
 
 
