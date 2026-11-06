@@ -20,14 +20,6 @@ resources:
   domain: rss2discord.maverickd650.dev
   group: rss2discord
   kind: FeedGroup
-  path: github.com/maverickd650-labs/rss2discord/api/v1alpha1
-  version: v1alpha1
-- api:
-    crdVersion: v1
-    namespaced: true
-  domain: rss2discord.maverickd650.dev
-  group: rss2discord
-  kind: FeedGroup
   path: github.com/maverickd650-labs/rss2discord/api/v1beta1
   version: v1beta1
 version: "3"

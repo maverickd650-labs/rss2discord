@@ -169,7 +169,7 @@
       // k8s.io/apimachinery's managedfields API (ExtractInto, NewSchemeTypeConverter)
       // takes structured-merge-diff types, so smd's major version must move in
       // lockstep with whatever apimachinery imports (currently v6). The import
-      // also appears in generated code (api/v1alpha1/applyconfiguration/internal),
+      // also appears in generated code (api/v1beta1/applyconfiguration/internal),
       // which comes from `mise run generate`, so a Renovate import rewrite there
       // cannot build. Re-enable once apimachinery adopts the next smd major.
       description: "Hold structured-merge-diff major updates until k8s.io/apimachinery adopts them",
