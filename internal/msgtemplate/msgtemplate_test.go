@@ -184,10 +184,10 @@ func TestTemplateFuncs_ReplaceRejectsOversizedResult(t *testing.T) {
 
 func TestTemplateFuncs_DiscordTimeRejectsUnknownStyle(t *testing.T) {
 	for _, style := range []string{"x", "", "RR", "r"} {
-		tmpl := mustCompile(t, "test", `{{.PublishedUnix | discordTime "`+style+`"}}`, "")
-		if _, err := tmpl.Execute(entry{PublishedUnix: 1700000000}); err == nil {
-			t.Errorf("style %q: expected a render error", style)
-		}
+		t.Run(fmt.Sprintf("style %q", style), func(t *testing.T) {
+			tmpl := mustCompile(t, "test", `{{.PublishedUnix | discordTime "`+style+`"}}`, "")
+			assertFailsWith(t, tmpl, entry{PublishedUnix: 1700000000}, "discordTime: unknown style")
+		})
 	}
 }
 
