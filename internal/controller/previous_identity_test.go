@@ -226,7 +226,7 @@ func TestProcessFeed_PreviousIdentityIsNotResent(t *testing.T) {
 	moved.Published = time.Unix(1000, 0)
 	fresh := guidEntry(prevIDOther, 1)
 
-	processTwice(t, fg, feed, []rss.Entry{moved, fresh}, fresh.Title)
+	feedUnderTest{fg, feed}.processTwice(t, []rss.Entry{moved, fresh}, fresh.Title)
 
 	if fs := feedStatusFor(fg, feed.Name); fs.LastSeenEntry != prevIDOther {
 		t.Fatalf("LastSeenEntry = %q, want %q", fs.LastSeenEntry, prevIDOther)
