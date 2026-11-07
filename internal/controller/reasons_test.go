@@ -38,43 +38,68 @@ var reasonFiles = map[string]bool{"conditions.go": true, "classify.go": true, "p
 // checkReasons runs reasonFlow and checkReasonSpelling over pkg, whose syntax
 // is files, and returns their findings, sorted.
 func checkReasons(fset *token.FileSet, pkg *ssa.Package, info *types.Info, files []*ast.File) []string {
-	f := &reasonFlow{
-		fset: fset, named: map[string]bool{},
-		globalWrites: map[*ssa.Global][]ssa.Value{}, fieldWrites: map[*types.Var][]ssa.Value{},
-		bindings: map[*ssa.Function][]*ssa.MakeClosure{},
-		seen:     map[ssa.Value]bool{}, seenKeys: map[ssa.Value]bool{},
-		reached: map[string]bool{}, problems: map[string]bool{},
-	}
-	scope := pkg.Pkg.Scope()
-	for _, name := range scope.Names() {
-		c, ok := scope.Lookup(name).(*types.Const)
-		if ok && c.Val().Kind() == constant.String && reasonFiles[filepath.Base(fset.Position(c.Pos()).Filename)] {
-			f.named[constant.StringVal(c.Val())] = true
-		}
-	}
+	f := newReasonFlow(fset, namedReasons(fset, pkg.Pkg))
 	f.index(pkg)
 	f.checkSinks()
 	checkReasonSpelling(fset, files, info, f.reached, f.problems)
 	return slices.Sorted(maps.Keys(f.problems))
 }
 
+// newReasonFlow is a reasonFlow with nothing traced yet, given the values of
+// the reasonFiles' string constants.
+func newReasonFlow(fset *token.FileSet, named map[string]bool) *reasonFlow {
+	return &reasonFlow{
+		fset: fset, named: named,
+		globalWrites: map[*ssa.Global][]ssa.Value{}, fieldWrites: map[*types.Var][]ssa.Value{},
+		bindings: map[*ssa.Function][]*ssa.MakeClosure{},
+		seen:     map[ssa.Value]bool{}, seenKeys: map[ssa.Value]bool{},
+		reached: map[string]bool{}, problems: map[string]bool{},
+	}
+}
+
+// namedReasons are the values of pkg's string constants declared in the
+// reasonFiles.
+func namedReasons(fset *token.FileSet, pkg *types.Package) map[string]bool {
+	named := map[string]bool{}
+	scope := pkg.Scope()
+	for _, name := range scope.Names() {
+		c, ok := scope.Lookup(name).(*types.Const)
+		if ok && declaredInReasonFile(fset, c) {
+			named[constant.StringVal(c.Val())] = true
+		}
+	}
+	return named
+}
+
+// declaredInReasonFile reports whether c is a string constant declared in one
+// of the reasonFiles.
+func declaredInReasonFile(fset *token.FileSet, c *types.Const) bool {
+	if c.Val().Kind() != constant.String {
+		return false
+	}
+	return reasonFiles[filepath.Base(fset.Position(c.Pos()).Filename)]
+}
+
 // buildSSA builds the SSA form of a type-checked package, with types-only
 // packages for everything it imports.
 func buildSSA(fset *token.FileSet, pkg *types.Package, files []*ast.File, info *types.Info) *ssa.Package {
 	prog := ssa.NewProgram(fset, 0)
-	var create func([]*types.Package)
-	create = func(pkgs []*types.Package) {
-		for _, p := range pkgs {
-			if prog.Package(p) == nil {
-				prog.CreatePackage(p, nil, nil, true)
-				create(p.Imports())
-			}
-		}
-	}
-	create(pkg.Imports())
+	createImports(prog, pkg.Imports())
 	ssaPkg := prog.CreatePackage(pkg, files, info, false)
 	ssaPkg.Build()
 	return ssaPkg
+}
+
+// createImports creates the types-only packages for pkgs and, recursively,
+// what they import.
+func createImports(prog *ssa.Program, pkgs []*types.Package) {
+	for _, p := range pkgs {
+		if prog.Package(p) != nil {
+			continue
+		}
+		prog.CreatePackage(p, nil, nil, true)
+		createImports(prog, p.Imports())
+	}
 }
 
 // TestCheckReasons_UnresolvedStringResults pins what a call out of the package
@@ -110,16 +135,26 @@ func TestCheckReasons_UnresolvedStringResults(t *testing.T) {
 // of the named declarations, never a literal that reaches a reason, however
 // indirectly.
 func TestProductionReasonsAreNamedConstants(t *testing.T) {
-	pkgs, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax}, ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pkgs) != 1 || len(pkgs[0].Errors) > 0 || len(pkgs[0].Syntax) == 0 {
-		t.Fatalf("loading the package: %v", pkgs)
-	}
-	p := pkgs[0]
+	p := loadControllerPackage(t)
 	if problems := checkReasons(p.Fset, buildSSA(p.Fset, p.Types, p.Syntax, p.TypesInfo), p.TypesInfo, p.Syntax); len(problems) > 0 {
 		t.Fatalf("condition/Event reasons must be named constants (conditions.go, classify.go):\n%s",
 			strings.Join(problems, "\n"))
 	}
+}
+
+// loadControllerPackage loads this package, syntax and types, failing the test
+// if it cannot be loaded cleanly.
+func loadControllerPackage(t *testing.T) *packages.Package {
+	t.Helper()
+	pkgs, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax}, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loading the package: %v", pkgs)
+	}
+	if p := pkgs[0]; len(p.Errors) > 0 || len(p.Syntax) == 0 {
+		t.Fatalf("loading the package: %v", pkgs)
+	}
+	return pkgs[0]
 }
