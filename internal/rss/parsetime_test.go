@@ -134,3 +134,57 @@ func TestLooksISO(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTime(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+		// wantZero is true when a successful parse should yield the zero time
+		// (i.e. blank input), distinct from an error.
+		wantZero bool
+	}{
+		{name: "blank", value: "   ", wantZero: true},
+		{name: "RFC3339", value: "2015-10-21T07:28:00Z"},
+		{name: "RFC1123Z", value: "Wed, 21 Oct 2015 07:28:00 +0000"},
+		{name: "RFC1123", value: "Wed, 21 Oct 2015 07:28:00 UTC"},
+		{name: "single-digit day", value: "Wed, 2 Jan 2006 15:04:05 MST"},
+		{name: "date only", value: "2015-10-21"},
+		{name: "datetime no zone", value: "2015-10-21 07:28:00"},
+		{name: "unsupported", value: "not a date at all", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseTime(tc.value)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q, got nil", tc.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.value, err)
+			}
+			assertParsedTime(t, tc.value, got, tc.wantZero)
+		})
+	}
+}
+
+// assertParsedTime checks a successful parse: blank input yields the zero
+// time, anything else a non-zero instant normalized to UTC.
+func assertParsedTime(t *testing.T, value string, got time.Time, wantZero bool) {
+	t.Helper()
+	if wantZero {
+		if !got.IsZero() {
+			t.Fatalf("expected zero time for %q, got %v", value, got)
+		}
+		return
+	}
+	if got.IsZero() {
+		t.Fatalf("expected non-zero time for %q", value)
+	}
+	if got.Location() != time.UTC {
+		t.Fatalf("expected parsed time normalized to UTC, got %v", got.Location())
+	}
+}
