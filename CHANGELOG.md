@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.18.1](https://github.com/maverickd650-labs/rss2discord/compare/v0.18.0...v0.18.1) (2026-11-07)
+
+
+### Code Refactoring
+
+* **discord:** split and simplify payload_test.go for code health ([#407](https://github.com/maverickd650-labs/rss2discord/issues/407)) ([9e7ee3e](https://github.com/maverickd650-labs/rss2discord/commit/9e7ee3ef2729d641048adf6ab9e3c664679082da))
+
+
+### Tests
+
+* **controller:** split processfeed_test.go into cohesive files ([#406](https://github.com/maverickd650-labs/rss2discord/issues/406)) ([e26de89](https://github.com/maverickd650-labs/rss2discord/commit/e26de89d9ffa8057a4001c3bf29b8bcf24ff252a))
+* group FeedGroup name and secret in setUpFeedGroup ([#412](https://github.com/maverickd650-labs/rss2discord/issues/412)) ([47743a5](https://github.com/maverickd650-labs/rss2discord/commit/47743a5b6bed51537cba1a2d62bc09844650b742))
+* **metrics:** split metrics_test.go into cohesive files and simplify complex tests ([#410](https://github.com/maverickd650-labs/rss2discord/issues/410)) ([b19130e](https://github.com/maverickd650-labs/rss2discord/commit/b19130e808b77ab3275559ef2034d4de8d738ef9))
+* **rss:** split parse_test.go into cohesive test files ([#408](https://github.com/maverickd650-labs/rss2discord/issues/408)) ([ae0dae3](https://github.com/maverickd650-labs/rss2discord/commit/ae0dae3dd6b54f8c7adced1030828efc00128e03))
+
+
+### Continuous Integration
+
+* **github-action:** Update action github/codeql-action (v4.39.2 → v4.39.3) ([#403](https://github.com/maverickd650-labs/rss2discord/issues/403)) ([0ab45ad](https://github.com/maverickd650-labs/rss2discord/commit/0ab45ad730749def25ee702790098c7b8fae570c))
+
+
+### Miscellaneous Chores
+
+* **ci:** build out release-please config ([#404](https://github.com/maverickd650-labs/rss2discord/issues/404)) ([8c696a1](https://github.com/maverickd650-labs/rss2discord/commit/8c696a1eea3de91365d17f7a39aa54503d90c069))
+
 ## [0.18.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.17.0...v0.18.0) (2026-11-06)
 
 
