@@ -121,16 +121,16 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 	// when entries carry no usable publish date.
 	tests := []struct {
 		name string
-		want int
+		want []string // titles, in document order
 		data string
 	}{
-		{formatRSS, 3, `<?xml version="1.0"?>
+		{formatRSS, []string{"First", "Second", "Third"}, `<?xml version="1.0"?>
 <rss><channel>
 <item><title>First</title></item>
 <item><title>Second</title></item>
 <item><title>Third</title></item>
 </channel></rss>`},
-		{formatAtom, 2, `<?xml version="1.0"?>
+		{formatAtom, []string{"First", "Second"}, `<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 <entry><title>First</title></entry>
 <entry><title>Second</title></entry>
@@ -142,13 +142,10 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(entries) != tt.want {
-				t.Fatalf("expected %d entries, got %d", tt.want, len(entries))
-			}
+			assertField(t, "entry count", len(entries), len(tt.want))
 			for i, e := range entries {
-				if e.Seq != i {
-					t.Fatalf("entry %q: expected Seq %d, got %d", e.Title, i, e.Seq)
-				}
+				assertField(t, "title at position", e.Title, tt.want[i])
+				assertField(t, "Seq of "+e.Title, e.Seq, i)
 			}
 		})
 	}

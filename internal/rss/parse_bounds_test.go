@@ -2,6 +2,7 @@ package rss
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,9 @@ func assertCategories(t *testing.T, got []string) {
 	for i := range want {
 		want[i] = fmt.Sprintf("c%d", i)
 	}
-	assertField(t, "categories (the first non-blank ones in order)", strings.Join(got, ","), strings.Join(want, ","))
+	if !slices.Equal(got, want) {
+		t.Fatalf("categories = %v, want the first %d non-blank ones in order", got, maxCategories)
+	}
 }
 
 // TestParseFeed_BoundsEntryCount asserts a document with more than
