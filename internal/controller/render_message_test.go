@@ -135,17 +135,18 @@ func TestFeedRendererBuild_EmptyRenderIsError(t *testing.T) {
 }
 
 func TestFeedRendererBuild_ThreadTargets(t *testing.T) {
+	entry := rss.Entry{Title: "Hello"}
 	runMessageCases(t, []messageCase{
 		{
 			name:  "existing thread",
 			feed:  &v1beta1.FeedSpec{Thread: &v1beta1.ThreadTarget{ID: "123456"}},
-			entry: rss.Entry{Title: "Hello"},
+			entry: entry,
 			want:  msgView{Content: "**Hello**\n\n[Read more]()", ThreadID: "123456"},
 		},
 		{
 			name:  "tagged forum post",
 			feed:  &v1beta1.FeedSpec{ForumPost: &v1beta1.ForumPostSpec{Name: tmplTitle, AppliedTagIDs: []string{"7", "8"}}},
-			entry: rss.Entry{Title: "Hello"},
+			entry: entry,
 			want:  msgView{Content: "**Hello**\n\n[Read more]()", ThreadName: "Hello", Tags: "7,8"},
 		},
 	})
