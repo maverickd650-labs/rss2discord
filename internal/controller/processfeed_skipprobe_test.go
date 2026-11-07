@@ -156,7 +156,7 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	ctx := t.Context()
 	ns, name := "processfeed-overflow-attempts", "fg-overflow-attempts"
 	discordServer := NewMockDiscordServer(t)
-	defer discordServer.Close()
+	t.Cleanup(discordServer.Close)
 	discordServer.FailNextRequests(2, http.StatusInternalServerError)
 	client := discordServer.DiscordClientBuilder()(discordServer.URL())
 
