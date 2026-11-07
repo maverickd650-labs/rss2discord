@@ -127,12 +127,6 @@ func checkNode(node parse.Node) error {
 		return checkNode(n.Pipe)
 	case *parse.IfNode:
 		return checkBranch(&n.BranchNode)
-	case *parse.RangeNode:
-		return errRangeUnsupported
-	case *parse.WithNode:
-		return errWithUnsupported
-	case *parse.TemplateNode:
-		return errTemplateUnsupported
 	case *parse.PipeNode:
 		return checkPipe(n)
 	case *parse.ChainNode:
@@ -140,15 +134,19 @@ func checkNode(node parse.Node) error {
 	case *parse.IdentifierNode:
 		return checkIdentifier(n)
 	}
-	return nil
+	// Reached only by non-nil nodes, so Type is safe to call here.
+	return unsupportedNodes[node.Type()]
 }
 
-var (
-	errRangeUnsupported    = errors.New("template: {{range}} is not supported")
-	errWithUnsupported     = errors.New("template: {{with}} is not supported")
-	errTemplateUnsupported = errors.New("template: {{template}} is not supported")
-	errDeclUnsupported     = errors.New("template: variable declaration and assignment are not supported")
-)
+// unsupportedNodes maps the node types that are refused outright to the error
+// reported for them; node types absent from it are allowed.
+var unsupportedNodes = map[parse.NodeType]error{
+	parse.NodeRange:    errors.New("template: {{range}} is not supported"),
+	parse.NodeWith:     errors.New("template: {{with}} is not supported"),
+	parse.NodeTemplate: errors.New("template: {{template}} is not supported"),
+}
+
+var errDeclUnsupported = errors.New("template: variable declaration and assignment are not supported")
 
 // checkList checks each node of a (possibly nil) list in order.
 func checkList(l *parse.ListNode) error {
