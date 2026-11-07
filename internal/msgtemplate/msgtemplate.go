@@ -114,50 +114,78 @@ func rejectUnboundedConstructs(tmpl *template.Template) error {
 	return checkNode(tmpl.Root)
 }
 
+// checkNode walks a parsed template and returns the first unsupported
+// construct. It only dispatches; each node kind with real logic has its own
+// helper. Nodes that need no check (text, fields, literals and variables,
+// where only $ -- the root value -- can appear without a declaration) fall
+// through to nil.
 func checkNode(node parse.Node) error {
 	switch n := node.(type) {
 	case *parse.ListNode:
-		if n == nil {
-			return nil
-		}
-		for _, c := range n.Nodes {
-			if err := checkNode(c); err != nil {
-				return err
-			}
-		}
+		return checkList(n)
 	case *parse.ActionNode:
 		return checkNode(n.Pipe)
 	case *parse.IfNode:
 		return checkBranch(&n.BranchNode)
 	case *parse.RangeNode:
-		return errors.New("template: {{range}} is not supported")
+		return errRangeUnsupported
 	case *parse.WithNode:
-		return errors.New("template: {{with}} is not supported")
+		return errWithUnsupported
 	case *parse.TemplateNode:
-		return errors.New("template: {{template}} is not supported")
+		return errTemplateUnsupported
 	case *parse.PipeNode:
-		if n == nil {
-			return nil
-		}
-		if len(n.Decl) > 0 {
-			return errors.New("template: variable declaration and assignment are not supported")
-		}
-		for _, cmd := range n.Cmds {
-			for _, arg := range cmd.Args {
-				if err := checkNode(arg); err != nil {
-					return err
-				}
-			}
-		}
+		return checkPipe(n)
 	case *parse.ChainNode:
 		return checkNode(n.Node)
 	case *parse.IdentifierNode:
-		if growthBuiltins[n.Ident] {
-			return fmt.Errorf("template: %s is not supported", n.Ident)
-		}
-	case *parse.VariableNode:
-		// Only $ (the root value) can appear without a declaration.
+		return checkIdentifier(n)
+	}
+	return nil
+}
+
+var (
+	errRangeUnsupported    = errors.New("template: {{range}} is not supported")
+	errWithUnsupported     = errors.New("template: {{with}} is not supported")
+	errTemplateUnsupported = errors.New("template: {{template}} is not supported")
+	errDeclUnsupported     = errors.New("template: variable declaration and assignment are not supported")
+)
+
+// checkList checks each node of a (possibly nil) list in order.
+func checkList(l *parse.ListNode) error {
+	if l == nil {
 		return nil
+	}
+	for _, c := range l.Nodes {
+		if err := checkNode(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkPipe refuses variable declarations and checks every command argument of
+// a (possibly nil) pipeline.
+func checkPipe(p *parse.PipeNode) error {
+	if p == nil {
+		return nil
+	}
+	if len(p.Decl) > 0 {
+		return errDeclUnsupported
+	}
+	for _, cmd := range p.Cmds {
+		for _, arg := range cmd.Args {
+			if err := checkNode(arg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkIdentifier refuses the string-building builtins.
+func checkIdentifier(id *parse.IdentifierNode) error {
+	if growthBuiltins[id.Ident] {
+		return fmt.Errorf("template: %s is not supported", id.Ident)
 	}
 	return nil
 }
