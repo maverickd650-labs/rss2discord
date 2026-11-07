@@ -323,18 +323,18 @@ func withRetries(retryInterval string, retries int32) feedGroupOption {
 // newTestFeedGroup builds a FeedGroup in the test namespace that reads its
 // webhook URL from secretName and watches a single feed at feedURL, with
 // defaultInterval. Opts adjust the result.
-func newTestFeedGroup(name, secretName, feedURL string, opts ...feedGroupOption) *rss2discordv1beta1.FeedGroup {
-	return newTestFeedGroupFeeds(name, secretName, []rss2discordv1beta1.FeedSpec{{Name: testFeedName(feedURL), URL: feedURL}}, opts...)
+func newTestFeedGroup(group testGroup, feedURL string, opts ...feedGroupOption) *rss2discordv1beta1.FeedGroup {
+	return newTestFeedGroupFeeds(group, []rss2discordv1beta1.FeedSpec{{Name: testFeedName(feedURL), URL: feedURL}}, opts...)
 }
 
 // newTestFeedGroupFeeds is newTestFeedGroup for a FeedGroup that watches the
 // given feeds.
-func newTestFeedGroupFeeds(name, secretName string, feeds []rss2discordv1beta1.FeedSpec, opts ...feedGroupOption) *rss2discordv1beta1.FeedGroup {
+func newTestFeedGroupFeeds(group testGroup, feeds []rss2discordv1beta1.FeedSpec, opts ...feedGroupOption) *rss2discordv1beta1.FeedGroup {
 	fg := &rss2discordv1beta1.FeedGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: group.name, Namespace: testNamespace},
 		Spec: rss2discordv1beta1.FeedGroupSpec{
 			DiscordWebhookSecretRef: corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				LocalObjectReference: corev1.LocalObjectReference{Name: group.secret},
 				Key:                  secretURLKey,
 			},
 			Interval: defaultInterval,
@@ -379,7 +379,7 @@ func setUpFeedGroup(ctx context.Context, group testGroup, feedXML string, opts .
 	DeferCleanup(rssServer.Close)
 
 	createWebhookSecret(ctx, group.secret, discordServer.URL())
-	Expect(k8sClient.Create(ctx, newTestFeedGroup(group.name, group.secret, rssServer.URL(), opts...))).To(Succeed())
+	Expect(k8sClient.Create(ctx, newTestFeedGroup(group, rssServer.URL(), opts...))).To(Succeed())
 	return discordServer, rssServer, newTestReconciler(discordServer)
 }
 
@@ -736,7 +736,7 @@ var _ = Describe("FeedGroup Controller", func() {
 	Describe("Error handling", func() {
 		It("should handle missing Discord webhook secret", func() {
 			By("Creating FeedGroup without secret")
-			feedGroup := newTestFeedGroup(feedGroupNameNoSecret, "nonexistent-secret", "https://example.com/feed")
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupNameNoSecret, secret: "nonexistent-secret"}, "https://example.com/feed")
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			By("Running reconciliation")
@@ -758,7 +758,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			By("Creating a secret whose key holds only whitespace")
 			createWebhookSecret(ctx, "discord-webhook-blank-value", "   ")
 
-			feedGroup := newTestFeedGroup(feedGroupName, "discord-webhook-blank-value", exampleFeedURL)
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupName, secret: "discord-webhook-blank-value"}, exampleFeedURL)
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			By("Running reconciliation")
@@ -791,7 +791,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-			feedGroup := newTestFeedGroup(feedGroupName, "discord-webhook-missing-key", exampleFeedURL)
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupName, secret: "discord-webhook-missing-key"}, exampleFeedURL)
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			By("Running reconciliation")
@@ -824,7 +824,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			createWebhookSecret(ctx, "discord-webhook-2", "https://discord.com/api/webhooks/12345/abcde")
 
 			By("Creating FeedGroup resource")
-			feedGroup := newTestFeedGroup(feedGroupNameRetry, "discord-webhook-2", rssServer.URL, withRetries("1m", 2))
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupNameRetry, secret: "discord-webhook-2"}, rssServer.URL, withRetries("1m", 2))
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			By("Running reconciliation")
@@ -903,7 +903,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			createWebhookSecret(ctx, "discord-webhook-default-rss-client", "https://discord.com/api/webhooks/12345/abcde")
 
 			By("Creating FeedGroup resource")
-			feedGroup := newTestFeedGroup(feedGroupName, "discord-webhook-default-rss-client", rssServer.URL(), withRetries("5m", 3))
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupName, secret: "discord-webhook-default-rss-client"}, rssServer.URL(), withRetries("5m", 3))
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			By("Running reconciliation without setting RSSClient")
@@ -1092,7 +1092,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const keptFeedURL = "https://example.com/kept-feed.xml"
 
 			By("Creating FeedGroup resource with two feeds")
-			feedGroup := newTestFeedGroupFeeds(feedGroupName, "discord-webhook-removed", []rss2discordv1beta1.FeedSpec{
+			feedGroup := newTestFeedGroupFeeds(testGroup{name: feedGroupName, secret: "discord-webhook-removed"}, []rss2discordv1beta1.FeedSpec{
 				{Name: testFeedName(rssServer.URL()), URL: rssServer.URL()},
 				{Name: testFeedName(keptFeedURL), URL: keptFeedURL, Suspend: true},
 			}, withRetries("5m", 3))
@@ -1137,7 +1137,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			// way Status().Update would.
 			const feedGroupName = "test-feedgroup-ssa-concurrent"
 
-			feedGroup := newTestFeedGroup(feedGroupName, "discord-webhook-ssa-concurrent", "https://example.com/ssa-concurrent.xml")
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupName, secret: "discord-webhook-ssa-concurrent"}, "https://example.com/ssa-concurrent.xml")
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
 
 			reconciler := &FeedGroupReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -1195,7 +1195,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			createWebhookSecret(ctx, "discord-webhook-7", "https://discord.com/api/webhooks/12345/abcde")
 
 			By("Creating FeedGroup with custom interval")
-			feedGroup := newTestFeedGroup("test-feedgroup-interval", "discord-webhook-7", rssServer.URL(), func(fg *rss2discordv1beta1.FeedGroup) {
+			feedGroup := newTestFeedGroup(testGroup{name: "test-feedgroup-interval", secret: "discord-webhook-7"}, rssServer.URL(), func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.Interval = "1h"
 				fg.Spec.RetryInterval = "5m"
 			})
@@ -1219,7 +1219,7 @@ var _ = Describe("FeedGroup Controller", func() {
 		It("should reject an Interval that isn't a valid Go duration at apply time", func() {
 			createWebhookSecret(ctx, "discord-webhook-bad-interval", "https://discord.com/api/webhooks/12345/abcde")
 
-			feedGroup := newTestFeedGroup("test-feedgroup-bad-interval", "discord-webhook-bad-interval", exampleFeedURL, func(fg *rss2discordv1beta1.FeedGroup) {
+			feedGroup := newTestFeedGroup(testGroup{name: "test-feedgroup-bad-interval", secret: "discord-webhook-bad-interval"}, exampleFeedURL, func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.Interval = "30 minutes"
 			})
 			Expect(k8sClient.Create(ctx, feedGroup)).To(MatchError(ContainSubstring("spec.interval")))
@@ -1349,7 +1349,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 			createWebhookSecret(ctx, "secret-rate-limit-multi", discordServer.URL())
 
-			fg := newTestFeedGroup(feedGroupName, "secret-rate-limit-multi", rssServerA.URL(), func(fg *rss2discordv1beta1.FeedGroup) {
+			fg := newTestFeedGroup(testGroup{name: feedGroupName, secret: "secret-rate-limit-multi"}, rssServerA.URL(), func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.RetryInterval = "5m"
 				fg.Spec.Feeds = append(fg.Spec.Feeds, rss2discordv1beta1.FeedSpec{
 					Name: testFeedName(rssServerB.URL()), URL: rssServerB.URL(),
@@ -1538,7 +1538,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			createWebhookSecret(ctx, "discord-webhook-concurrent", discordServer.URL())
 
 			By("Creating a FeedGroup with more feeds than the concurrent-fetch limit")
-			feedGroup := newTestFeedGroupFeeds(feedGroupName, "discord-webhook-concurrent", feeds, func(fg *rss2discordv1beta1.FeedGroup) {
+			feedGroup := newTestFeedGroupFeeds(testGroup{name: feedGroupName, secret: "discord-webhook-concurrent"}, feeds, func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.RetryInterval = "5m"
 			})
 			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
@@ -1851,7 +1851,7 @@ var _ = Describe("Reconcile API error paths", func() {
 		))
 		DeferCleanup(rssServer1.Close)
 
-		fg := newTestFeedGroupFeeds(feedGroupName, secretName, []rss2discordv1beta1.FeedSpec{
+		fg := newTestFeedGroupFeeds(testGroup{name: feedGroupName, secret: secretName}, []rss2discordv1beta1.FeedSpec{
 			{Name: "my-named-feed", URL: rssServer1.URL()},
 		})
 		Expect(k8sClient.Create(ctx, fg)).To(Succeed())

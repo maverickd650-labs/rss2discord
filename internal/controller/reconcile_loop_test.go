@@ -83,7 +83,7 @@ var _ = Describe("Reconcile triggering under a running manager", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "webhook", Namespace: loopNamespace},
 			Data:       map[string][]byte{secretURLKey: []byte("https://discord.com/api/webhooks/12345/abcde")},
 		})).To(Succeed())
-		fg := newTestFeedGroup("failing-feed", "webhook", rssServer.URL, withRetries("10s", 3))
+		fg := newTestFeedGroup(testGroup{name: "failing-feed", secret: "webhook"}, rssServer.URL, withRetries("10s", 3))
 		fg.Namespace = loopNamespace
 		Expect(k8sClient.Create(ctx, fg)).To(Succeed())
 

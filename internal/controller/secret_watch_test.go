@@ -165,7 +165,7 @@ var _ = Describe("Webhook Secret watch", func() {
 		for name, secret := range map[string]string{
 			referencesA: watched, alsoA: watched, referencesB: "secret-watch-other",
 		} {
-			Expect(k8sClient.Create(ctx, newTestFeedGroup(name, secret, exampleFeedURL))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newTestFeedGroup(testGroup{name: name, secret: secret}, exampleFeedURL))).To(Succeed())
 		}
 
 		r := &FeedGroupReconciler{Client: k8sClient}
@@ -297,7 +297,7 @@ var _ = Describe("Webhook Secret watch", func() {
 			Data:       map[string][]byte{secretURLKey: []byte(webhookURL)},
 		}
 		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-		fg := newTestFeedGroup("rotated-webhook-feed", secret.Name, rssServer.URL(), withRetries("5m", 3))
+		fg := newTestFeedGroup(testGroup{name: "rotated-webhook-feed", secret: secret.Name}, rssServer.URL(), withRetries("5m", 3))
 		fg.Namespace = watchNamespace
 		Expect(k8sClient.Create(ctx, fg)).To(Succeed())
 
