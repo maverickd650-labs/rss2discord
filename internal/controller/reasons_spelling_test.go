@@ -112,28 +112,40 @@ func checkReasonSpelling(fset *token.FileSet, files []*ast.File, info *types.Inf
 // expression of file.
 func (c *spellingCheck) checkFile(file *ast.File) {
 	inReasonFile := reasonFiles[filepath.Base(c.fset.Position(file.Pos()).Filename)]
-	packageConsts := map[*ast.GenDecl]bool{}
+	packageConsts := packageConstDecls(file)
+	ast.Inspect(file, func(n ast.Node) bool {
+		return c.visit(n, packageConsts[n] && inReasonFile)
+	})
+}
+
+// packageConstDecls are the package-level const declarations of file, as
+// nodes.
+func packageConstDecls(file *ast.File) map[ast.Node]bool {
+	decls := map[ast.Node]bool{}
 	for _, decl := range file.Decls {
 		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
-			packageConsts[gen] = true
+			decls[gen] = true
 		}
 	}
+	return decls
+}
 
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.GenDecl:
-			if n.Tok == token.CONST {
-				c.checkConstDecl(n, packageConsts[n] && inReasonFile)
-				return false
-			}
-			return n.Tok != token.IMPORT
-		case *ast.BasicLit:
-			c.checkLiteral(n)
-		case ast.Expr:
-			return c.checkExpr(n)
+// visit checks node n and says whether to descend into it; canonical is
+// whether n is a const declaration where reasons are declared.
+func (c *spellingCheck) visit(n ast.Node, canonical bool) bool {
+	switch n := n.(type) {
+	case *ast.GenDecl:
+		if n.Tok == token.CONST {
+			c.checkConstDecl(n, canonical)
+			return false
 		}
-		return true
-	})
+		return n.Tok != token.IMPORT
+	case *ast.BasicLit:
+		c.checkLiteral(n)
+	case ast.Expr:
+		return c.checkExpr(n)
+	}
+	return true
 }
 
 // checkLiteral reports a string literal that spells a reason.
@@ -177,12 +189,8 @@ func (c *spellingCheck) checkConstDecl(decl *ast.GenDecl, canonical bool) {
 // checkConstName records the spelling name gives its value, if that is a
 // reason, and reports it unless it is the canonical declaration.
 func (c *spellingCheck) checkConstName(name *ast.Ident, initializers []ast.Expr, canonical bool) {
-	declared, ok := c.info.Defs[name].(*types.Const)
-	if !ok || declared.Val() == nil || declared.Val().Kind() != constant.String {
-		return
-	}
-	s := constant.StringVal(declared.Val())
-	if !c.reasons[s] {
+	s, ok := declaredString(c.info, name)
+	if !ok || !c.reasons[s] {
 		return
 	}
 	if !canonical && !slices.ContainsFunc(initializers, containsNonEmptyStringLiteral) {
@@ -194,6 +202,19 @@ func (c *spellingCheck) checkConstName(name *ast.Ident, initializers []ast.Expr,
 	if !canonical {
 		c.problems[fmt.Sprintf("%s: string %s is declared by constant %s outside its canonical declaration", c.fset.Position(name.Pos()), strconv.Quote(s), name.Name)] = true
 	}
+}
+
+// declaredString is the value of the string constant name declares.
+func declaredString(info *types.Info, name *ast.Ident) (string, bool) {
+	declared, ok := info.Defs[name].(*types.Const)
+	if !ok {
+		return "", false
+	}
+	value := declared.Val()
+	if value == nil || value.Kind() != constant.String {
+		return "", false
+	}
+	return constant.StringVal(value), true
 }
 
 // reportDuplicates reports every canonical declaration of a value after the

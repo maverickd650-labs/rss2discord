@@ -44,7 +44,9 @@ type feedAttempt struct{}
 
 func (feedAttempt) setCondition(condType, status, reason, message string) {}
 func (feedAttempt) warn(reason, action, format string, args ...any)      {}
-func setFeedCondition(fs any, condType, status, reason, message string, generation int64) {}
+// setFeedCondition stands in for the production helper, whose trailing message
+// and generation arguments follow the reason and do not matter to the guard.
+func setFeedCondition(fs any, condType, status, reason string) {}
 
 type recorder interface {
 	Eventf(regarding, related any, eventtype, reason, action, note string, args ...any)
@@ -146,7 +148,7 @@ var directSinkCases = []sinkCase{
 	{name: "unkeyed Condition", src: `func f() { _ = metav1.Condition{t, s, "Oops", m, 1} }`, want: planted},
 	{name: "conditionReason field", src: `func f() { _ = failureClass{conditionReason: "Oops"} }`, want: planted},
 	{name: "unkeyed failureClass", src: `var cs = failureClass{metricOther, "Oops", false}`, want: planted},
-	{name: "setFeedCondition", src: `func f() { setFeedCondition(fs, t, s, "Oops", m, 1) }`, want: planted},
+	{name: "setFeedCondition", src: `func f() { setFeedCondition(fs, t, s, "Oops") }`, want: planted},
 	{name: "setCondition", src: `func f() { a.setCondition(t, s, "Oops", m) }`, want: planted},
 	{name: "warn", src: `func f() { a.warn("Oops", action, "f") }`, want: planted},
 	{name: "Eventf", src: `func f() { r.Eventf(g, nil, typ, "Oops", action, "f") }`, want: planted},

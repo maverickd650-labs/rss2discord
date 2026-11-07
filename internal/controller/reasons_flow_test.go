@@ -84,39 +84,61 @@ type reasonFlow struct {
 // closure.
 func (f *reasonFlow) index(pkg *ssa.Package) {
 	for _, member := range pkg.Members {
-		switch m := member.(type) {
-		case *ssa.Function:
-			f.addFunc(pkg, m)
-			if m.Name() == "init" {
-				// The package initializer calls the init funcs declared.
-				for callee := range staticCallees(m) {
-					f.addFunc(pkg, callee)
-				}
-			}
-		case *ssa.Type:
-			for fn := range declaredMethods(pkg.Prog, m.Type()) {
-				f.addFunc(pkg, fn)
-			}
-		}
+		f.indexMember(pkg, member)
 	}
 	for _, fn := range f.funcs {
-		for _, block := range fn.Blocks {
-			for _, instr := range block.Instrs {
-				f.indexInstr(instr)
-			}
+		f.indexBody(fn)
+	}
+}
+
+// indexMember records the functions a package member declares.
+func (f *reasonFlow) indexMember(pkg *ssa.Package, member ssa.Member) {
+	switch m := member.(type) {
+	case *ssa.Function:
+		f.addFunc(pkg, m)
+		if m.Name() == "init" {
+			f.addInitCallees(pkg, m)
+		}
+	case *ssa.Type:
+		for fn := range declaredMethods(pkg.Prog, m.Type()) {
+			f.addFunc(pkg, fn)
+		}
+	}
+}
+
+// addInitCallees records the init funcs the package initializer calls.
+func (f *reasonFlow) addInitCallees(pkg *ssa.Package, initializer *ssa.Function) {
+	for callee := range staticCallees(initializer) {
+		f.addFunc(pkg, callee)
+	}
+}
+
+// indexBody indexes every instruction of fn.
+func (f *reasonFlow) indexBody(fn *ssa.Function) {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			f.indexInstr(instr)
 		}
 	}
 }
 
 // addFunc records fn, if it is pkg's and new, and the closures inside it.
 func (f *reasonFlow) addFunc(pkg *ssa.Package, fn *ssa.Function) {
-	if fn == nil || fn.Pkg != pkg || slices.Contains(f.funcs, fn) {
+	if !f.isNew(pkg, fn) {
 		return
 	}
 	f.funcs = append(f.funcs, fn)
 	for _, anon := range fn.AnonFuncs {
 		f.addFunc(pkg, anon)
 	}
+}
+
+// isNew reports whether fn is a function of pkg not yet recorded.
+func (f *reasonFlow) isNew(pkg *ssa.Package, fn *ssa.Function) bool {
+	if fn == nil {
+		return false
+	}
+	return fn.Pkg == pkg && !slices.Contains(f.funcs, fn)
 }
 
 // staticCallees are the functions fn calls directly, nil results included.
@@ -138,12 +160,17 @@ func declaredMethods(prog *ssa.Program, typ types.Type) iter.Seq[*ssa.Function] 
 	return func(yield func(*ssa.Function) bool) {
 		for _, t := range []types.Type{typ, types.NewPointer(typ)} {
 			for method := range prog.MethodSets.MethodSet(t).Methods() {
-				if fn := prog.MethodValue(method); fn != nil && fn.Synthetic == "" && !yield(fn) {
+				if fn := prog.MethodValue(method); isDeclared(fn) && !yield(fn) {
 					return
 				}
 			}
 		}
 	}
+}
+
+// isDeclared reports whether fn is a method as written, not a synthetic wrapper.
+func isDeclared(fn *ssa.Function) bool {
+	return fn != nil && fn.Synthetic == ""
 }
 
 func (f *reasonFlow) indexInstr(instr ssa.Instruction) {
@@ -257,17 +284,22 @@ func (f *reasonFlow) traceDef(v ssa.Value) {
 	case *ssa.Parameter:
 		f.traceCallers(v, f.trace)
 	case *ssa.FreeVar:
-		for _, bound := range f.boundTo(v) {
-			f.trace(bound)
-		}
+		forEach(f.boundTo(v), f.trace)
 	case *ssa.Global:
-		for _, w := range f.globalWrites[v] {
-			f.trace(w)
-		}
-	case *ssa.Field:
-		f.traceField(fieldOf(v.X.Type(), v.Field))
-	case *ssa.FieldAddr:
-		f.traceField(fieldOf(v.X.Type(), v.Field))
+		forEach(f.globalWrites[v], f.trace)
+	default:
+		f.traceDerived(v)
+	}
+}
+
+// traceDerived follows v, which is not a constant, call result, parameter or
+// variable, to what it is read from or made of.
+func (f *reasonFlow) traceDerived(v ssa.Value) {
+	if field := fieldRead(v); field != nil {
+		f.traceField(field)
+		return
+	}
+	switch v := v.(type) {
 	case *ssa.Lookup:
 		f.trace(v.X) // a map's values; the key looked up is not the value
 	case *ssa.IndexAddr:
@@ -282,6 +314,24 @@ func (f *reasonFlow) traceDef(v ssa.Value) {
 		for _, op := range v.Operands(nil) {
 			f.trace(*op)
 		}
+	}
+}
+
+// fieldRead is the struct field v reads or addresses, or nil.
+func fieldRead(v ssa.Value) *types.Var {
+	switch v := v.(type) {
+	case *ssa.Field:
+		return fieldOf(v.X.Type(), v.Field)
+	case *ssa.FieldAddr:
+		return fieldOf(v.X.Type(), v.Field)
+	}
+	return nil
+}
+
+// forEach calls fn with each element of s.
+func forEach[E any](s []E, fn func(E)) {
+	for _, e := range s {
+		fn(e)
 	}
 }
 
@@ -348,41 +398,51 @@ func (f *reasonFlow) traceMapKeys(m ssa.Value) {
 // traceMapOrigin follows the keys of the maps m is made from.
 func (f *reasonFlow) traceMapOrigin(m ssa.Value) {
 	switch m := m.(type) {
-	case *ssa.Phi:
-		for _, edge := range m.Edges {
-			f.traceMapKeys(edge)
-		}
 	case *ssa.Parameter:
 		f.traceCallers(m, f.traceMapKeys)
 	case *ssa.Call:
 		f.traceCallResult(m, 0, f.traceMapKeys)
+	default:
+		forEach(f.mapSources(m), f.traceMapKeys)
+	}
+}
+
+// mapSources are the values a map m that is not a parameter or call result
+// is loaded or phi'd from: the maps whose keys it holds.
+func (f *reasonFlow) mapSources(m ssa.Value) []ssa.Value {
+	switch m := m.(type) {
+	case *ssa.Phi:
+		return m.Edges
 	case *ssa.UnOp:
 		// A package-level map is loaded from its global pointer. Follow the
 		// load back to the global so its initialisers' MapUpdates are visited.
 		if m.Op == token.MUL {
-			f.traceMapKeys(m.X)
+			return []ssa.Value{m.X}
 		}
-	case *ssa.FieldAddr:
-		f.traceFieldMapKeys(m.X.Type(), m.Field)
-	case *ssa.Field:
-		f.traceFieldMapKeys(m.X.Type(), m.Field)
 	case *ssa.FreeVar:
-		for _, bound := range f.boundTo(m) {
-			f.traceMapKeys(bound)
-		}
-	case *ssa.Alloc:
-		// Follow the values assigned to a local variable whose address is
-		// taken, including a map captured by a closure.
-		for _, ref := range referrers(m) {
-			if store, ok := ref.(*ssa.Store); ok && store.Addr == m {
-				f.traceMapKeys(store.Val)
-			}
-		}
+		return f.boundTo(m)
 	case *ssa.Global:
-		for _, stored := range f.globalWrites[m] {
-			f.traceMapKeys(stored)
+		return f.globalWrites[m]
+	case *ssa.Alloc:
+		// The values assigned to a local variable whose address is taken,
+		// including a map captured by a closure.
+		return storedTo(m)
+	}
+	if field := fieldRead(m); field != nil {
+		return f.fieldWrites[field]
+	}
+	return nil
+}
+
+// storedTo are the values stored to addr.
+func storedTo(addr ssa.Value) []ssa.Value {
+	var vals []ssa.Value
+	for _, ref := range referrers(addr) {
+		if store, ok := ref.(*ssa.Store); ok && store.Addr == addr {
+			vals = append(vals, store.Val)
 		}
 	}
+	return vals
 }
 
 // referrers are the instructions that use v.
@@ -391,13 +451,6 @@ func referrers(v ssa.Value) []ssa.Instruction {
 		return *refs
 	}
 	return nil
-}
-
-// traceFieldMapKeys follows maps stored in a struct field.
-func (f *reasonFlow) traceFieldMapKeys(typ types.Type, field int) {
-	for _, stored := range f.fieldWrites[fieldOf(typ, field)] {
-		f.traceMapKeys(stored)
-	}
 }
 
 // traceWrites follows everything written into the map, slice or pointer v:
@@ -412,30 +465,47 @@ func (f *reasonFlow) traceWrites(v ssa.Value) {
 // traceWriteVia follows what the instruction ref, which uses v, writes into it.
 func (f *reasonFlow) traceWriteVia(v ssa.Value, ref ssa.Instruction) {
 	switch r := ref.(type) {
-	case *ssa.MapUpdate:
-		if r.Map == v {
-			f.trace(r.Value)
-		}
-	case *ssa.Store:
-		if r.Addr == v {
-			f.trace(r.Val)
-		}
-	case *ssa.IndexAddr:
-		if r.X == v {
-			f.trace(r)
-		}
-	case *ssa.Slice:
-		if r.X == v {
-			f.trace(r)
-		}
 	case *ssa.MakeClosure:
-		for i, b := range r.Bindings {
-			if b == v {
-				f.trace(r.Fn.(*ssa.Function).FreeVars[i])
-			}
-		}
+		f.traceBindings(r, v)
 	case ssa.CallInstruction:
 		f.traceHandedTo(r.Common(), v)
+	default:
+		if written := writtenBy(ref, v); written != nil {
+			f.trace(written)
+		}
+	}
+}
+
+// writtenBy is the value ref, which uses v, puts into it, or nil: a map's
+// value, a stored value, or the element or slice made from it.
+func writtenBy(ref ssa.Instruction, v ssa.Value) ssa.Value {
+	switch r := ref.(type) {
+	case *ssa.MapUpdate:
+		return onlyIf(r.Map == v, r.Value)
+	case *ssa.Store:
+		return onlyIf(r.Addr == v, r.Val)
+	case *ssa.IndexAddr:
+		return onlyIf(r.X == v, r)
+	case *ssa.Slice:
+		return onlyIf(r.X == v, r)
+	}
+	return nil
+}
+
+// onlyIf is w when cond holds, else nil.
+func onlyIf(cond bool, w ssa.Value) ssa.Value {
+	if cond {
+		return w
+	}
+	return nil
+}
+
+// traceBindings follows the free variables closure binds v to.
+func (f *reasonFlow) traceBindings(closure *ssa.MakeClosure, v ssa.Value) {
+	for i, b := range closure.Bindings {
+		if b == v {
+			f.trace(closure.Fn.(*ssa.Function).FreeVars[i])
+		}
 	}
 }
 
@@ -443,13 +513,18 @@ func (f *reasonFlow) traceWriteVia(v ssa.Value, ref ssa.Instruction) {
 // which it passes them.
 func (f *reasonFlow) traceHandedTo(common *ssa.CallCommon, v ssa.Value) {
 	for i, arg := range common.Args {
-		if arg != v {
-			continue
+		if arg == v {
+			f.traceParams(common, i)
 		}
-		for _, callee := range f.callees(common) {
-			if j := i + receiverShift(common, callee); j < len(callee.Params) {
-				f.trace(callee.Params[j])
-			}
+	}
+}
+
+// traceParams follows the parameter each of common's callees receives
+// argument i as.
+func (f *reasonFlow) traceParams(common *ssa.CallCommon, i int) {
+	for _, callee := range f.callees(common) {
+		if j := i + receiverShift(common, callee); j < len(callee.Params) {
+			f.trace(callee.Params[j])
 		}
 	}
 }
@@ -466,23 +541,34 @@ func (f *reasonFlow) traceField(field *types.Var) {
 func (f *reasonFlow) traceCallResult(call *ssa.Call, i int, follow func(ssa.Value)) {
 	callees := f.callees(&call.Call)
 	if len(callees) == 0 {
-		for _, arg := range call.Call.Args {
-			follow(arg)
-		}
-		// Whatever a call out of the package does to its arguments, a string it
-		// returns is not a named constant, even when every argument is.
-		if isStringResult(call.Call.Signature().Results(), i) {
-			f.problems[fmt.Sprintf("%s: the string result of an unresolved call reaches %s", f.fset.Position(call.Pos()), f.where)] = true
-		}
+		f.traceUnresolved(call, i, follow)
 		return
 	}
 	for _, callee := range callees {
-		for _, block := range callee.Blocks {
-			if ret, ok := block.Instrs[len(block.Instrs)-1].(*ssa.Return); ok && i < len(ret.Results) {
-				follow(ret.Results[i])
-			}
+		forEach(returnedAt(callee, i), follow)
+	}
+}
+
+// traceUnresolved hands follow the arguments of call, which leaves the
+// package, and reports its result i if that is a string.
+func (f *reasonFlow) traceUnresolved(call *ssa.Call, i int, follow func(ssa.Value)) {
+	forEach(call.Call.Args, follow)
+	// Whatever a call out of the package does to its arguments, a string it
+	// returns is not a named constant, even when every argument is.
+	if isStringResult(call.Call.Signature().Results(), i) {
+		f.problems[fmt.Sprintf("%s: the string result of an unresolved call reaches %s", f.fset.Position(call.Pos()), f.where)] = true
+	}
+}
+
+// returnedAt are the values callee returns as result i.
+func returnedAt(callee *ssa.Function, i int) []ssa.Value {
+	var vals []ssa.Value
+	for _, block := range callee.Blocks {
+		if ret, ok := block.Instrs[len(block.Instrs)-1].(*ssa.Return); ok && i < len(ret.Results) {
+			vals = append(vals, ret.Results[i])
 		}
 	}
+	return vals
 }
 
 // isStringResult reports whether result i of results is a string.
@@ -516,11 +602,22 @@ func (f *reasonFlow) traceCallers(p *ssa.Parameter, follow func(ssa.Value)) {
 // every function of the package with the same signature.
 func (f *reasonFlow) callees(common *ssa.CallCommon) []*ssa.Function {
 	if callee := common.StaticCallee(); callee != nil {
-		if slices.Contains(f.funcs, callee) && len(callee.Blocks) > 0 {
-			return []*ssa.Function{callee}
-		}
-		return nil
+		return f.withBody(callee)
 	}
+	return f.dynamicCallees(common)
+}
+
+// withBody is callee alone if it is one of the package's functions with a body.
+func (f *reasonFlow) withBody(callee *ssa.Function) []*ssa.Function {
+	if slices.Contains(f.funcs, callee) && len(callee.Blocks) > 0 {
+		return []*ssa.Function{callee}
+	}
+	return nil
+}
+
+// dynamicCallees are the package's functions that a call without a static
+// callee can reach.
+func (f *reasonFlow) dynamicCallees(common *ssa.CallCommon) []*ssa.Function {
 	if _, builtin := common.Value.(*ssa.Builtin); builtin {
 		return nil
 	}
