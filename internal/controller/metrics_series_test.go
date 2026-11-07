@@ -47,7 +47,7 @@ func populateAllMetrics(t *testing.T, group seriesKey) {
 	t.Helper()
 	for _, e := range allMetrics {
 		for _, url := range []string{exampleFeedURL, otherFeedURL} {
-			touchSeries(t, e.vec, seriesLabels(e.vec, e.scope, group.forFeedURL(url)))
+			touchSeries(t, e.vec, seriesLabels(e.vec, e.scope, group.withFeed(url)))
 		}
 	}
 }
@@ -106,7 +106,7 @@ func TestGroupMetrics_ForgetFeedDropsOnlyThatFeed(t *testing.T) {
 	group := seriesKey{namespace: "metrics-forget-feed", group: "fg-forget-feed"}
 	forgetMetricsAfter(t, group.namespace, group.group)
 	populateAllMetrics(t, group)
-	forgotten, sibling := group.forFeedURL(exampleFeedURL), group.forFeedURL(otherFeedURL)
+	forgotten, sibling := group.withFeed(exampleFeedURL), group.withFeed(otherFeedURL)
 
 	groupMetrics{namespace: group.namespace, name: group.group}.forgetFeed(exampleFeedURL)
 

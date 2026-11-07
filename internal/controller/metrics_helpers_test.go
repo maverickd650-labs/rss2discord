@@ -92,10 +92,15 @@ type seriesKey struct {
 	namespace, group, feed string
 }
 
+// withFeed is the key of the series labelled with feed verbatim.
+func (k seriesKey) withFeed(feed string) seriesKey {
+	k.feed = feed
+	return k
+}
+
 // forFeedURL is the key of the feed that testFeedName derives from url.
 func (k seriesKey) forFeedURL(url string) seriesKey {
-	k.feed = testFeedName(url)
-	return k
+	return k.withFeed(testFeedName(url))
 }
 
 // groupSelector matches every series of the group.
