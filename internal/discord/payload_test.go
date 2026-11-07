@@ -121,6 +121,22 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 }
 
+// requireRateLimited fails unless err is a *RateLimitError carrying wantRetry
+// and the HTTP client has seen exactly wantRequests requests.
+func requireRateLimited(t *testing.T, stage string, err error, wantRetry time.Duration, requests, wantRequests int) {
+	t.Helper()
+	rle, ok := errors.AsType[*RateLimitError](err)
+	if !ok {
+		t.Fatalf("%s: err=%v, want *RateLimitError", stage, err)
+	}
+	if rle.RetryAfter != wantRetry {
+		t.Fatalf("%s: RetryAfter=%v, want %v", stage, rle.RetryAfter, wantRetry)
+	}
+	if requests != wantRequests {
+		t.Fatalf("%s: requests=%d, want %d", stage, requests, wantRequests)
+	}
+}
+
 func TestSendMessage_BoundedRetryAfterControlsCooldown(t *testing.T) {
 	for _, tc := range []struct {
 		name, header string
@@ -150,23 +166,21 @@ func TestSendMessage_BoundedRetryAfterControlsCooldown(t *testing.T) {
 				limiter := NewRateLimiter()
 				first := NewClient(testWebhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 				err := first.SendMessageText(t.Context(), "first")
-				rle, ok := errors.AsType[*RateLimitError](err)
-				if !ok || rle.RetryAfter != tc.want || requests != 1 {
-					t.Fatalf("first send: err=%v, requests=%d; want rate-limit error with %v and one request", err, requests, tc.want)
-				}
+				requireRateLimited(t, "first send", err, tc.want, requests, 1)
 
 				// Fake time verifies expiry without sleeping for a real hour.
 				time.Sleep(tc.want - time.Nanosecond)
 				second := NewClient(testWebhookURL, WithHTTPClient(httpClient), WithRateLimiter(limiter))
 				err = second.SendMessageText(t.Context(), "held")
-				rle, ok = errors.AsType[*RateLimitError](err)
-				if !ok || rle.RetryAfter != time.Nanosecond || requests != 1 {
-					t.Fatalf("before expiry: err=%v, requests=%d; want 1ns cooldown and no additional request", err, requests)
-				}
+				requireRateLimited(t, "before expiry", err, time.Nanosecond, requests, 1)
 
 				time.Sleep(time.Nanosecond)
-				if err := second.SendMessageText(t.Context(), "retry"); err != nil || requests != 2 {
-					t.Fatalf("after expiry: err=%v, requests=%d; want a successful second request", err, requests)
+				err = second.SendMessageText(t.Context(), "retry")
+				if err != nil {
+					t.Fatalf("after expiry: err=%v; want a successful second request", err)
+				}
+				if requests != 2 {
+					t.Fatalf("after expiry: requests=%d, want 2", requests)
 				}
 			})
 		})
@@ -239,8 +253,14 @@ func TestEmbedToPayload_OmitsUnsetMedia(t *testing.T) {
 	// An embed with only a title should produce no thumbnail/author/footer
 	// sub-objects, so they stay omitted from the JSON.
 	p := embedToPayload(Embed{Title: "only title"})
-	if p.Thumbnail != nil || p.Author != nil || p.Footer != nil {
-		t.Fatalf("expected unset embed media to be nil, got %+v", p)
+	if p.Thumbnail != nil {
+		t.Fatalf("expected Thumbnail to be nil, got %+v", p.Thumbnail)
+	}
+	if p.Author != nil {
+		t.Fatalf("expected Author to be nil, got %+v", p.Author)
+	}
+	if p.Footer != nil {
+		t.Fatalf("expected Footer to be nil, got %+v", p.Footer)
 	}
 	if p.Title != "only title" {
 		t.Fatalf("expected title preserved, got %q", p.Title)
@@ -256,13 +276,17 @@ func TestEmbedToPayload_AuthorAndFooterDetails(t *testing.T) {
 		FooterIconURL: "https://example.com/footer.png",
 	}
 	p := embedToPayload(e)
-	if p.Author == nil || p.Author.Name != e.AuthorName || p.Author.URL != e.AuthorURL || p.Author.IconURL != e.AuthorIconURL {
-		t.Fatalf("unexpected Author: %+v", p.Author)
+	wantAuthor := &discordEmbedAuthor{Name: e.AuthorName, URL: e.AuthorURL, IconURL: e.AuthorIconURL}
+	if !reflect.DeepEqual(p.Author, wantAuthor) {
+		t.Fatalf("Author = %+v, want %+v", p.Author, wantAuthor)
 	}
-	if p.Footer == nil || p.Footer.Text != e.FooterText || p.Footer.IconURL != e.FooterIconURL {
-		t.Fatalf("unexpected Footer: %+v", p.Footer)
+	wantFooter := &discordEmbedFooter{Text: e.FooterText, IconURL: e.FooterIconURL}
+	if !reflect.DeepEqual(p.Footer, wantFooter) {
+		t.Fatalf("Footer = %+v, want %+v", p.Footer, wantFooter)
 	}
+}
 
+func TestEmbedToPayload_AuthorAndFooterRequireText(t *testing.T) {
 	// Discord requires name for author and text for footer. URL/IconURL without
 	// the required text must not create payload objects.
 	pMissing := embedToPayload(Embed{
@@ -312,6 +336,33 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+// requireSameMessage fails unless got and want agree on content, thread name
+// and embed contents (not embed pointer identity).
+func requireSameMessage(t *testing.T, got, want Message) {
+	t.Helper()
+	if got.Content != want.Content {
+		t.Fatalf("Content = %q, want %q", got.Content, want.Content)
+	}
+	if got.ThreadName != want.ThreadName {
+		t.Fatalf("ThreadName = %q, want %q", got.ThreadName, want.ThreadName)
+	}
+	if !reflect.DeepEqual(got.Embed, want.Embed) {
+		t.Fatalf("Embed = %+v, want %+v", got.Embed, want.Embed)
+	}
+}
+
+// embedWithoutDescription returns e with Description cleared, to compare
+// everything the combined clamp must leave alone.
+func embedWithoutDescription(e Embed) Embed {
+	e.Description = ""
+	return e
+}
+
+// authorFooterLinks is the author/footer URL and icon fields of e.
+func authorFooterLinks(e Embed) [3]string {
+	return [3]string{e.AuthorURL, e.AuthorIconURL, e.FooterIconURL}
+}
+
 func TestFit_UnderLimitsUnchanged(t *testing.T) {
 	msg := Message{
 		Content:    "c",
@@ -319,9 +370,10 @@ func TestFit_UnderLimitsUnchanged(t *testing.T) {
 		Embed:      &Embed{Title: "t", Description: "d", FooterText: "f", AuthorName: "a"},
 	}
 	got, trimmed := Fit(msg)
-	if trimmed != 0 || got.Content != "c" || got.ThreadName != "thread" || *got.Embed != *msg.Embed {
-		t.Fatalf("Fit changed an in-limit message: trimmed=%d got=%+v", trimmed, got)
+	if trimmed != 0 {
+		t.Fatalf("Fit trimmed an in-limit message: trimmed=%d", trimmed)
 	}
+	requireSameMessage(t, got, msg)
 }
 
 func TestFit_PerFieldLimits(t *testing.T) {
@@ -372,7 +424,7 @@ func TestFit_CombinedEmbedClamp(t *testing.T) {
 	if n := len([]rune(got.Embed.Description)); n != 3500 {
 		t.Fatalf("description length = %d, want 3500", n)
 	}
-	if got.Embed.Title != e.Title || got.Embed.FooterText != e.FooterText || got.Embed.AuthorName != e.AuthorName {
+	if embedWithoutDescription(*got.Embed) != embedWithoutDescription(*e) {
 		t.Fatal("combined clamp must only trim Description")
 	}
 
@@ -410,7 +462,7 @@ func TestFit_AuthorAndFooterURLsAreKeptAndNotCounted(t *testing.T) {
 	if trimmed != 0 {
 		t.Fatalf("trimmed = %d, want 0: URLs must not count toward the combined limit", trimmed)
 	}
-	if *got.Embed != *e {
+	if !reflect.DeepEqual(got.Embed, e) {
 		t.Fatalf("Fit changed an embed within every limit: %+v", got.Embed)
 	}
 
@@ -422,7 +474,7 @@ func TestFit_AuthorAndFooterURLsAreKeptAndNotCounted(t *testing.T) {
 	if trimmed != 5+7 {
 		t.Fatalf("trimmed = %d, want 12", trimmed)
 	}
-	if got.Embed.AuthorURL != e.AuthorURL || got.Embed.AuthorIconURL != e.AuthorIconURL || got.Embed.FooterIconURL != e.FooterIconURL {
+	if authorFooterLinks(*got.Embed) != authorFooterLinks(*e) {
 		t.Fatal("Fit changed an author/footer URL")
 	}
 }
@@ -457,9 +509,10 @@ func TestFit_Idempotent(t *testing.T) {
 		t.Fatal("expected the first Fit to trim")
 	}
 	twice, second := Fit(once)
-	if second != 0 || twice.Content != once.Content || twice.ThreadName != once.ThreadName || *twice.Embed != *once.Embed {
+	if second != 0 {
 		t.Fatalf("Fit is not idempotent: second trimmed %d", second)
 	}
+	requireSameMessage(t, twice, once)
 }
 
 func TestFit_DoesNotMutateCallerEmbed(t *testing.T) {
@@ -504,49 +557,47 @@ func preparedPayload(t *testing.T, msg Message) (map[string]any, string) {
 	return body, p.target
 }
 
-func TestPrepareRequest_MentionsFlagsAndTags(t *testing.T) {
-	t.Run("defaults suppress every mention and set no flags", func(t *testing.T) {
-		body, _ := preparedPayload(t, Message{Content: "x", AppliedTags: []string{"9"}})
-		if got, want := body["allowed_mentions"], map[string]any{"parse": []any{}}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("allowed_mentions = %v, want %v", got, want)
-		}
-		if _, ok := body["flags"]; ok {
-			t.Fatalf("flags = %v, want omitted", body["flags"])
-		}
-		if _, ok := body["applied_tags"]; ok {
-			t.Fatal("applied_tags sent without a new forum post")
-		}
-	})
+func TestPrepareRequest_DefaultsSuppressMentionsAndSetNoFlags(t *testing.T) {
+	body, _ := preparedPayload(t, Message{Content: "x", AppliedTags: []string{"9"}})
+	if got, want := body["allowed_mentions"], map[string]any{"parse": []any{}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("allowed_mentions = %v, want %v", got, want)
+	}
+	if _, ok := body["flags"]; ok {
+		t.Fatalf("flags = %v, want omitted", body["flags"])
+	}
+	if _, ok := body["applied_tags"]; ok {
+		t.Fatal("applied_tags sent without a new forum post")
+	}
+}
 
-	t.Run("configured mentions, flags and forum tags", func(t *testing.T) {
-		body, target := preparedPayload(t, Message{
-			Content:        "<@&1> <@2> x",
-			MentionRoleIDs: []string{"1"},
-			MentionUserIDs: []string{"2"},
-			Silent:         true,
-			SuppressEmbeds: true,
-			ThreadName:     "post",
-			AppliedTags:    []string{"7", "8"},
-		})
-		want := map[string]any{"parse": []any{}, "roles": []any{"1"}, "users": []any{"2"}}
-		if got := body["allowed_mentions"]; !reflect.DeepEqual(got, want) {
-			t.Fatalf("allowed_mentions = %v, want %v", got, want)
-		}
-		if got := body["flags"]; got != float64(flagSuppressEmbeds|flagSuppressNotifications) {
-			t.Fatalf("flags = %v, want %d", got, flagSuppressEmbeds|flagSuppressNotifications)
-		}
-		if got := body["applied_tags"]; !reflect.DeepEqual(got, []any{"7", "8"}) {
-			t.Fatalf("applied_tags = %v", got)
-		}
-		if strings.Contains(target, "thread_id") {
-			t.Fatalf("target = %q, want no thread_id for a new post", target)
-		}
+func TestPrepareRequest_ConfiguredMentionsFlagsAndTags(t *testing.T) {
+	body, target := preparedPayload(t, Message{
+		Content:        "<@&1> <@2> x",
+		MentionRoleIDs: []string{"1"},
+		MentionUserIDs: []string{"2"},
+		Silent:         true,
+		SuppressEmbeds: true,
+		ThreadName:     "post",
+		AppliedTags:    []string{"7", "8"},
 	})
+	want := map[string]any{"parse": []any{}, "roles": []any{"1"}, "users": []any{"2"}}
+	if got := body["allowed_mentions"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("allowed_mentions = %v, want %v", got, want)
+	}
+	if got := body["flags"]; got != float64(flagSuppressEmbeds|flagSuppressNotifications) {
+		t.Fatalf("flags = %v, want %d", got, flagSuppressEmbeds|flagSuppressNotifications)
+	}
+	if got := body["applied_tags"]; !reflect.DeepEqual(got, []any{"7", "8"}) {
+		t.Fatalf("applied_tags = %v", got)
+	}
+	if strings.Contains(target, "thread_id") {
+		t.Fatalf("target = %q, want no thread_id for a new post", target)
+	}
+}
 
-	t.Run("silent alone", func(t *testing.T) {
-		body, _ := preparedPayload(t, Message{Content: "x", Silent: true})
-		if got := body["flags"]; got != float64(flagSuppressNotifications) {
-			t.Fatalf("flags = %v, want %d", got, flagSuppressNotifications)
-		}
-	})
+func TestPrepareRequest_SilentAlone(t *testing.T) {
+	body, _ := preparedPayload(t, Message{Content: "x", Silent: true})
+	if got := body["flags"]; got != float64(flagSuppressNotifications) {
+		t.Fatalf("flags = %v, want %d", got, flagSuppressNotifications)
+	}
 }
