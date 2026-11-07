@@ -96,26 +96,27 @@ func TestSetFeedCondition_IgnoresObservedGenerationOnlyChange(t *testing.T) {
 	fs := &v1beta1.FeedStatus{}
 
 	steps := []struct {
-		name       string
-		status     metav1.ConditionStatus
-		reason     string
-		message    string
-		generation int64
-		wantChange bool
+		name        string
+		status      metav1.ConditionStatus
+		reason      string
+		message     string
+		generation  int64
+		wantChange  bool
+		assertClamp bool
 	}{
-		{"new condition", metav1.ConditionFalse, reasonConfigError, oversized, 1, true},
-		{"observed generation only", metav1.ConditionFalse, reasonConfigError, oversized, 2, false},
-		{"message change", metav1.ConditionFalse, reasonConfigError, differentInvalidFilter, 2, true},
-		{"status change", metav1.ConditionTrue, reasonConfigError, differentInvalidFilter, 2, true},
-		{"reason change", metav1.ConditionTrue, reasonMessageSent, differentInvalidFilter, 2, true},
+		{"new condition", metav1.ConditionFalse, reasonConfigError, oversized, 1, true, false},
+		{"observed generation only", metav1.ConditionFalse, reasonConfigError, oversized, 2, false, true},
+		{"message change", metav1.ConditionFalse, reasonConfigError, differentInvalidFilter, 2, true, false},
+		{"status change", metav1.ConditionTrue, reasonConfigError, differentInvalidFilter, 2, true, false},
+		{"reason change", metav1.ConditionTrue, reasonMessageSent, differentInvalidFilter, 2, true, false},
 	}
 	for _, step := range steps {
 		got := setFeedCondition(fs, v1beta1.FeedConditionTypeDelivered, step.status, step.reason, step.message, step.generation)
 		if got != step.wantChange {
 			t.Fatalf("%s: setFeedCondition changed = %v, want %v", step.name, got, step.wantChange)
 		}
-		if step.name == "observed generation only" {
-			assertClampedAtGeneration(t, fs, 2)
+		if step.assertClamp {
+			assertClampedAtGeneration(t, fs, step.generation)
 		}
 	}
 }
