@@ -49,12 +49,12 @@ func viewOfOrZero(msg discord.Message) embedView {
 	return viewOf(msg.Embed)
 }
 
+const publishedRFC3339 = "2024-05-06T07:08:09Z"
+
 // TestFeedRendererBuild_EmbedTimestamp asserts the embed timestamp is the
 // entry's published time by default, empty for an undated entry (discord.Embed
 // omits it from the payload instead of sending year 0001) and for
 // timestamp None.
-const publishedRFC3339 = "2024-05-06T07:08:09Z"
-
 func TestFeedRendererBuild_EmbedTimestamp(t *testing.T) {
 	dated := time.Date(2024, 5, 6, 9, 8, 9, 0, time.FixedZone("x", 2*3600))
 	cases := []struct {
@@ -94,6 +94,9 @@ func TestFeedRendererBuild_EmbedImageStyle(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			msg := buildOK(t, &v1beta1.FeedGroup{}, embedFeed(v1beta1.EmbedSpec{ImageStyle: tc.style}), rss.Entry{Title: "T", Image: tc.image})
+			if msg.Embed == nil {
+				t.Fatal("expected an embed")
+			}
 			if msg.Embed.ThumbnailURL != tc.wantThumb || msg.Embed.ImageURL != tc.wantLarge {
 				t.Fatalf("thumbnail=%q image=%q, want %q / %q", msg.Embed.ThumbnailURL, msg.Embed.ImageURL, tc.wantThumb, tc.wantLarge)
 			}
