@@ -361,19 +361,25 @@ func newTestReconciler(discordServer *MockDiscordServer) *FeedGroupReconciler {
 	return r
 }
 
+// testGroup names a FeedGroup and the webhook Secret it reads its URL from.
+type testGroup struct {
+	name   string
+	secret string
+}
+
 // setUpFeedGroup starts mock Discord and RSS servers (closed when the spec
 // ends), creates the webhook Secret and a FeedGroup watching the RSS server,
 // and returns the servers plus a reconciler wired to them. Opts adjust the
 // FeedGroup before it is created.
-func setUpFeedGroup(ctx context.Context, name, secretName, feedXML string, opts ...feedGroupOption) (*MockDiscordServer, *MockRSSServer, *FeedGroupReconciler) {
+func setUpFeedGroup(ctx context.Context, group testGroup, feedXML string, opts ...feedGroupOption) (*MockDiscordServer, *MockRSSServer, *FeedGroupReconciler) {
 	GinkgoHelper()
 	discordServer := NewMockDiscordServer(GinkgoTB())
 	DeferCleanup(discordServer.Close)
 	rssServer := NewMockRSSServer(feedXML)
 	DeferCleanup(rssServer.Close)
 
-	createWebhookSecret(ctx, secretName, discordServer.URL())
-	Expect(k8sClient.Create(ctx, newTestFeedGroup(name, secretName, rssServer.URL(), opts...))).To(Succeed())
+	createWebhookSecret(ctx, group.secret, discordServer.URL())
+	Expect(k8sClient.Create(ctx, newTestFeedGroup(group.name, group.secret, rssServer.URL(), opts...))).To(Succeed())
 	return discordServer, rssServer, newTestReconciler(discordServer)
 }
 
@@ -466,7 +472,7 @@ var _ = Describe("FeedGroup Controller", func() {
 	Describe("Successful RSS to Discord flow", func() {
 		It("should fetch RSS entries and track status", func() {
 			By("Creating mock Discord and RSS servers, the webhook secret and the FeedGroup")
-			_, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupNameBasic, discordWebhookSecretName, createRSSFeed(
+			_, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupNameBasic, secret: discordWebhookSecretName}, createRSSFeed(
 				testEntry{
 					title:       "Test Article 1",
 					description: "This is a test article",
@@ -515,7 +521,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-conditional-get"
 
 			By("Creating mock Discord and RSS servers, the webhook secret and the FeedGroup")
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-conditional", createRSSFeed(
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-conditional"}, createRSSFeed(
 				testEntry{
 					title:       "Conditional Article",
 					description: "First fetch",
@@ -561,7 +567,7 @@ var _ = Describe("FeedGroup Controller", func() {
 		It("should not refetch a feed that was checked less than one interval ago", func() {
 			const feedGroupName = "test-feedgroup-interval-gate"
 
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-interval-gate", createRSSFeed(
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-interval-gate"}, createRSSFeed(
 				testEntry{
 					title:   "Gate Article",
 					link:    "https://example.com/gate-article",
@@ -599,7 +605,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-conditional-get-retry"
 
 			By("Creating mock Discord webhook server that fails the first delivery")
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-conditional-retry", createRSSFeed(
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-conditional-retry"}, createRSSFeed(
 				testEntry{
 					title:       "Retry Article",
 					description: "Should survive a failed send",
@@ -655,7 +661,7 @@ var _ = Describe("FeedGroup Controller", func() {
 					guid:        fmt.Sprintf("skip-backlog-%d", i),
 				})
 			}
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-skip-backlog", createRSSFeed(entries...), withRetries("5m", 3), func(fg *rss2discordv1beta1.FeedGroup) {
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-skip-backlog"}, createRSSFeed(entries...), withRetries("5m", 3), func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.CatchUpLimit = new(int32(0))
 			})
 
@@ -695,7 +701,7 @@ var _ = Describe("FeedGroup Controller", func() {
 
 		It("should persist an empty first sync and deliver entries published later", func() {
 			const feedGroupName = "test-feedgroup-empty-first-sync"
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-empty-first-sync", createRSSFeed(), withRetries("5m", 3), func(fg *rss2discordv1beta1.FeedGroup) {
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-empty-first-sync"}, createRSSFeed(), withRetries("5m", 3), func(fg *rss2discordv1beta1.FeedGroup) {
 				fg.Spec.CatchUpLimit = new(int32(0))
 			})
 
@@ -919,7 +925,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-panic"
 
 			By("Creating a FeedGroup whose feed has two new entries")
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-panic", createRSSFeed(
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-panic"}, createRSSFeed(
 				testEntry{
 					title:       "Panic Older Article",
 					description: "Sent before the panic",
@@ -986,7 +992,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-invalid-interval"
 
 			By("Creating a FeedGroup with an unparsable interval and a feed with one new entry")
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-invalid-interval", createRSSFeed(
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-invalid-interval"}, createRSSFeed(
 				testEntry{
 					title:       "Invalid Interval Article",
 					description: "Must be sent exactly once",
@@ -1271,7 +1277,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			const feedGroupName = "test-feedgroup-rate-limited"
 
 			By("Creating a mock Discord webhook server that rate-limits the first delivery")
-			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-rate-limited", createRSSFeed(
+			discordServer, rssServer, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-rate-limited"}, createRSSFeed(
 				testEntry{
 					title:       "Rate Limited Article",
 					description: "Should survive a 429",
@@ -1783,7 +1789,7 @@ var _ = Describe("Reconcile API error paths", func() {
 
 	It("should surface a failed status write instead of reporting a successful reconcile", func() {
 		const feedGroupName = "test-feedgroup-status-apply-error"
-		_, _, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-apply-error", createRSSFeed(
+		_, _, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-apply-error"}, createRSSFeed(
 			testEntry{title: "Apply Error", link: "https://example.com/apply-error", guid: "apply-error", pubDate: time.Now().Format(time.RFC1123Z)},
 		))
 		boom := errors.New("status apply rejected")
@@ -1796,7 +1802,7 @@ var _ = Describe("Reconcile API error paths", func() {
 
 	It("should report both a feed's panic and the failed status write that followed it", func() {
 		const feedGroupName = "test-feedgroup-panic-apply-error"
-		_, _, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-panic-apply-error", createRSSFeed(
+		_, _, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-panic-apply-error"}, createRSSFeed(
 			testEntry{title: "Panic Apply Error", link: "https://example.com/panic-apply-error", guid: "panic-apply-error", pubDate: time.Now().Format(time.RFC1123Z)},
 		))
 		boom := errors.New("status apply rejected")
@@ -1811,7 +1817,7 @@ var _ = Describe("Reconcile API error paths", func() {
 
 	It("should suspend reconciliation when Spec.Suspend is true", func() {
 		const feedGroupName = "test-feedgroup-suspend"
-		_, _, reconciler := setUpFeedGroup(ctx, feedGroupName, "discord-webhook-suspend", createRSSFeed(
+		_, _, reconciler := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: "discord-webhook-suspend"}, createRSSFeed(
 			testEntry{title: "Suspended Entry", link: "https://example.com/suspend", guid: "suspend", pubDate: time.Now().Format(time.RFC1123Z)},
 		))
 

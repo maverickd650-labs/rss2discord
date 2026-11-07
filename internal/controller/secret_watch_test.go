@@ -182,7 +182,7 @@ var _ = Describe("Webhook Secret watch", func() {
 	It("retries a feed backed off after a permanent send failure once its webhook Secret changes", func() {
 		const feedGroupName = "test-feedgroup-secret-rotation"
 		const secretName = "discord-webhook-secret-rotation"
-		discordServer, _, r := setUpFeedGroup(ctx, feedGroupName, secretName, createRSSFeed(testEntry{
+		discordServer, _, r := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: secretName}, createRSSFeed(testEntry{
 			title:   "Delivered After Rotation",
 			link:    "https://example.com/delivered-after-rotation",
 			pubDate: time.Now().Format(time.RFC1123Z),
