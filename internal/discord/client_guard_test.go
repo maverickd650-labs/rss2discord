@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,6 +38,9 @@ func TestNewHTTPClientWithTransportWrap_WrapsAndPreservesRedirectRefusal(t *test
 	if client.CheckRedirect == nil {
 		t.Fatal("expected CheckRedirect to still refuse redirects")
 	}
+	if err := client.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("CheckRedirect = %v, want http.ErrUseLastResponse", err)
+	}
 }
 
 func TestNewHTTPClientWithTransportWrap_NilWrapMatchesNewHTTPClient(t *testing.T) {
@@ -46,6 +50,9 @@ func TestNewHTTPClientWithTransportWrap_NilWrapMatchesNewHTTPClient(t *testing.T
 	}
 	if client.CheckRedirect == nil {
 		t.Fatal("expected CheckRedirect to still refuse redirects")
+	}
+	if err := client.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("CheckRedirect = %v, want http.ErrUseLastResponse", err)
 	}
 }
 
@@ -94,10 +101,9 @@ func TestSendMessage_AcceptsDiscordHost(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	// WithHTTPClient lets the test supply a client trusting the
-	// httptest TLS cert. The httptest server resolves to 127.0.0.1, so we
-	// temporarily add it to the allow-list to exercise the "happy path"
-	// without depending on a real discord.com endpoint.
+	// WithHTTPClient supplies a client that routes every request to the
+	// in-memory server. The webhook URL is a real https://discord.com URL,
+	// so it passes the production allow-list without changes.
 	c := NewClient(webhookURL, WithHTTPClient(httpClient))
 	if err := c.SendMessageText(t.Context(), "hello"); err != nil {
 		t.Fatalf("unexpected error: %v", err)

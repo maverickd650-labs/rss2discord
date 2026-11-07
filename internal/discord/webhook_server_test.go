@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// testWebhookHost is the host of every mock webhook URL: Discord's own, so the
 // URL passes the production allowlist unchanged.
 const testWebhookHost = "discord.com"
 
