@@ -117,7 +117,7 @@ func TestProcessFeed_RecordsOutcomeMetric(t *testing.T) {
 			}
 			processFeed(ctx, testRun(t, fg, feed, fetchResult, tc.fetchErr, client))
 
-			assertOperationCount(t, ns, name, testFeedName(exampleFeedURL), tc.outcome, 1)
+			assertOperationCount(t, seriesKey{ns, name, testFeedName(exampleFeedURL)}, tc.outcome, 1)
 		})
 	}
 }

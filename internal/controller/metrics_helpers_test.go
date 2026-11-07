@@ -86,12 +86,36 @@ func reconcileDurationSampleCountErr(namespace, name string) (uint64, error) {
 	return h.GetSampleCount(), nil
 }
 
-// assertOperationCount fails unless feedOperationsTotal for the feed and
+// seriesKey identifies a FeedGroup's series (feed is empty for a group-level
+// one), so helpers take one value instead of several strings.
+type seriesKey struct {
+	namespace, group, feed string
+}
+
+// forFeedURL is the key of the feed that testFeedName derives from url.
+func (k seriesKey) forFeedURL(url string) seriesKey {
+	k.feed = testFeedName(url)
+	return k
+}
+
+// groupSelector matches every series of the group.
+func (k seriesKey) groupSelector() map[string]string {
+	return map[string]string{labelNamespace: k.namespace, labelName: k.group}
+}
+
+// feedSelector matches every series of the key's feed.
+func (k seriesKey) feedSelector() map[string]string {
+	sel := k.groupSelector()
+	sel[labelFeed] = k.feed
+	return sel
+}
+
+// assertOperationCount fails unless feedOperationsTotal for the key's feed and
 // outcome reads want.
-func assertOperationCount(t *testing.T, ns, name, feed, outcome string, want float64) {
+func assertOperationCount(t *testing.T, key seriesKey, outcome string, want float64) {
 	t.Helper()
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, feed, outcome)); got != want {
-		t.Fatalf("feedOperationsTotal{feed=%q,outcome=%q} = %v, want %v", feed, outcome, got, want)
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(key.namespace, key.group, key.feed, outcome)); got != want {
+		t.Fatalf("feedOperationsTotal{feed=%q,outcome=%q} = %v, want %v", key.feed, outcome, got, want)
 	}
 }
 
@@ -147,7 +171,12 @@ func countSeries(c prometheus.Collector, want map[string]string) int {
 // it, reporting whether it exists. WithLabelValues can't be used for presence
 // checks because it creates the series it is asked for.
 func feedGaugeValue(vec *prometheus.GaugeVec, namespace, name, feedID string) (float64, bool) {
-	want := map[string]string{labelNamespace: namespace, labelName: name, labelFeed: feedID}
+	return seriesKey{namespace, name, feedID}.gaugeValue(vec)
+}
+
+// gaugeValue is feedGaugeValue for a key.
+func (k seriesKey) gaugeValue(vec *prometheus.GaugeVec) (float64, bool) {
+	want := k.feedSelector()
 	for _, m := range collectMetrics(vec) {
 		if hasLabels(labelsOf(m), want) {
 			return m.GetGauge().GetValue(), true

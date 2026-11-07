@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,56 +28,73 @@ import (
 const otherFeedURL = "https://other.example.com/feed.xml"
 
 // seriesLabels is the full label set of one series of vec for a feed.
-func seriesLabels(vec metricVec, scope metricScope, ns, name, url string) prometheus.Labels {
-	labels := prometheus.Labels{labelNamespace: ns, labelName: name}
+func seriesLabels(vec metricVec, scope metricScope, key seriesKey) prometheus.Labels {
+	labels := prometheus.Labels(key.groupSelector())
 	switch {
 	case vec == metricVec(feedOperationsTotal):
-		labels[labelFeed], labels[labelOutcome] = url, outcomeSent
+		labels[labelFeed], labels[labelOutcome] = key.feed, outcomeSent
 	case vec == metricVec(feedRequestDuration):
 		labels[labelOperation] = operationSend
 	case scope == scopePerFeed:
-		labels[labelFeed] = url
+		labels[labelFeed] = key.feed
 	}
 	return labels
 }
 
 // populateAllMetrics creates, for every vector in allMetrics, one series per
 // feed of the group (the example feed and otherFeedURL).
-func populateAllMetrics(t *testing.T, ns, name string) {
+func populateAllMetrics(t *testing.T, group seriesKey) {
 	t.Helper()
 	for _, e := range allMetrics {
 		for _, url := range []string{exampleFeedURL, otherFeedURL} {
-			touchSeries(t, e.vec, seriesLabels(e.vec, e.scope, ns, name, url))
+			touchSeries(t, e.vec, seriesLabels(e.vec, e.scope, group.forFeedURL(url)))
 		}
 	}
 }
 
-func groupSelector(ns, name string) map[string]string {
-	return map[string]string{labelNamespace: ns, labelName: name}
-}
-
-func feedSelector(ns, name, url string) map[string]string {
-	return map[string]string{labelNamespace: ns, labelName: name, labelFeed: url}
+// assertEveryMetricSeries fails for each vector in allMetrics whose series
+// matching sel are present when none are wanted, or absent when some are.
+func assertEveryMetricSeries(t *testing.T, sel map[string]string, wantPresent bool, msg string) {
+	t.Helper()
+	for i, e := range allMetrics {
+		if got := countSeries(e.vec, sel); (got > 0) != wantPresent {
+			t.Errorf("allMetrics[%d] (%T): %s (%d series match)", i, e.vec, msg, got)
+		}
+	}
 }
 
 // TestGroupMetrics_ForgetDropsEverySeries walks allMetrics, so a vector added
 // to the table is covered automatically: forget drops every vector's series for
 // the group.
 func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
-	ns, name := "metrics-forget", "fg-forget"
-	forgetMetricsAfter(t, ns, name)
-	populateAllMetrics(t, ns, name)
-	for i, e := range allMetrics {
-		if countSeries(e.vec, groupSelector(ns, name)) == 0 {
-			t.Fatalf("allMetrics[%d] (%T): no series was created", i, e.vec)
+	group := seriesKey{namespace: "metrics-forget", group: "fg-forget"}
+	forgetMetricsAfter(t, group.namespace, group.group)
+	populateAllMetrics(t, group)
+	assertEveryMetricSeries(t, group.groupSelector(), true, "no series was created")
+
+	groupMetrics{namespace: group.namespace, name: group.group}.forget()
+
+	assertEveryMetricSeries(t, group.groupSelector(), false, "series survive forget")
+}
+
+// vectorsOfScope is the allMetrics vectors of the given scope.
+func vectorsOfScope(scope metricScope) []metricVec {
+	var vecs []metricVec
+	for _, e := range allMetrics {
+		if e.scope == scope {
+			vecs = append(vecs, e.vec)
 		}
 	}
+	return vecs
+}
 
-	groupMetrics{namespace: ns, name: name}.forget()
-
-	for i, e := range allMetrics {
-		if got := countSeries(e.vec, groupSelector(ns, name)); got != 0 {
-			t.Errorf("allMetrics[%d] (%T): %d series survive forget", i, e.vec, got)
+// assertSeriesCounts fails for each vec unless it has series matching sel
+// exactly when wantPresent.
+func assertSeriesCounts(t *testing.T, vecs []metricVec, sel map[string]string, wantPresent bool, msg string) {
+	t.Helper()
+	for _, vec := range vecs {
+		if got := countSeries(vec, sel); (got > 0) != wantPresent {
+			t.Errorf("%T: %s (%d series match)", vec, msg, got)
 		}
 	}
 }
@@ -87,36 +103,25 @@ func TestGroupMetrics_ForgetDropsEverySeries(t *testing.T) {
 // the per-feed vectors' series for one feed while leaving the group's other
 // series and the sibling feed's alone.
 func TestGroupMetrics_ForgetFeedDropsOnlyThatFeed(t *testing.T) {
-	ns, name := "metrics-forget-feed", "fg-forget-feed"
-	forgetMetricsAfter(t, ns, name)
-	populateAllMetrics(t, ns, name)
+	group := seriesKey{namespace: "metrics-forget-feed", group: "fg-forget-feed"}
+	forgetMetricsAfter(t, group.namespace, group.group)
+	populateAllMetrics(t, group)
+	forgotten, sibling := group.forFeedURL(exampleFeedURL), group.forFeedURL(otherFeedURL)
 
-	groupMetrics{namespace: ns, name: name}.forgetFeed(exampleFeedURL)
+	groupMetrics{namespace: group.namespace, name: group.group}.forgetFeed(exampleFeedURL)
 
-	for i, e := range allMetrics {
-		label := fmt.Sprintf("allMetrics[%d] (%T)", i, e.vec)
-		switch e.scope {
-		case scopePerFeed:
-			if got := countSeries(e.vec, feedSelector(ns, name, exampleFeedURL)); got != 0 {
-				t.Errorf("%s: %d series for the forgotten feed survive", label, got)
-			}
-			if countSeries(e.vec, feedSelector(ns, name, otherFeedURL)) == 0 {
-				t.Errorf("%s: the sibling feed's series were dropped", label)
-			}
-		case scopePerGroup:
-			if countSeries(e.vec, groupSelector(ns, name)) == 0 {
-				t.Errorf("%s: per-group series were dropped by forgetFeed", label)
-			}
-		}
-	}
+	perFeed, perGroup := vectorsOfScope(scopePerFeed), vectorsOfScope(scopePerGroup)
+	assertSeriesCounts(t, perFeed, forgotten.feedSelector(), false, "series for the forgotten feed survive")
+	assertSeriesCounts(t, perFeed, sibling.feedSelector(), true, "the sibling feed's series were dropped")
+	assertSeriesCounts(t, perGroup, group.groupSelector(), true, "per-group series were dropped by forgetFeed")
 }
 
-// requireGaugeSeries fails unless the presence of the feed's series in a
+// requireGaugeSeries fails unless the presence of the key's feed series in a
 // per-feed gauge matches want.
-func requireGaugeSeries(t *testing.T, vec *prometheus.GaugeVec, ns, name, feedName string, want bool, msg string) {
+func requireGaugeSeries(t *testing.T, vec *prometheus.GaugeVec, key seriesKey, want bool) {
 	t.Helper()
-	if _, ok := feedGaugeValue(vec, ns, name, feedName); ok != want {
-		t.Fatalf("%s: series for %s present=%v, want %v", msg, feedName, ok, want)
+	if _, ok := key.gaugeValue(vec); ok != want {
+		t.Fatalf("series for %s present=%v, want %v", key.feed, ok, want)
 	}
 }
 
@@ -128,7 +133,9 @@ func requireGaugeSeries(t *testing.T, vec *prometheus.GaugeVec, ns, name, feedNa
 func TestEnsureFeedStatuses_ReportsPrunedFeeds(t *testing.T) {
 	ns, name := "metrics-prune", "fg-prune"
 	const removedURL = "https://removed.example.com/feed.xml"
-	keptName, removedName := testFeedName(exampleFeedURL), testFeedName(removedURL)
+	group := seriesKey{namespace: ns, group: name}
+	kept, removed := group.forFeedURL(exampleFeedURL), group.forFeedURL(removedURL)
+	keptName, removedName := kept.feed, removed.feed
 	handle := groupMetrics{namespace: ns, name: name}
 	defer handle.forget()
 
@@ -152,16 +159,16 @@ func TestEnsureFeedStatuses_ReportsPrunedFeeds(t *testing.T) {
 	if len(pruned) != 1 || pruned[0] != removedName {
 		t.Fatalf("ensureFeedStatuses pruned = %v, want [%s]", pruned, removedName)
 	}
-	requireGaugeSeries(t, feedHealthy, ns, name, removedName, true, "ensureFeedStatuses must not touch Prometheus")
+	requireGaugeSeries(t, feedHealthy, removed, true) // ensureFeedStatuses must not touch Prometheus
 
 	for _, feedName := range pruned {
 		handle.forgetFeed(feedName)
 	}
 
-	assertOperationCount(t, ns, name, removedName, outcomeSent, 0)
-	assertOperationCount(t, ns, name, keptName, outcomeSent, 1)
+	assertOperationCount(t, removed, outcomeSent, 0)
+	assertOperationCount(t, kept, outcomeSent, 1)
 	for _, vec := range []*prometheus.GaugeVec{feedHealthy, feedLastCheckedTimestamp} {
-		requireGaugeSeries(t, vec, ns, name, removedName, false, "removed feed's per-feed gauge")
-		requireGaugeSeries(t, vec, ns, name, keptName, true, "kept feed's per-feed gauge")
+		requireGaugeSeries(t, vec, removed, false)
+		requireGaugeSeries(t, vec, kept, true)
 	}
 }

@@ -37,23 +37,23 @@ const (
 	noSeries = -1.0
 )
 
-// assertGaugeSeries checks one feed's series in a per-feed gauge: want is the
+// assertGaugeSeries checks the key's feed series in a per-feed gauge: want is the
 // expected value, or noSeries when the series must be absent.
-func assertGaugeSeries(t *testing.T, vec *prometheus.GaugeVec, what, ns, name, url string, want float64) {
+func assertGaugeSeries(t *testing.T, vec *prometheus.GaugeVec, key seriesKey, want float64) {
 	t.Helper()
-	got, ok := feedGaugeValue(vec, ns, name, testFeedName(url))
+	got, ok := key.gaugeValue(vec)
 	if want == noSeries {
 		if ok {
-			t.Errorf("%s %s = %v, want no series", what, url, got)
+			t.Errorf("%s = %v, want no series", key.feed, got)
 		}
 		return
 	}
 	if !ok {
-		t.Errorf("%s %s: no series, want %v", what, url, want)
+		t.Errorf("%s: no series, want %v", key.feed, want)
 		return
 	}
 	if got != want {
-		t.Errorf("%s %s = %v, want %v", what, url, got, want)
+		t.Errorf("%s = %v, want %v", key.feed, got, want)
 	}
 }
 
@@ -110,9 +110,10 @@ func TestRecordFeedStateMetrics(t *testing.T) {
 		{badStampURL, 1, noSeries},
 		{pausedURL, noSeries, noSeries},
 	}
+	group := seriesKey{namespace: ns, group: name}
 	for _, tc := range cases {
-		assertGaugeSeries(t, feedHealthy, "feedHealthy", ns, name, tc.url, tc.wantHealthy)
-		assertGaugeSeries(t, feedLastCheckedTimestamp, "feedLastCheckedTimestamp", ns, name, tc.url, tc.wantStamp)
+		assertGaugeSeries(t, feedHealthy, group.forFeedURL(tc.url), tc.wantHealthy)
+		assertGaugeSeries(t, feedLastCheckedTimestamp, group.forFeedURL(tc.url), tc.wantStamp)
 	}
 }
 
@@ -126,7 +127,7 @@ func TestRecordFeedStateMetrics_RecoveryFlipsHealthy(t *testing.T) {
 	fg.Status.Feeds[1].LastError = ""
 	metricsFor(fg).syncFeedState(fg)
 
-	assertGaugeSeries(t, feedHealthy, "feedHealthy after recovery", ns, name, backoffURL, 1)
+	assertGaugeSeries(t, feedHealthy, seriesKey{ns, name, ""}.forFeedURL(backoffURL), 1)
 }
 
 // TestRecordFeedStateMetrics_SuspendedGroupDropsSeries asserts group
@@ -139,8 +140,9 @@ func TestRecordFeedStateMetrics_SuspendedGroupDropsSeries(t *testing.T) {
 	fg.Spec.Suspend = true
 	metricsFor(fg).syncFeedState(fg)
 
-	assertGaugeSeries(t, feedHealthy, "feedHealthy (suspended group)", ns, name, healthyURL, noSeries)
-	assertGaugeSeries(t, feedLastCheckedTimestamp, "feedLastCheckedTimestamp (suspended group)", ns, name, healthyURL, noSeries)
+	healthy := seriesKey{ns, name, ""}.forFeedURL(healthyURL)
+	assertGaugeSeries(t, feedHealthy, healthy, noSeries)
+	assertGaugeSeries(t, feedLastCheckedTimestamp, healthy, noSeries)
 }
 
 // TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile asserts the per-feed
@@ -166,6 +168,7 @@ func TestRequeueWithStatus_RecordsFeedStateOnNoOpReconcile(t *testing.T) {
 		t.Fatalf("settlePass: %v", err)
 	}
 
-	assertGaugeSeries(t, feedHealthy, "feedHealthy", ns, name, exampleFeedURL, 0)
-	assertGaugeSeries(t, feedLastCheckedTimestamp, "feedLastCheckedTimestamp", ns, name, exampleFeedURL, float64(time.Date(2026, 3, 4, 5, 6, 8, 0, time.UTC).Unix()))
+	feed := seriesKey{ns, name, ""}.forFeedURL(exampleFeedURL)
+	assertGaugeSeries(t, feedHealthy, feed, 0)
+	assertGaugeSeries(t, feedLastCheckedTimestamp, feed, float64(time.Date(2026, 3, 4, 5, 6, 8, 0, time.UTC).Unix()))
 }
