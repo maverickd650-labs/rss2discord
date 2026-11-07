@@ -74,14 +74,20 @@ var parseTimeCorpus = []string{
 
 func TestParseTimeMatchesReference(t *testing.T) {
 	for _, in := range parseTimeCorpus {
-		got, gotErr := parseTime(in)
-		want, wantErr := referenceParseTime(in)
-		if (gotErr == nil) != (wantErr == nil) {
-			t.Fatalf("parseTime(%q) err = %v, reference err = %v", in, gotErr, wantErr)
-		}
-		if !got.Equal(want) {
-			t.Fatalf("parseTime(%q) = %v, reference = %v", in, got, want)
-		}
+		assertMatchesReference(t, in)
+	}
+}
+
+// assertMatchesReference checks parseTime against referenceParseTime for in.
+func assertMatchesReference(t *testing.T, in string) {
+	t.Helper()
+	got, gotErr := parseTime(in)
+	want, wantErr := referenceParseTime(in)
+	if (gotErr == nil) != (wantErr == nil) {
+		t.Fatalf("parseTime(%q) err = %v, reference err = %v", in, gotErr, wantErr)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("parseTime(%q) = %v, reference = %v", in, got, want)
 	}
 }
 
@@ -89,16 +95,7 @@ func FuzzParseTime(f *testing.F) {
 	for _, in := range parseTimeCorpus {
 		f.Add(in)
 	}
-	f.Fuzz(func(t *testing.T, in string) {
-		got, gotErr := parseTime(in)
-		want, wantErr := referenceParseTime(in)
-		if (gotErr == nil) != (wantErr == nil) {
-			t.Fatalf("parseTime(%q) err = %v, reference err = %v", in, gotErr, wantErr)
-		}
-		if !got.Equal(want) {
-			t.Fatalf("parseTime(%q) = %v, reference = %v", in, got, want)
-		}
-	})
+	f.Fuzz(assertMatchesReference)
 }
 
 func BenchmarkParseTime(b *testing.B) {
@@ -132,5 +129,39 @@ func TestLooksISO(t *testing.T) {
 		if got := looksISO(in); got != want {
 			t.Errorf("looksISO(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// instant0728 is 2015-10-21 07:28:00 UTC, which several cases below resolve to.
+const instant0728 = "2015-10-21T07:28:00Z"
+
+func TestParseTime(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    string // the expected instant in UTC, as RFC 3339
+		wantErr bool
+	}{
+		{name: "blank", value: "   ", want: "0001-01-01T00:00:00Z"}, // the zero time, distinct from an error
+		{name: "RFC3339", value: instant0728, want: instant0728},
+		{name: "RFC1123Z", value: "Wed, 21 Oct 2015 07:28:00 +0000", want: instant0728},
+		{name: "RFC1123Z with offset", value: "Wed, 21 Oct 2015 07:28:00 -0700", want: "2015-10-21T14:28:00Z"},
+		{name: "RFC1123", value: "Wed, 21 Oct 2015 07:28:00 UTC", want: instant0728},
+		{name: "single-digit day", value: "Wed, 2 Jan 2006 15:04:05 MST", want: "2006-01-02T15:04:05Z"},
+		{name: "date only", value: "2015-10-21", want: "2015-10-21T00:00:00Z"},
+		{name: "datetime no zone", value: "2015-10-21 07:28:00", want: instant0728},
+		{name: "unsupported", value: "not a date at all", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseTime(tc.value)
+			assertField(t, "error for "+tc.value, err != nil, tc.wantErr)
+			if err != nil {
+				return
+			}
+			assertField(t, "instant", got.Format(time.RFC3339), tc.want)
+			assertField(t, "location", got.Location(), time.UTC)
+		})
 	}
 }
