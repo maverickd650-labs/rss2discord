@@ -18,14 +18,12 @@ package controller
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	"github.com/maverickd650-labs/rss2discord/internal/discord"
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/tools/events"
 )
 
@@ -56,13 +54,8 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	for range 2 {
 		processFeed(ctx, testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
 	}
-	fs := feedStatusFor(fg, feed.Name)
-	if fs.LastSeenEntry != "" || discordServer.MessageCount() != 0 {
-		t.Fatalf("entries must stay held while retries remain: seen=%q sent=%d", fs.LastSeenEntry, discordServer.MessageCount())
-	}
-	for len(recorder.Events) > 0 {
-		<-recorder.Events
-	}
+	assertHeld(t, feedStatusFor(fg, feed.Name), discordServer.MessageCount())
+	discardEvents(recorder)
 
 	// The next reconcile gives up on the bad entry and sends the good one.
 	processFeed(ctx, testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
@@ -70,21 +63,12 @@ func TestProcessFeed_RenderErrorSkipsEntryAfterRetriesExhausted(t *testing.T) {
 	if got := discordServer.MessageCount(); got != 1 {
 		t.Fatalf("expected the entry behind the poison one to be sent, got %d messages", got)
 	}
-	fs = feedStatusFor(fg, feed.Name)
+	fs := feedStatusFor(fg, feed.Name)
 	if _, ok := fs.LastSent[computeEntryKey(fetch.Entries[0])]; !ok {
 		t.Error("skipped entry should be recorded in LastSent so it isn't retried")
 	}
-	if fs.LastSeenEntry != "https://example.com/good" || fs.RetryCount != 0 || fs.LastError != "" {
-		t.Errorf("unexpected status after skip+send: %+v", fs)
-	}
-	select {
-	case ev := <-recorder.Events:
-		if !strings.Contains(ev, reasonEntrySkipped) {
-			t.Errorf("event %q should name %s", ev, reasonEntrySkipped)
-		}
-	default:
-		t.Error("expected a SkippedEntry Event")
-	}
+	assertFeedState(t, fs, feedState{lastSeen: "https://example.com/good"})
+	assertEventReason(t, recorder, reasonEntrySkipped)
 }
 
 // TestProcessFeed_BrokenTemplateNeverSkipsEntries asserts that when the
@@ -111,14 +95,8 @@ func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 	recorder := events.NewFakeRecorder(10)
 	processFeed(ctx, testRun(t, fg, feed, fetch, nil, client).withRecorder(recorder))
 
-	if len(fs.LastSent) != 0 || fs.LastSeenEntry != "" {
-		t.Errorf("no entry may be marked handled when the template is broken for all: LastSent=%v seen=%q", fs.LastSent, fs.LastSeenEntry)
-	}
-	for len(recorder.Events) > 0 {
-		if ev := <-recorder.Events; strings.Contains(ev, reasonEntrySkipped) {
-			t.Errorf("unexpected skip event: %s", ev)
-		}
-	}
+	assertHeld(t, fs, discordServer.MessageCount())
+	assertNoSkipEvent(t, recorder)
 }
 
 func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
@@ -128,50 +106,23 @@ func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "e1", Title: "Title 1"}}}
 	recorder := events.NewFakeRecorder(10)
 	sender := &fakeSender{}
-
-	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	if !verdict.retry {
-		t.Fatal("verdict.retry = false, want true")
+	run := func() attemptVerdict {
+		return processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
 	}
+
+	assertRetry(t, run(), true)
 	fs := feedStatusFor(fg, feed.Name)
-	if fs.RetryCount != 1 {
-		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
-	}
-	if len(recorder.Events) != 0 {
-		t.Fatalf("unexpected event before retries exhausted: %d", len(recorder.Events))
-	}
+	assertRetryCount(t, fs, 1)
+	assertNoEvent(t, recorder)
 
-	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	if verdict.retry {
-		t.Fatal("verdict.retry = true, want false once retries are exhausted")
-	}
-	if fs.RetryCount != 2 {
-		t.Fatalf("RetryCount = %d, want 2", fs.RetryCount)
-	}
-	select {
-	case ev := <-recorder.Events:
-		if !strings.Contains(ev, eventReasonRenderFailed) {
-			t.Fatalf("event = %q, want reason %s", ev, eventReasonRenderFailed)
-		}
-	default:
-		t.Fatal("expected RenderFailed event once retries exhausted")
-	}
+	assertRetry(t, run(), false)
+	assertRetryCount(t, fs, 2)
+	assertEventReason(t, recorder, eventReasonRenderFailed)
 
-	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	if verdict.retry {
-		t.Fatal("verdict.retry = true, want false once retries are exhausted")
-	}
-	if fs.RetryCount != 3 {
-		t.Fatalf("RetryCount = %d, want 3", fs.RetryCount)
-	}
-	select {
-	case ev := <-recorder.Events:
-		t.Fatalf("unexpected duplicate event: %s", ev)
-	default:
-	}
-	if fs.LastSeenEntry != "" {
-		t.Fatalf("LastSeenEntry = %q, want empty (entry held)", fs.LastSeenEntry)
-	}
+	assertRetry(t, run(), false)
+	assertRetryCount(t, fs, 3)
+	assertNoEvent(t, recorder)
+	assertHeld(t, fs, len(sender.sent))
 }
 
 func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
@@ -181,51 +132,23 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	fetch := oneEntryFetch()
 	recorder := events.NewFakeRecorder(10)
 	sender := &fakeSender{results: []error{errInternalServer}}
-
-	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	if !verdict.retry {
-		t.Fatal("verdict.retry = false, want true")
+	run := func() attemptVerdict {
+		return processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
 	}
+
+	assertRetry(t, run(), true)
 	fs := feedStatusFor(fg, feed.Name)
-	if fs.RetryCount != 1 {
-		t.Fatalf("RetryCount = %d, want 1", fs.RetryCount)
-	}
-	if len(recorder.Events) != 0 {
-		t.Fatalf("unexpected event before retries exhausted: %d", len(recorder.Events))
-	}
+	assertRetryCount(t, fs, 1)
+	assertNoEvent(t, recorder)
 
-	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	if verdict.retry {
-		t.Fatal("verdict.retry = true, want false once retries are exhausted")
-	}
-	if fs.RetryCount != 2 {
-		t.Fatalf("RetryCount = %d, want 2", fs.RetryCount)
-	}
-	select {
-	case ev := <-recorder.Events:
-		if !strings.Contains(ev, eventReasonSendFailed) {
-			t.Fatalf("event = %q, want reason %s", ev, eventReasonSendFailed)
-		}
-	default:
-		t.Fatal("expected SendFailed event once retries exhausted")
-	}
-	delivered := apimeta.FindStatusCondition(fs.Conditions, v1beta1.FeedConditionTypeDelivered)
-	if delivered == nil || delivered.Reason != reasonServerError {
-		t.Fatalf("Delivered condition = %v, want Reason %s", delivered, reasonServerError)
-	}
+	assertRetry(t, run(), false)
+	assertRetryCount(t, fs, 2)
+	assertEventReason(t, recorder, eventReasonSendFailed)
+	assertDeliveredReason(t, fs, reasonServerError)
 
-	verdict = processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	if verdict.retry {
-		t.Fatal("verdict.retry = true, want false once retries are exhausted")
-	}
-	if fs.RetryCount != 3 {
-		t.Fatalf("RetryCount = %d, want 3", fs.RetryCount)
-	}
-	select {
-	case ev := <-recorder.Events:
-		t.Fatalf("unexpected duplicate event: %s", ev)
-	default:
-	}
+	assertRetry(t, run(), false)
+	assertRetryCount(t, fs, 3)
+	assertNoEvent(t, recorder)
 }
 
 func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {

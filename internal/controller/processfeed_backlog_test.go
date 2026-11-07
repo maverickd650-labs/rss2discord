@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -208,29 +207,18 @@ func runBacklogRestart(t *testing.T, name string, dated bool, newestID string) {
 	entries := restartBacklog(dated, newestID)
 	fetch := rss.FetchResult{Entries: entries, ETag: `"skip-v1"`, LastModified: testReconcileTime}
 
-	verdict := processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, client))
-	if verdict.retry || verdict.retryAfter != 0 || discordServer.MessageCount() != 0 || len(fs.LastSent) != 0 {
-		t.Fatalf("backlog was sent or retried: retry=%t after=%v sent=%d status=%+v", verdict.retry, verdict.retryAfter, discordServer.MessageCount(), fs)
-	}
+	assertQuiet(t, processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, client)))
+	assertBacklogNotSent(t, discordServer, fs)
 	assertSkippedBacklogStatus(t, fg, newestID, fetch)
 
 	// Reload status before checking the same feed again.
 	fg = fg.DeepCopy()
 	ensureFeedStatuses(fg)
 	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, client))
-	if discordServer.MessageCount() != 0 {
-		t.Fatal("reloading status caused the backlog to be sent")
-	}
+	assertBacklogNotSent(t, discordServer, feedStatusFor(fg, feed.Name))
 
 	// Then publish an entry after the saved watermark.
-	for i := range entries {
-		entries[i].Seq++
-	}
-	fresh := rss.Entry{ID: restartFreshID, Title: restartFreshID, Seq: 0}
-	if dated {
-		fresh.Published = time.Unix(300, 0)
-	}
-	fetch.Entries = append(entries, fresh)
+	fetch.Entries = append(newerThan(entries), restartFresh(dated))
 	processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, client))
 	assertOnlyFreshSent(t, discordServer, feedStatusFor(fg, feed.Name))
 
@@ -240,6 +228,35 @@ func runBacklogRestart(t *testing.T, name string, dated bool, newestID string) {
 	}
 }
 
+// assertBacklogNotSent fails if any message went out or fs recorded a send.
+func assertBacklogNotSent(t *testing.T, server *MockDiscordServer, fs *v1beta1.FeedStatus) {
+	t.Helper()
+	if n := server.MessageCount(); n != 0 {
+		t.Fatalf("the backlog was sent: %d messages", n)
+	}
+	if len(fs.LastSent) != 0 {
+		t.Fatalf("the backlog was recorded as sent: %+v", fs.LastSent)
+	}
+}
+
+// newerThan moves every entry one document position down, as new entries
+// published above them do, and returns them.
+func newerThan(entries []rss.Entry) []rss.Entry {
+	for i := range entries {
+		entries[i].Seq++
+	}
+	return entries
+}
+
+// restartFresh is the entry published after the backlog was skipped.
+func restartFresh(dated bool) rss.Entry {
+	fresh := rss.Entry{ID: restartFreshID, Title: restartFreshID, Seq: 0}
+	if dated {
+		fresh.Published = time.Unix(300, 0)
+	}
+	return fresh
+}
+
 // assertOnlyFreshSent fails unless the fresh entry was the only message sent
 // and fs shows delivery advancing past the BacklogSkipped state.
 func assertOnlyFreshSent(t *testing.T, server *MockDiscordServer, fs *v1beta1.FeedStatus) {
@@ -247,10 +264,15 @@ func assertOnlyFreshSent(t *testing.T, server *MockDiscordServer, fs *v1beta1.Fe
 	if got := server.Bodies(); len(got) != 1 || !strings.Contains(got[0], `"content":"fresh"`) {
 		t.Fatalf("expected only the fresh entry, got %v", got)
 	}
+	if fs.LastSeenEntry != restartFreshID || len(fs.LastSent) != 1 {
+		t.Fatalf("watermark did not advance to the fresh entry: %+v", fs)
+	}
 	condition := apimeta.FindStatusCondition(fs.Conditions, v1beta1.FeedConditionTypeDelivered)
-	advanced := condition != nil && condition.Status == metav1.ConditionTrue && condition.Reason != reasonBacklogSkipped
-	if fs.LastSeenEntry != restartFreshID || len(fs.LastSent) != 1 || !advanced {
-		t.Fatalf("delivery did not advance status: %+v", fs)
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Delivered is not True after the fresh send: %+v", condition)
+	}
+	if condition.Reason == reasonBacklogSkipped {
+		t.Fatalf("Delivered still reports the skipped backlog: %+v", condition)
 	}
 }
 
@@ -277,70 +299,97 @@ func assertSkippedBacklogStatus(t *testing.T, fg *v1beta1.FeedGroup, newestID st
 // reconcile time and free of any error, retry or backoff.
 func assertSettledClean(t *testing.T, fs *v1beta1.FeedStatus) {
 	t.Helper()
-	checkedNow := fs.LastChecked != nil && fs.LastChecked.Time.Equal(testReconcileInstant)
-	if !fs.Initialized || !checkedNow {
-		t.Fatalf("feed not initialized and checked at the reconcile time: %+v", fs)
+	if !fs.Initialized {
+		t.Fatalf("feed not initialized: %+v", fs)
 	}
-	if fs.LastError != "" || fs.RetryCount != 0 || fs.BackoffUntil != nil {
+	if fs.LastChecked == nil || !fs.LastChecked.Time.Equal(testReconcileInstant) {
+		t.Fatalf("feed not checked at the reconcile time: %+v", fs)
+	}
+	if fs.LastError != "" || fs.RetryCount != 0 {
 		t.Fatalf("stale failure state left after skipped backlog: %+v", fs)
+	}
+	if fs.BackoffUntil != nil {
+		t.Fatalf("stale backoff left after skipped backlog: %+v", fs)
 	}
 }
 
 // isBacklogSkipped reports whether c is the True BacklogSkipped Delivered
 // condition for generation, counting both skipped entries.
 func isBacklogSkipped(c *metav1.Condition, generation int64) bool {
-	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reasonBacklogSkipped {
+	if c == nil {
 		return false
 	}
-	return c.ObservedGeneration == generation && strings.Contains(c.Message, "2 existing entries")
+	type key struct {
+		status     metav1.ConditionStatus
+		reason     string
+		generation int64
+	}
+	got := key{c.Status, c.Reason, c.ObservedGeneration}
+	return got == key{metav1.ConditionTrue, reasonBacklogSkipped, generation} && strings.Contains(c.Message, "2 existing entries")
 }
 
 func TestProcessFeed_CatchUpCapsAndWatermarks(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		limit       *int32
-		lastSeen    string
-		initialized bool
-		wantStart   int
-	}{
+	for _, tc := range []catchUpCase{
 		{name: "omitted limit uses default", wantStart: 4},
 		{name: "positive limit keeps most recent", limit: new(int32(3)), wantStart: 6},
 		{name: "zero with missing watermark uses default cap", limit: new(int32(0)), lastSeen: scrolledOutWatermark, initialized: true, wantStart: 4},
 		{name: "zero with missing watermark before initialization uses default cap", limit: new(int32(0)), lastSeen: scrolledOutWatermark, wantStart: 4},
 		{name: "zero with matching watermark resumes", limit: new(int32(0)), lastSeen: "entry-1", wantStart: 2},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, tmplTitle)
-			forgetMetricsAfter(t, fg.Namespace, fg.Name)
-			fg.Spec.CatchUpLimit = tc.limit
-			fs := feedStatusFor(fg, feed.Name)
-			fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
-			discordServer := NewMockDiscordServer(t)
-			defer discordServer.Close()
-			client := discordServer.DiscordClientBuilder()(discordServer.URL())
-			entries := make([]rss.Entry, 9)
-			for i := range entries {
-				id := fmt.Sprintf("entry-%d", i)
-				entries[i] = rss.Entry{ID: id, Title: id, Seq: len(entries) - 1 - i}
-			}
-			verdict := processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: entries}, nil, client))
-			wantRetry, retryAfter := verdict.retry, verdict.retryAfter
-			bodies := discordServer.Bodies()
-			if wantRetry || retryAfter != 0 || len(bodies) != len(entries)-tc.wantStart {
-				t.Fatalf("retry=%t after=%v sent=%d; want %d", wantRetry, retryAfter, len(bodies), len(entries)-tc.wantStart)
-			}
-			for i, body := range bodies {
-				var payload struct {
-					Content string `json:"content"`
-				}
-				if err := json.Unmarshal([]byte(body), &payload); err != nil || payload.Content != fmt.Sprintf("entry-%d", tc.wantStart+i) {
-					t.Fatalf("message %d = %s, err=%v", i, body, err)
-				}
-			}
-			if fs.LastSeenEntry != "entry-8" || !fs.Initialized {
-				t.Fatalf("unexpected final watermark/initialization: %+v", fs)
-			}
-		})
+		t.Run(tc.name, tc.run)
+	}
+}
+
+// catchUpCase is one catch-up limit and starting watermark, and the index of
+// the first of nine entries that must be delivered.
+type catchUpCase struct {
+	name        string
+	limit       *int32
+	lastSeen    string
+	initialized bool
+	wantStart   int
+}
+
+// run delivers nine entries, newest first, and checks only entries from
+// wantStart on were sent, oldest to newest, and the watermark is the newest.
+func (tc catchUpCase) run(t *testing.T) {
+	fg, feed := newMetricsFeedGroup("backlog-caps", tc.name, tmplTitle)
+	forgetMetricsAfter(t, fg.Namespace, fg.Name)
+	fg.Spec.CatchUpLimit = tc.limit
+	fs := feedStatusFor(fg, feed.Name)
+	fs.Initialized, fs.LastSeenEntry = tc.initialized, tc.lastSeen
+	discordServer := NewMockDiscordServer(t)
+	defer discordServer.Close()
+	client := discordServer.DiscordClientBuilder()(discordServer.URL())
+	entries := numberedEntries(9)
+
+	assertQuiet(t, processFeed(t.Context(), testRun(t, fg, feed, rss.FetchResult{Entries: entries}, nil, client)))
+	assertSentEntries(t, sentContents(t, discordServer), tc.wantStart, len(entries))
+	if fs.LastSeenEntry != "entry-8" || !fs.Initialized {
+		t.Fatalf("unexpected final watermark/initialization: %+v", fs)
+	}
+}
+
+// numberedEntries returns n entries entry-0 to entry-(n-1), entry-(n-1) first
+// in document order.
+func numberedEntries(n int) []rss.Entry {
+	entries := make([]rss.Entry, n)
+	for i := range entries {
+		id := fmt.Sprintf("entry-%d", i)
+		entries[i] = rss.Entry{ID: id, Title: id, Seq: n - 1 - i}
+	}
+	return entries
+}
+
+// assertSentEntries fails unless contents are entry-<from> to entry-<to-1> in order.
+func assertSentEntries(t *testing.T, contents []string, from, to int) {
+	t.Helper()
+	var want []string
+	for i := from; i < to; i++ {
+		want = append(want, fmt.Sprintf("entry-%d", i))
+	}
+	if !slices.Equal(contents, want) {
+		t.Fatalf("sent %q, want %q", contents, want)
 	}
 }
 

@@ -19,7 +19,6 @@ package controller
 import (
 	"errors"
 	"net/netip"
-	"strings"
 	"testing"
 	"time"
 
@@ -260,8 +259,8 @@ func (f feedUnderTest) failFetchRun(t *testing.T, n int, fetchErr error) {
 		processFeed(t.Context(), testRun(t, f.fg, f.feed, rss.FetchResult{}, fetchErr, nil))
 	}
 	fs := feedStatusFor(f.fg, f.feed.Name)
-	if !apimeta.IsStatusConditionFalse(fs.Conditions, v1beta1.FeedConditionTypeReachable) ||
-		fs.RetryCount != int32(n) || fs.LastError == "" {
+	fetchPhase := apimeta.IsStatusConditionFalse(fs.Conditions, v1beta1.FeedConditionTypeReachable) && fs.RetryCount == int32(n)
+	if !fetchPhase || fs.LastError == "" {
 		t.Fatalf("precondition: want a fetch-phase failure run of %d, got %+v", n, fs)
 	}
 }
@@ -293,18 +292,9 @@ func TestProcessFeed_FetchRecoveryStartsDeliveryRetriesFresh(t *testing.T) {
 	if fs.RetryCount != 1 {
 		t.Errorf("RetryCount = %d, want 1: the render failure is the first of a new run", fs.RetryCount)
 	}
-	if !verdict.retry {
-		t.Error("verdict.retry = false, want a retry for the first render failure")
-	}
-	if len(fs.LastSent) != 0 || fs.LastSeenEntry != "" || discordServer.MessageCount() != 0 {
-		t.Errorf("the bad entry must be held, not skipped: LastSent=%v seen=%q sent=%d",
-			fs.LastSent, fs.LastSeenEntry, discordServer.MessageCount())
-	}
-	for len(recorder.Events) > 0 {
-		if ev := <-recorder.Events; strings.Contains(ev, reasonEntrySkipped) {
-			t.Errorf("unexpected skip event: %s", ev)
-		}
-	}
+	assertRetry(t, verdict, true)
+	assertHeld(t, fs, discordServer.MessageCount())
+	assertNoSkipEvent(t, recorder)
 }
 
 // TestProcessFeed_FetchRecoveryBacksOffSendFailureFromOne asserts a permanent
