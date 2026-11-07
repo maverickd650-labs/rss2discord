@@ -2,6 +2,7 @@ package rss
 
 import (
 	"encoding/xml"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -65,26 +66,11 @@ func TestParseFeed_AtomResolvesRelativeLinksAgainstXMLBase(t *testing.T) {
 </entry>
 </feed>`)
 
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(entries))
-	}
-
-	if want := "https://example.com/blog/2026/article-1"; entries[0].Link != want {
-		t.Fatalf("expected link %q, got %q", want, entries[0].Link)
-	}
-	if want := "https://example.com/blog/img/1.jpg"; entries[0].Image != want {
-		t.Fatalf("expected image %q, got %q", want, entries[0].Image)
-	}
-	if want := "https://other.example.com/news/article-2"; entries[1].Link != want {
-		t.Fatalf("expected entry-level base to override feed-level, got %q", entries[1].Link)
-	}
-	if want := "https://elsewhere.example.com/x"; entries[2].Link != want {
-		t.Fatalf("expected already-absolute link unchanged, got %q", entries[2].Link)
-	}
+	assertLinksAndImages(t, mustParseEntries(t, data), []linkAndImage{
+		{"https://example.com/blog/2026/article-1", "https://example.com/blog/img/1.jpg"},
+		{"https://other.example.com/news/article-2", ""}, // entry-level base overrides feed-level
+		{"https://elsewhere.example.com/x", ""},          // already absolute, unchanged
+	})
 }
 
 func TestParseFeed_AtomLeavesRelativeLinkUnchangedWithoutBase(t *testing.T) {
@@ -145,25 +131,11 @@ func TestParseFeed_AtomEntryXMLBaseComposesWithFeedBase(t *testing.T) {
 </entry>
 </feed>`)
 
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(entries))
-	}
-	if want := "https://example.com/blog/posts/2026/article-1"; entries[0].Link != want {
-		t.Fatalf("link = %q, want %q", entries[0].Link, want)
-	}
-	if want := "https://example.com/blog/posts/2026/img/1.jpg"; entries[0].Image != want {
-		t.Fatalf("image = %q, want %q", entries[0].Image, want)
-	}
-	if want := "https://example.com/news/article-2"; entries[1].Link != want {
-		t.Fatalf("link = %q, want %q", entries[1].Link, want)
-	}
-	if want := "https://other.example.com/x/article-3"; entries[2].Link != want {
-		t.Fatalf("link = %q, want %q", entries[2].Link, want)
-	}
+	assertLinksAndImages(t, mustParseEntries(t, data), []linkAndImage{
+		{"https://example.com/blog/posts/2026/article-1", "https://example.com/blog/posts/2026/img/1.jpg"},
+		{"https://example.com/news/article-2", ""},
+		{"https://other.example.com/x/article-3", ""},
+	})
 }
 
 // TestAtomLinksBoundedSelectionMatchesFull decodes the same <link> list twice,
@@ -248,4 +220,16 @@ func unmarshalBoundedAndFullLinks(t *testing.T, doc []byte) (bounded, full []ato
 		t.Fatalf("unmarshal full: %v", err)
 	}
 	return b.Links, f.Links
+}
+
+// linkAndImage is an entry's expected Link and Image.
+type linkAndImage struct{ link, image string }
+
+// assertLinksAndImages checks entries against want, entry by entry.
+func assertLinksAndImages(t *testing.T, entries []Entry, want []linkAndImage) {
+	t.Helper()
+	assertField(t, "entry count", len(entries), len(want))
+	for i, w := range want {
+		assertField(t, fmt.Sprintf("entry %d link and image", i), linkAndImage{entries[i].Link, entries[i].Image}, w)
+	}
 }
