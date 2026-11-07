@@ -155,6 +155,13 @@ func (c *spellingCheck) checkLiteral(lit *ast.BasicLit) {
 	}
 }
 
+// reasonValue is the value of expr when it is a constant string that is a
+// reason.
+func (c *spellingCheck) reasonValue(expr ast.Expr) (string, bool) {
+	s, ok := stringConstant(c.info, expr)
+	return s, ok && c.reasons[s]
+}
+
 // checkExpr reports an expression that folds to a reason and contains literal
 // fragments, and says whether to descend into it. A direct identifier may be
 // the approved named constant; other expressions must not bypass the check.
@@ -162,8 +169,8 @@ func (c *spellingCheck) checkExpr(expr ast.Expr) (descend bool) {
 	if _, isIdent := expr.(*ast.Ident); isIdent {
 		return true
 	}
-	s, ok := stringConstant(c.info, expr)
-	if !ok || !c.reasons[s] || !containsNonEmptyStringLiteral(expr) {
+	s, ok := c.reasonValue(expr)
+	if !ok || !containsNonEmptyStringLiteral(expr) {
 		return true
 	}
 	c.problems[fmt.Sprintf("%s: string %s is spelled by a constant expression; use its named constant", c.fset.Position(expr.Pos()), strconv.Quote(s))] = true
@@ -260,6 +267,12 @@ func reports(problems map[string]bool, substr string) bool {
 	return slices.ContainsFunc(slices.Collect(maps.Keys(problems)), func(p string) bool { return strings.Contains(p, substr) })
 }
 
+// reportsLocalConst reports whether some problem is about the local constants x
+// or y.
+func reportsLocalConst(problems map[string]bool) bool {
+	return slices.ContainsFunc([]string{"constant x ", "constant y "}, func(name string) bool { return reports(problems, name) })
+}
+
 // TestCheckReasonSpellingRejectsDuplicateConstSpellings ensures that even
 // the designated reason files contain only one literal declaration per value.
 func TestCheckReasonSpellingRejectsDuplicateConstSpellings(t *testing.T) {
@@ -296,7 +309,7 @@ func TestCheckReasonSpellingConstAliases(t *testing.T) {
 					t.Fatalf("%q not reported in %v", name, problems)
 				}
 			}
-			if len(tc.want) == 0 && (reports(problems, "constant x ") || reports(problems, "constant y ")) {
+			if len(tc.want) == 0 && reportsLocalConst(problems) {
 				t.Fatalf("alias reported: %v", problems)
 			}
 		})
