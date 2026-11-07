@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// TestParseFeed_BoundsEntryCount asserts a document with more than
-// maxFeedEntries items/entries decodes exactly maxFeedEntries of them, that
-// they are the first ones in document order, and that Seq still reflects the
-// document position.
 // assertSequentialEntries checks that entries[i] is the i-th entry in
 // document order: ID "id-<i>" and Seq i.
 func assertSequentialEntries(t *testing.T, entries []Entry) {
@@ -22,6 +18,10 @@ func assertSequentialEntries(t *testing.T, entries []Entry) {
 	}
 }
 
+// TestParseFeed_BoundsEntryCount asserts a document with more than
+// maxFeedEntries items/entries decodes exactly maxFeedEntries of them, that
+// they are the first ones in document order, and that Seq still reflects the
+// document position.
 func TestParseFeed_BoundsEntryCount(t *testing.T) {
 	const total = maxFeedEntries + 50
 	build := func(open, el, closing string) []byte {

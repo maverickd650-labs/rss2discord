@@ -121,15 +121,16 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 	// when entries carry no usable publish date.
 	tests := []struct {
 		name string
+		want int
 		data string
 	}{
-		{formatRSS, `<?xml version="1.0"?>
+		{formatRSS, 3, `<?xml version="1.0"?>
 <rss><channel>
 <item><title>First</title></item>
 <item><title>Second</title></item>
 <item><title>Third</title></item>
 </channel></rss>`},
-		{formatAtom, `<?xml version="1.0"?>
+		{formatAtom, 2, `<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 <entry><title>First</title></entry>
 <entry><title>Second</title></entry>
@@ -140,6 +141,9 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 			entries, _, err := parseFeed([]byte(tt.data))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(entries) != tt.want {
+				t.Fatalf("expected %d entries, got %d", tt.want, len(entries))
 			}
 			for i, e := range entries {
 				if e.Seq != i {
