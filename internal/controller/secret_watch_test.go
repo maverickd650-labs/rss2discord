@@ -165,7 +165,7 @@ var _ = Describe("Webhook Secret watch", func() {
 		for name, secret := range map[string]string{
 			referencesA: watched, alsoA: watched, referencesB: "secret-watch-other",
 		} {
-			Expect(k8sClient.Create(ctx, newTestFeedGroup(name, secret, exampleFeedURL))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newTestFeedGroup(testGroup{name: name, secret: secret}, exampleFeedURL))).To(Succeed())
 		}
 
 		r := &FeedGroupReconciler{Client: k8sClient}
@@ -182,7 +182,7 @@ var _ = Describe("Webhook Secret watch", func() {
 	It("retries a feed backed off after a permanent send failure once its webhook Secret changes", func() {
 		const feedGroupName = "test-feedgroup-secret-rotation"
 		const secretName = "discord-webhook-secret-rotation"
-		discordServer, _, r := setUpFeedGroup(ctx, feedGroupName, secretName, createRSSFeed(testEntry{
+		discordServer, _, r := setUpFeedGroup(ctx, testGroup{name: feedGroupName, secret: secretName}, createRSSFeed(testEntry{
 			title:   "Delivered After Rotation",
 			link:    "https://example.com/delivered-after-rotation",
 			pubDate: time.Now().Format(time.RFC1123Z),
@@ -297,7 +297,7 @@ var _ = Describe("Webhook Secret watch", func() {
 			Data:       map[string][]byte{secretURLKey: []byte(webhookURL)},
 		}
 		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-		fg := newTestFeedGroup("rotated-webhook-feed", secret.Name, rssServer.URL(), withRetries("5m", 3))
+		fg := newTestFeedGroup(testGroup{name: "rotated-webhook-feed", secret: secret.Name}, rssServer.URL(), withRetries("5m", 3))
 		fg.Namespace = watchNamespace
 		Expect(k8sClient.Create(ctx, fg)).To(Succeed())
 
