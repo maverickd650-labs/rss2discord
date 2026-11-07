@@ -101,37 +101,34 @@ func TestProcessFeed_BrokenTemplateNeverSkipsEntries(t *testing.T) {
 
 func TestProcessFeed_RenderErrorPersistentEventFiresOnce(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-render-event", "fg-render-event", "{{.Bogus}}")
-	fg.Spec.Retries = new(int32(2))
-	fg.Spec.Feeds[0] = feed
 	fetch := rss.FetchResult{Entries: []rss.Entry{{ID: "e1", Title: "Title 1"}}}
-	recorder := events.NewFakeRecorder(10)
 	sender := &fakeSender{}
-	run := func() attemptVerdict {
-		return processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
-	}
 
-	assertRetry(t, run(), true)
-	fs := feedStatusFor(fg, feed.Name)
-	assertRetryCount(t, fs, 1)
-	assertNoEvent(t, recorder)
+	fs := assertEventFiresOnceAtLimit(t, fg, feed, fetch, sender, eventReasonRenderFailed)
 
-	assertRetry(t, run(), false)
-	assertRetryCount(t, fs, 2)
-	assertEventReason(t, recorder, eventReasonRenderFailed)
-
-	assertRetry(t, run(), false)
-	assertRetryCount(t, fs, 3)
-	assertNoEvent(t, recorder)
 	assertHeld(t, fs, len(sender.sent))
 }
 
 func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 	fg, feed := newMetricsFeedGroup("processfeed-send-event", "fg-send-event", "")
+	sender := &fakeSender{results: []error{errInternalServer}}
+
+	fs := assertEventFiresOnceAtLimit(t, fg, feed, oneEntryFetch(), sender, eventReasonSendFailed)
+
+	assertDeliveredReason(t, fs, reasonServerError)
+}
+
+// assertEventFiresOnceAtLimit processes the feed three times with two retries
+// allowed and fails unless the first run asks for a retry, the second spends
+// the last one and emits the Event for reason, and the third, still failing,
+// asks for nothing and emits no second Event. It returns the feed's status.
+func assertEventFiresOnceAtLimit(
+	t *testing.T, fg *v1beta1.FeedGroup, feed v1beta1.FeedSpec, fetch rss.FetchResult, sender *fakeSender, reason string,
+) *v1beta1.FeedStatus {
+	t.Helper()
 	fg.Spec.Retries = new(int32(2))
 	fg.Spec.Feeds[0] = feed
-	fetch := oneEntryFetch()
 	recorder := events.NewFakeRecorder(10)
-	sender := &fakeSender{results: []error{errInternalServer}}
 	run := func() attemptVerdict {
 		return processFeed(t.Context(), testRun(t, fg, feed, fetch, nil, sender).withRecorder(recorder))
 	}
@@ -143,12 +140,12 @@ func TestProcessFeed_PersistentSendErrorEventFiresOnce(t *testing.T) {
 
 	assertRetry(t, run(), false)
 	assertRetryCount(t, fs, 2)
-	assertEventReason(t, recorder, eventReasonSendFailed)
-	assertDeliveredReason(t, fs, reasonServerError)
+	assertEventReason(t, recorder, reason)
 
 	assertRetry(t, run(), false)
 	assertRetryCount(t, fs, 3)
 	assertNoEvent(t, recorder)
+	return fs
 }
 
 func TestProcessFeed_SendFailureHaltsDeliveryOrder(t *testing.T) {
