@@ -2,7 +2,6 @@ package rss
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -16,6 +15,17 @@ func assertSequentialEntries(t *testing.T, entries []Entry) {
 			t.Fatalf("entries[%d] = {ID: %q, Seq: %d}, want {ID: %q, Seq: %d}", i, e.ID, e.Seq, want, i)
 		}
 	}
+}
+
+// assertCategories checks that got is the first maxCategories non-blank
+// categories ("c0", "c1", ...) in document order.
+func assertCategories(t *testing.T, got []string) {
+	t.Helper()
+	want := make([]string, maxCategories)
+	for i := range want {
+		want[i] = fmt.Sprintf("c%d", i)
+	}
+	assertField(t, "categories (the first non-blank ones in order)", strings.Join(got, ","), strings.Join(want, ","))
 }
 
 // TestParseFeed_BoundsEntryCount asserts a document with more than
@@ -103,27 +113,12 @@ func TestParseFeed_RSSBoundsPerItemSlices(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	item := env.Channel.Items[0]
-	if len(item.MediaContent) != 1 {
-		t.Fatalf("retained %d media:content elements, want 1", len(item.MediaContent))
-	}
-	if len(item.Categories) != maxCategories {
-		t.Fatalf("retained %d categories, want %d", len(item.Categories), maxCategories)
-	}
+	assertField(t, "retained media:content elements", len(item.MediaContent), 1)
+	assertField(t, "retained categories", len(item.Categories), maxCategories)
 
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := entries[0].Image; got != "http://first.png" {
-		t.Fatalf("image = %q, want %q", got, "http://first.png")
-	}
-	want := make([]string, maxCategories)
-	for i := range want {
-		want[i] = fmt.Sprintf("c%d", i)
-	}
-	if !slices.Equal(entries[0].Categories, want) {
-		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
-	}
+	e := mustParseOne(t, data)
+	assertField(t, "image", e.Image, "http://first.png")
+	assertCategories(t, e.Categories)
 }
 
 func TestParseFeed_AtomBoundsCategories(t *testing.T) {
@@ -135,15 +130,5 @@ func TestParseFeed_AtomBoundsCategories(t *testing.T) {
 	}
 	b.WriteString(`</entry></feed>`)
 
-	entries, _, err := parseFeed([]byte(b.String()))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := make([]string, maxCategories)
-	for i := range want {
-		want[i] = fmt.Sprintf("c%d", i)
-	}
-	if !slices.Equal(entries[0].Categories, want) {
-		t.Fatalf("categories = %v, want the first %d non-blank ones in order", entries[0].Categories, maxCategories)
-	}
+	assertCategories(t, mustParseOne(t, []byte(b.String())).Categories)
 }

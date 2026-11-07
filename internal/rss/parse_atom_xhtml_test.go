@@ -125,18 +125,14 @@ func TestParseFeed_AtomXHTMLNamespaceAndFallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="http://www.w3.org/1999/xhtml" ` +
 				`xmlns:media="http://search.yahoo.com/mrss/"><entry>` + tc.body + `</entry></feed>`
-			entries, _, err := parseFeed([]byte(doc))
-			if err != nil || len(entries) != 1 {
-				t.Fatalf("parseFeed: %d entries, err=%v", len(entries), err)
-			}
-			e := entries[0]
+			e := mustParseOne(t, []byte(doc))
 			wantID := tc.wantID
 			if wantID == "" {
 				wantID = ContentID(e) // no id, link or title
 			}
-			if e.Title != tc.wantTitle || e.Description != tc.wantDescription || e.Content != tc.wantContent || e.ID != wantID {
-				t.Fatalf("entry = %+v; want title=%q description=%q content=%q id=%q", e, tc.wantTitle, tc.wantDescription, tc.wantContent, wantID)
-			}
+			type text struct{ ID, Title, Description, Content string }
+			assertField(t, "entry", text{e.ID, e.Title, e.Description, e.Content},
+				text{wantID, tc.wantTitle, tc.wantDescription, tc.wantContent})
 		})
 	}
 }
@@ -147,9 +143,11 @@ func TestParseFeed_AtomXHTMLMalformedSummaryAndContent(t *testing.T) {
 			doc := `<feed xmlns="http://www.w3.org/2005/Atom"><entry><` + element +
 				` type="xhtml"><div>unclosed</` + element + `></entry></feed>`
 			entries, title, err := parseFeed([]byte(doc))
-			if err == nil || len(entries) != 0 || title != "" {
-				t.Fatalf("malformed %s: entries=%v title=%q err=%v", element, entries, title, err)
+			if err == nil {
+				t.Fatalf("malformed %s: expected an error", element)
 			}
+			assertField(t, "entry count", len(entries), 0)
+			assertField(t, "feed title", title, "")
 		})
 	}
 }

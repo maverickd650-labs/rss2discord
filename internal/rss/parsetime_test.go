@@ -74,14 +74,20 @@ var parseTimeCorpus = []string{
 
 func TestParseTimeMatchesReference(t *testing.T) {
 	for _, in := range parseTimeCorpus {
-		got, gotErr := parseTime(in)
-		want, wantErr := referenceParseTime(in)
-		if (gotErr == nil) != (wantErr == nil) {
-			t.Fatalf("parseTime(%q) err = %v, reference err = %v", in, gotErr, wantErr)
-		}
-		if !got.Equal(want) {
-			t.Fatalf("parseTime(%q) = %v, reference = %v", in, got, want)
-		}
+		assertMatchesReference(t, in)
+	}
+}
+
+// assertMatchesReference checks parseTime against referenceParseTime for in.
+func assertMatchesReference(t *testing.T, in string) {
+	t.Helper()
+	got, gotErr := parseTime(in)
+	want, wantErr := referenceParseTime(in)
+	if (gotErr == nil) != (wantErr == nil) {
+		t.Fatalf("parseTime(%q) err = %v, reference err = %v", in, gotErr, wantErr)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("parseTime(%q) = %v, reference = %v", in, got, want)
 	}
 }
 
@@ -89,16 +95,7 @@ func FuzzParseTime(f *testing.F) {
 	for _, in := range parseTimeCorpus {
 		f.Add(in)
 	}
-	f.Fuzz(func(t *testing.T, in string) {
-		got, gotErr := parseTime(in)
-		want, wantErr := referenceParseTime(in)
-		if (gotErr == nil) != (wantErr == nil) {
-			t.Fatalf("parseTime(%q) err = %v, reference err = %v", in, gotErr, wantErr)
-		}
-		if !got.Equal(want) {
-			t.Fatalf("parseTime(%q) = %v, reference = %v", in, got, want)
-		}
-	})
+	f.Fuzz(assertMatchesReference)
 }
 
 func BenchmarkParseTime(b *testing.B) {

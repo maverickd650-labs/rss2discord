@@ -69,7 +69,7 @@ func TestParseFeed_RDF(t *testing.T) {
 	// RSS 1.0 (RDF): root <rdf:RDF>, <item> elements are top-level siblings
 	// of <channel> rather than nested inside it, and items use <dc:date>
 	// instead of <pubDate>.
-	data := []byte(`<?xml version="1.0"?>
+	e := mustParseOne(t, []byte(`<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
          xmlns:dc="http://purl.org/dc/elements/1.1/">
 <channel><title>Example</title></channel>
@@ -80,28 +80,15 @@ func TestParseFeed_RDF(t *testing.T) {
   <dc:creator>Jane Doe</dc:creator>
   <dc:date>2015-10-21T07:28:00Z</dc:date>
 </item>
-</rdf:RDF>`)
+</rdf:RDF>`))
 
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-	e := entries[0]
-	if e.Title != "RDF Item" || e.Link != "http://example.com/rdf-item" || e.Description != "An RDF item" {
-		t.Fatalf("unexpected entry: %+v", e)
-	}
-	if e.Author != "Jane Doe" {
-		t.Fatalf("expected dc:creator used as author, got %q", e.Author)
-	}
-	if e.Published.IsZero() {
-		t.Fatal("expected published derived from dc:date")
-	}
-	if e.ID != "http://example.com/rdf-item" {
-		t.Fatalf("expected link used as ID (no guid), got %q", e.ID)
-	}
+	// dc:creator is the author, the link doubles as the ID (no guid), and
+	// dc:date yields a published time.
+	assertField(t, "entry", coreOf(e), coreFields{
+		ID: "http://example.com/rdf-item", Title: "RDF Item", Link: "http://example.com/rdf-item",
+		Description: "An RDF item", Author: "Jane Doe",
+	})
+	assertField(t, "published is zero", e.Published.IsZero(), false)
 }
 
 // encoding/xml matches struct tags by local name regardless of namespace, so
@@ -168,20 +155,8 @@ func TestParseFeed_RSSNamespacedElementsDoNotOverrideCoreFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := []byte(`<rss ` + nsDecls + `><channel><item>` + tt.item + `</item></channel></rss>`)
-
-			entries, _, err := parseFeed(data)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(entries) != 1 {
-				t.Fatalf("expected 1 entry, got %d", len(entries))
-			}
-			got := entries[0]
-			if got.ID != tt.want.ID || got.Title != tt.want.Title || got.Link != tt.want.Link ||
-				got.Description != tt.want.Description || got.Author != tt.want.Author {
-				t.Fatalf("got %+v, want %+v", got, tt.want)
-			}
+			got := mustParseOne(t, []byte(`<rss `+nsDecls+`><channel><item>`+tt.item+`</item></channel></rss>`))
+			assertField(t, "entry", coreOf(got), coreOf(tt.want))
 		})
 	}
 }
@@ -189,24 +164,16 @@ func TestParseFeed_RSSNamespacedElementsDoNotOverrideCoreFields(t *testing.T) {
 // RSS 1.0 items live in the http://purl.org/rss/1.0/ default namespace, so
 // that namespace must outrank unrelated extension namespaces.
 func TestParseFeed_RDFDefaultNamespacePreferredOverExtensions(t *testing.T) {
-	data := []byte(`<?xml version="1.0"?>
+	e := mustParseOne(t, []byte(`<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
          xmlns="http://purl.org/rss/1.0/"
          xmlns:media="http://search.yahoo.com/mrss/">
 <channel><title>C</title></channel>
 <item><media:title>MediaTitle</media:title><title>Real</title><link>http://example.com/rdf-ns-item</link></item>
-</rdf:RDF>`)
-
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-	if entries[0].Title != titleReal || entries[0].Link != "http://example.com/rdf-ns-item" || entries[0].ID != "http://example.com/rdf-ns-item" {
-		t.Fatalf("unexpected entry: %+v", entries[0])
-	}
+</rdf:RDF>`))
+	assertField(t, "entry", coreOf(e), coreFields{
+		ID: "http://example.com/rdf-ns-item", Title: titleReal, Link: "http://example.com/rdf-ns-item",
+	})
 }
 
 func TestParseFeed_RSSContentEncoded(t *testing.T) {

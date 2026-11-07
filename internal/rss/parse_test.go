@@ -154,82 +154,84 @@ func TestParseFeed_AssignsDocumentOrderSeq(t *testing.T) {
 	}
 }
 
+// feedTitleCases pairs documents with the feed title parseFeed must report.
+var feedTitleCases = []struct {
+	name string
+	doc  string
+	want string
+}{
+	{
+		name: "rss",
+		doc:  `<rss><channel><title> My Blog </title><item><title>Item</title></item></channel></rss>`,
+		want: "My Blog",
+	},
+	{
+		name: "rss without title",
+		doc:  `<rss><channel><item><title>Item</title></item></channel></rss>`,
+		want: "",
+	},
+	{
+		// Item titles are nested one level down and must not be taken
+		// for the channel's.
+		name: "rss title after items",
+		doc:  `<rss><channel><item><title>Item</title></item><title>Late Title</title></channel></rss>`,
+		want: "Late Title",
+	},
+	{
+		name: "rss channel-level extension titles do not override",
+		doc: `<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/">` +
+			`<channel><title>Real Show</title><itunes:title>Itunes Title</itunes:title>` +
+			`<media:title>Media Title</media:title><item><title>Ep</title></item></channel></rss>`,
+		want: "Real Show",
+	},
+	{
+		name: "rss extension title first still loses",
+		doc: `<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>` +
+			`<media:title>Media Title</media:title><title>Real Show</title></channel></rss>`,
+		want: "Real Show",
+	},
+	{
+		name: "rss falls back to a lone extension title",
+		doc: `<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>` +
+			`<media:title>Media Title</media:title></channel></rss>`,
+		want: "Media Title",
+	},
+	{
+		name: formatAtom,
+		doc: `<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>` +
+			`<entry><id>1</id><title>Entry</title></entry></feed>`,
+		want: "Atom Feed",
+	},
+	{
+		name: "atom without xmlns",
+		doc:  `<feed><title>Bare Atom</title><entry><id>1</id></entry></feed>`,
+		want: "Bare Atom",
+	},
+	{
+		name: "atom feed-level extension titles do not override",
+		doc: `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">` +
+			`<media:title>Media Title</media:title><title>Atom Feed</title><itunes:title>Itunes Title</itunes:title>` +
+			`<entry><id>1</id></entry></feed>`,
+		want: "Atom Feed",
+	},
+	{
+		name: formatRDF,
+		doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">` +
+			`<channel><title>RDF Feed</title><link>http://example.com</link></channel>` +
+			`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
+		want: "RDF Feed",
+	},
+	{
+		name: "rdf channel-level extension title does not override",
+		doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:media="http://search.yahoo.com/mrss/">` +
+			`<channel><title>RDF Feed</title><media:title>Media Title</media:title></channel>` +
+			`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
+		want: "RDF Feed",
+	},
+}
+
 func TestParseFeed_FeedTitle(t *testing.T) {
-	cases := []struct {
-		name string
-		doc  string
-		want string
-	}{
-		{
-			name: "rss",
-			doc:  `<rss><channel><title> My Blog </title><item><title>Item</title></item></channel></rss>`,
-			want: "My Blog",
-		},
-		{
-			name: "rss without title",
-			doc:  `<rss><channel><item><title>Item</title></item></channel></rss>`,
-			want: "",
-		},
-		{
-			// Item titles are nested one level down and must not be taken
-			// for the channel's.
-			name: "rss title after items",
-			doc:  `<rss><channel><item><title>Item</title></item><title>Late Title</title></channel></rss>`,
-			want: "Late Title",
-		},
-		{
-			name: "rss channel-level extension titles do not override",
-			doc: `<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/">` +
-				`<channel><title>Real Show</title><itunes:title>Itunes Title</itunes:title>` +
-				`<media:title>Media Title</media:title><item><title>Ep</title></item></channel></rss>`,
-			want: "Real Show",
-		},
-		{
-			name: "rss extension title first still loses",
-			doc: `<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>` +
-				`<media:title>Media Title</media:title><title>Real Show</title></channel></rss>`,
-			want: "Real Show",
-		},
-		{
-			name: "rss falls back to a lone extension title",
-			doc: `<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>` +
-				`<media:title>Media Title</media:title></channel></rss>`,
-			want: "Media Title",
-		},
-		{
-			name: formatAtom,
-			doc: `<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>` +
-				`<entry><id>1</id><title>Entry</title></entry></feed>`,
-			want: "Atom Feed",
-		},
-		{
-			name: "atom without xmlns",
-			doc:  `<feed><title>Bare Atom</title><entry><id>1</id></entry></feed>`,
-			want: "Bare Atom",
-		},
-		{
-			name: "atom feed-level extension titles do not override",
-			doc: `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">` +
-				`<media:title>Media Title</media:title><title>Atom Feed</title><itunes:title>Itunes Title</itunes:title>` +
-				`<entry><id>1</id></entry></feed>`,
-			want: "Atom Feed",
-		},
-		{
-			name: formatRDF,
-			doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">` +
-				`<channel><title>RDF Feed</title><link>http://example.com</link></channel>` +
-				`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
-			want: "RDF Feed",
-		},
-		{
-			name: "rdf channel-level extension title does not override",
-			doc: `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:media="http://search.yahoo.com/mrss/">` +
-				`<channel><title>RDF Feed</title><media:title>Media Title</media:title></channel>` +
-				`<item><title>Item</title><link>http://example.com/1</link></item></rdf:RDF>`,
-			want: "RDF Feed",
-		},
-	}
-	for _, tc := range cases {
+	for _, tc := range feedTitleCases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, got, err := parseFeed([]byte(tc.doc))
 			if err != nil {
@@ -308,4 +310,39 @@ func TestNSTextsBoundsRetainedCandidates(t *testing.T) {
 	if !retainedRDF {
 		t.Fatalf("RSS 1.0 candidate was dropped although the fallback cap is full: %+v", cands)
 	}
+}
+
+// mustParseEntries parses data and fails the test on a parse error.
+func mustParseEntries(t *testing.T, data []byte) []Entry {
+	t.Helper()
+	entries, _, err := parseFeed(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return entries
+}
+
+// mustParseOne parses data and returns its only entry, failing the test on a
+// parse error or any other entry count.
+func mustParseOne(t *testing.T, data []byte) Entry {
+	t.Helper()
+	entries := mustParseEntries(t, data)
+	assertField(t, "entry count", len(entries), 1)
+	return entries[0]
+}
+
+// assertField fails the test unless got equals want. Keeping the comparison
+// here lets a test assert many fields without a branch per field.
+func assertField[T comparable](t *testing.T, name string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s = %+v, want %+v", name, got, want)
+	}
+}
+
+// coreFields are the entry fields most parser tests assert together.
+type coreFields struct{ ID, Title, Link, Description, Author string }
+
+func coreOf(e Entry) coreFields {
+	return coreFields{e.ID, e.Title, e.Link, e.Description, e.Author}
 }

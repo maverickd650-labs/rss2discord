@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseFeed_AtomEntry(t *testing.T) {
-	data := []byte(`<?xml version="1.0"?>
+	e := mustParseOne(t, []byte(`<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 <entry>
 <id>urn:uuid:1</id>
@@ -15,27 +15,13 @@ func TestParseFeed_AtomEntry(t *testing.T) {
 <updated>2015-10-21T07:28:00Z</updated>
 <content>Body content</content>
 </entry>
-</feed>`)
-
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-	e := entries[0]
-	if e.ID != "urn:uuid:1" || e.Title != "Atom Title" || e.Link != "http://example.com/a" {
-		t.Fatalf("unexpected entry: %+v", e)
-	}
+</feed>`))
 	// Summary is empty, so Content is used as the description.
-	if e.Description != "Body content" {
-		t.Fatalf("expected description from content, got %q", e.Description)
-	}
+	assertField(t, "entry", coreOf(e), coreFields{
+		ID: "urn:uuid:1", Title: "Atom Title", Link: "http://example.com/a", Description: "Body content",
+	})
 	// No published element, so the updated timestamp is used.
-	if e.Published.IsZero() {
-		t.Fatal("expected published derived from updated timestamp")
-	}
+	assertField(t, "published is zero", e.Published.IsZero(), false)
 }
 
 func TestParseFeed_AtomAuthorAndCategories(t *testing.T) {

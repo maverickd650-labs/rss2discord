@@ -221,32 +221,31 @@ func TestAtomLinksBoundedSelectionMatchesFull(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := []byte(`<entry>` + tc.links + `</entry>`)
 
-			var bounded looseAtomEntry
-			if err := xml.Unmarshal(doc, &bounded); err != nil {
-				t.Fatalf("unmarshal bounded: %v", err)
-			}
-			var full struct {
-				Links []atomLink `xml:"link"`
-			}
-			if err := xml.Unmarshal(doc, &full); err != nil {
-				t.Fatalf("unmarshal full: %v", err)
-			}
+			bounded, full := unmarshalBoundedAndFullLinks(t, doc)
 
-			if got, want := primaryLink(bounded.Links), primaryLink(full.Links); got != want {
-				t.Fatalf("primaryLink = %q, full list gives %q", got, want)
-			}
-			if got, want := enclosureImage(bounded.Links), enclosureImage(full.Links); got != want {
-				t.Fatalf("enclosureImage = %q, full list gives %q", got, want)
-			}
-			if got := primaryLink(bounded.Links); got != tc.wantPrimary {
-				t.Fatalf("primaryLink = %q, want %q", got, tc.wantPrimary)
-			}
-			if got := enclosureImage(bounded.Links); got != tc.wantEnclosure {
-				t.Fatalf("enclosureImage = %q, want %q", got, tc.wantEnclosure)
-			}
-			if len(bounded.Links) > 3 {
-				t.Fatalf("retained %d links, want at most 3", len(bounded.Links))
-			}
+			assertField(t, "primaryLink vs full list", primaryLink(bounded), primaryLink(full))
+			assertField(t, "enclosureImage vs full list", enclosureImage(bounded), enclosureImage(full))
+			assertField(t, "primaryLink", primaryLink(bounded), tc.wantPrimary)
+			assertField(t, "enclosureImage", enclosureImage(bounded), tc.wantEnclosure)
+			assertField(t, "at most 3 links retained", len(bounded) <= 3, true)
 		})
 	}
+}
+
+// unmarshalBoundedAndFullLinks decodes doc's <link> children twice: through
+// looseAtomEntry, which retains a bounded selection, and into an unbounded
+// list.
+func unmarshalBoundedAndFullLinks(t *testing.T, doc []byte) (bounded, full []atomLink) {
+	t.Helper()
+	var b looseAtomEntry
+	if err := xml.Unmarshal(doc, &b); err != nil {
+		t.Fatalf("unmarshal bounded: %v", err)
+	}
+	var f struct {
+		Links []atomLink `xml:"link"`
+	}
+	if err := xml.Unmarshal(doc, &f); err != nil {
+		t.Fatalf("unmarshal full: %v", err)
+	}
+	return b.Links, f.Links
 }

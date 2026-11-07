@@ -61,14 +61,10 @@ func TestParseFeed_AtomExtensionElementsNeverTouchCoreFields(t *testing.T) {
 		{name: "no namespace is read by local name", entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			entries, _, err := parseFeed(atomDocNS(tc.ns, tc.entry))
-			if err != nil || len(entries) != 1 {
-				t.Fatalf("parse: entries=%d err=%v", len(entries), err)
-			}
-			e := entries[0]
-			if e.ID != tc.wantID || e.Link != tc.wantLink || e.Image != tc.wantImage {
-				t.Errorf("ID, Link, Image = %q, %q, %q; want %q, %q, %q", e.ID, e.Link, e.Image, tc.wantID, tc.wantLink, tc.wantImage)
-			}
+			e := mustParseOne(t, atomDocNS(tc.ns, tc.entry))
+			type idLinkImage struct{ ID, Link, Image string }
+			assertField(t, "ID, Link, Image", idLinkImage{e.ID, e.Link, e.Image},
+				idLinkImage{tc.wantID, tc.wantLink, tc.wantImage})
 		})
 	}
 }

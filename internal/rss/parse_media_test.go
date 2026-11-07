@@ -190,40 +190,24 @@ func TestParseFeed_YouTubeAtomFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, _, err := parseFeed(data)
-	if err != nil {
-		t.Fatalf("parseFeed: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("got %d entries, want 2", len(entries))
-	}
+	entries := mustParseEntries(t, data)
+	assertField(t, "entry count", len(entries), 2)
 
-	first := entries[0]
-	if first.ID != "yt:video:abc123" {
-		t.Errorf("ID = %q", first.ID)
-	}
-	if first.Title != "First video" {
-		t.Errorf("Title = %q, want the entry title (media:title is nested in the group)", first.Title)
-	}
-	if first.Link != "https://www.youtube.com/watch?v=abc123" {
-		t.Errorf("Link = %q, want the alternate link", first.Link)
-	}
-	if first.Image != "https://i.ytimg.com/vi/abc123/hqdefault.jpg" {
-		t.Errorf("Image = %q", first.Image)
-	}
-	if first.Description != "Line one of the description.\nLine two." {
-		t.Errorf("Description = %q", first.Description)
-	}
-	if first.Author != "Example Channel" {
-		t.Errorf("Author = %q", first.Author)
-	}
+	// media:title is nested in the group, so the entry title wins; the link
+	// is the alternate link.
+	assertField(t, "first entry", coreOf(entries[0]), coreFields{
+		ID:          "yt:video:abc123",
+		Title:       "First video",
+		Link:        "https://www.youtube.com/watch?v=abc123",
+		Description: "Line one of the description.\nLine two.",
+		Author:      "Example Channel",
+	})
+	assertField(t, "first image", entries[0].Image, "https://i.ytimg.com/vi/abc123/hqdefault.jpg")
 
 	// An empty media:description leaves the description empty but the
 	// thumbnail still comes through.
-	second := entries[1]
-	if second.Image != "https://i.ytimg.com/vi/def456/hqdefault.jpg" || second.Description != "" {
-		t.Errorf("second entry image/description = %q/%q", second.Image, second.Description)
-	}
+	assertField(t, "second image", entries[1].Image, "https://i.ytimg.com/vi/def456/hqdefault.jpg")
+	assertField(t, "second description", entries[1].Description, "")
 }
 
 func TestParseFeed_AtomMediaGroupDoesNotClobberCoreFields(t *testing.T) {

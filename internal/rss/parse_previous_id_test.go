@@ -70,17 +70,14 @@ func TestParseFeed_AtomPreviousIDContentHashUsesPriorDateAndImage(t *testing.T) 
 		linkEl("ext:link", `rel="alternate" `, "") +
 		linkEl("ext:link", `rel="enclosure" type="image/png" `, nsImgFake) +
 		`<summary>body</summary></entry></feed>`
-	entries, _, err := parseFeed([]byte(doc))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("parse: entries=%d err=%v", len(entries), err)
-	}
-	e := entries[0]
+	e := mustParseOne(t, []byte(doc))
 	prior := e
 	prior.Published = time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	prior.Image = nsImgFake
-	if e.IDSource != IDFromContent || e.PreviousIDSource != IDFromContent || e.PreviousID != ContentID(prior) || e.PreviousID == e.ID {
-		t.Errorf("ID source %v, PreviousID, PreviousIDSource = %q, %v; want %q, %v", e.IDSource, e.PreviousID, e.PreviousIDSource, ContentID(prior), IDFromContent)
-	}
+	assertField(t, "IDSource", e.IDSource, IDFromContent)
+	assertField(t, "PreviousIDSource", e.PreviousIDSource, IDFromContent)
+	assertField(t, "PreviousID", e.PreviousID, ContentID(prior))
+	assertField(t, "PreviousID equals ID", e.PreviousID == e.ID, false)
 }
 
 // TestParseFeed_AtomPreviousIDAlignsWithEntries asserts an extension element
