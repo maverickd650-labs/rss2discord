@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,4 +111,24 @@ func ts(rfc3339 string) metav1.Time {
 		panic(err)
 	}
 	return metav1.NewTime(t)
+}
+
+// expectf reports a non-fatal failure when ok is false. It keeps the
+// condition of a check out of an if statement, so a test that states many
+// expectations stays flat.
+func expectf(t testing.TB, ok bool, format string, args ...any) {
+	t.Helper()
+	if !ok {
+		t.Errorf(format, args...)
+	}
+}
+
+// requiref is expectf that stops the test on failure, for a precondition the
+// rest of the test dereferences. Its arguments are evaluated before the call,
+// so they must be safe to evaluate when ok is false.
+func requiref(t testing.TB, ok bool, format string, args ...any) {
+	t.Helper()
+	if !ok {
+		t.Fatalf(format, args...)
+	}
 }

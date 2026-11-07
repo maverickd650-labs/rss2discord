@@ -33,16 +33,14 @@ func outOfRangeFeedStatus(url string) v1beta1.FeedStatus {
 func requireReady(t *testing.T, fg *v1beta1.FeedGroup, status metav1.ConditionStatus, reason string) {
 	t.Helper()
 	ready := apimeta.FindStatusCondition(fg.Status.Conditions, v1beta1.ConditionTypeReady)
-	if ready == nil || ready.Status != status || ready.Reason != reason {
-		t.Fatalf("Ready condition = %+v, want %s with reason %q", ready, status, reason)
-	}
+	requiref(t, ready != nil, "no Ready condition, want %s with reason %q", status, reason)
+	requiref(t, ready.Status == status, "Ready condition = %+v, want %s with reason %q", ready, status, reason)
+	requiref(t, ready.Reason == reason, "Ready condition = %+v, want %s with reason %q", ready, status, reason)
 }
 
 func requireObservedGeneration(t *testing.T, fg *v1beta1.FeedGroup, want int64) {
 	t.Helper()
-	if fg.Status.ObservedGeneration != want {
-		t.Errorf("ObservedGeneration = %d, want %d", fg.Status.ObservedGeneration, want)
-	}
+	expectf(t, fg.Status.ObservedGeneration == want, "ObservedGeneration = %d, want %d", fg.Status.ObservedGeneration, want)
 }
 
 // ---- openGroupSync ----
@@ -81,15 +79,19 @@ func newOpenSyncGroup() *v1beta1.FeedGroup {
 	return fg
 }
 
+// prunedFeedGauge reads the feedHealthy gauge of the feed the group drops.
+func prunedFeedGauge() (float64, bool) {
+	return feedGaugeValue(feedHealthy, openSyncNS, openSyncName, testFeedName(openSyncPrunedURL))
+}
+
 func TestOpenGroupSync_SpecChanged(t *testing.T) {
 	forgetMetricsAfter(t, openSyncNS, openSyncName)
 	fg := newOpenSyncGroup()
 
 	// Populate metrics for the pruned feed so we can verify forgetFeed was called.
 	metricsFor(fg).syncFeedState(fg)
-	if _, ok := feedGaugeValue(feedHealthy, openSyncNS, openSyncName, testFeedName(openSyncPrunedURL)); !ok {
-		t.Fatalf("expected feedHealthy metric to exist for %q before pruning", openSyncPrunedURL)
-	}
+	_, present := prunedFeedGauge()
+	requiref(t, present, "expected feedHealthy metric to exist for %q before pruning", openSyncPrunedURL)
 
 	r := &FeedGroupReconciler{}
 	fg.Generation = 2
@@ -98,47 +100,33 @@ func TestOpenGroupSync_SpecChanged(t *testing.T) {
 	sync := r.openGroupSync(fg)
 
 	t.Run("records the group and cadence", func(t *testing.T) {
-		if !sync.specChanged {
-			t.Error("expected specChanged to be true when Generation > ObservedGeneration")
-		}
-		if sync.reconciler != r {
-			t.Errorf("sync.reconciler = %v, want %v", sync.reconciler, r)
-		}
-		if sync.group != fg {
-			t.Errorf("sync.group = %v, want %v", sync.group, fg)
-		}
-		if sync.cadence.poll != 15*time.Minute {
-			t.Errorf("sync.cadence.poll = %v, want 15m", sync.cadence.poll)
-		}
+		expectf(t, sync.specChanged, "expected specChanged to be true when Generation > ObservedGeneration")
+		expectf(t, sync.reconciler == r, "sync.reconciler = %v, want %v", sync.reconciler, r)
+		expectf(t, sync.group == fg, "sync.group = %v, want %v", sync.group, fg)
+		expectf(t, sync.cadence.poll == 15*time.Minute, "sync.cadence.poll = %v, want 15m", sync.cadence.poll)
 	})
 	t.Run("prunes a dropped feed and forgets its metrics", func(t *testing.T) {
-		if got := feedStatusFor(fg, testFeedName(openSyncPrunedURL)); got != nil {
-			t.Errorf("expected pruned feed %q to be removed from Status.Feeds", openSyncPrunedURL)
-		}
-		if _, ok := feedGaugeValue(feedHealthy, openSyncNS, openSyncName, testFeedName(openSyncPrunedURL)); ok {
-			t.Errorf("expected feedHealthy metric for %q to be forgotten after openGroupSync", openSyncPrunedURL)
-		}
+		got := feedStatusFor(fg, testFeedName(openSyncPrunedURL))
+		expectf(t, got == nil, "expected pruned feed %q to be removed from Status.Feeds", openSyncPrunedURL)
+		_, present := prunedFeedGauge()
+		expectf(t, !present, "expected feedHealthy metric for %q to be forgotten after openGroupSync", openSyncPrunedURL)
 	})
 	t.Run("adds a new feed", func(t *testing.T) {
-		if got := feedStatusFor(fg, testFeedName(openSyncNewURL)); got == nil {
-			t.Errorf("expected new feed %q to be added to Status.Feeds", openSyncNewURL)
-		}
+		got := feedStatusFor(fg, testFeedName(openSyncNewURL))
+		expectf(t, got != nil, "expected new feed %q to be added to Status.Feeds", openSyncNewURL)
 	})
-	t.Run("clears backoff and snapshots status", func(t *testing.T) {
+	t.Run("clears backoff on the retained feed", func(t *testing.T) {
 		retained := feedStatusFor(fg, testFeedName(openSyncRetainedURL))
-		if retained == nil {
-			t.Fatalf("expected retained feed %q to exist", openSyncRetainedURL)
-		}
-		if retained.BackoffUntil != nil || retained.RetryCount != 0 {
-			t.Errorf("expected backoff cleared on spec change, got BackoffUntil=%v RetryCount=%d", retained.BackoffUntil, retained.RetryCount)
-		}
-		if sync.original == &fg.Status {
-			t.Error("sync.original aliases fg.Status")
-		}
+		requiref(t, retained != nil, "expected retained feed %q to exist", openSyncRetainedURL)
+		expectf(t, retained.BackoffUntil == nil, "expected backoff cleared on spec change, got BackoffUntil=%v", retained.BackoffUntil)
+		expectf(t, retained.RetryCount == 0, "expected retry count cleared on spec change, got RetryCount=%d", retained.RetryCount)
+	})
+	t.Run("snapshots a deep copy of status", func(t *testing.T) {
+		expectf(t, sync.original != &fg.Status, "sync.original aliases fg.Status")
+		retained := feedStatusFor(fg, testFeedName(openSyncRetainedURL))
+		requiref(t, retained != nil, "expected retained feed %q to exist", openSyncRetainedURL)
 		retained.RetryCount = 42
-		if sync.original.Feeds[0].RetryCount == 42 {
-			t.Error("mutating fg.Status mutated sync.original")
-		}
+		expectf(t, sync.original.Feeds[0].RetryCount != 42, "mutating fg.Status mutated sync.original")
 	})
 }
 
@@ -151,16 +139,11 @@ func TestOpenGroupSync_SpecUnchangedKeepsBackoff(t *testing.T) {
 
 	sync := (&FeedGroupReconciler{}).openGroupSync(fg)
 
-	if sync.specChanged {
-		t.Error("expected specChanged to be false when Generation == ObservedGeneration")
-	}
+	expectf(t, !sync.specChanged, "expected specChanged to be false when Generation == ObservedGeneration")
 	retained := feedStatusFor(fg, testFeedName(openSyncRetainedURL))
-	if retained == nil {
-		t.Fatalf("expected retained feed %q to exist after unchanged-generation openGroupSync", openSyncRetainedURL)
-	}
-	if !retained.BackoffUntil.Equal(openSyncBackoffUntil) || retained.RetryCount != 5 {
-		t.Errorf("expected backoff preserved when spec unchanged, got BackoffUntil=%v RetryCount=%d", retained.BackoffUntil, retained.RetryCount)
-	}
+	requiref(t, retained != nil, "expected retained feed %q to exist after unchanged-generation openGroupSync", openSyncRetainedURL)
+	expectf(t, retained.BackoffUntil.Equal(openSyncBackoffUntil), "expected backoff preserved when spec unchanged, got BackoffUntil=%v", retained.BackoffUntil)
+	expectf(t, retained.RetryCount == 5, "expected retry count preserved when spec unchanged, got RetryCount=%d", retained.RetryCount)
 }
 
 // ---- settlePass ----
@@ -186,18 +169,15 @@ func TestGroupSync_SettlePass(t *testing.T) {
 
 		// Since status is already equivalent, settlePass skips applyStatus (no client needed).
 		res, err := sync.settlePass(t.Context(), feedPlan{nextDue: 20 * time.Minute}, attemptVerdict{})
-		if err != nil {
-			t.Fatalf("settlePass error: %v", err)
-		}
-		if res.RequeueAfter < 18*time.Minute || res.RequeueAfter > 22*time.Minute {
-			t.Errorf("unexpected RequeueAfter: %v", res.RequeueAfter)
-		}
+		requiref(t, err == nil, "settlePass error: %v", err)
+		expectf(t, res.RequeueAfter >= 18*time.Minute, "unexpected RequeueAfter: %v", res.RequeueAfter)
+		expectf(t, res.RequeueAfter <= 22*time.Minute, "unexpected RequeueAfter: %v", res.RequeueAfter)
 		requireObservedGeneration(t, fg, 3)
 
 		// Verify per-feed gauges were synced
-		if got, ok := feedGaugeValue(feedHealthy, ns, name, feed.Name); !ok || got != 0 {
-			t.Errorf("feedHealthy = %v (present=%v), want 0", got, ok)
-		}
+		got, present := feedGaugeValue(feedHealthy, ns, name, feed.Name)
+		expectf(t, present, "feedHealthy is not present")
+		expectf(t, got == 0, "feedHealthy = %v, want 0", got)
 	})
 
 	t.Run("invalid interval warns and a write failure propagates", func(t *testing.T) {
@@ -212,15 +192,13 @@ func TestGroupSync_SettlePass(t *testing.T) {
 
 		// Mutate status to force semantic difference, but with out-of-range status to verify applyStatus error
 		fg.Status.Feeds = []v1beta1.FeedStatus{outOfRangeFeedStatus(feed.URL)}
-		if _, err := sync.settlePass(t.Context(), feedPlan{}, attemptVerdict{}); err == nil {
-			t.Fatal("expected status conversion error from applyStatus")
-		}
+		_, err := sync.settlePass(t.Context(), feedPlan{}, attemptVerdict{})
+		requiref(t, err != nil, "expected status conversion error from applyStatus")
 		requireObservedGeneration(t, fg, fg.Generation)
 
 		eventList := drainEvents(recorder)
-		if len(eventList) == 0 || !strings.Contains(eventList[0], reasonInvalidInterval) {
-			t.Errorf("expected InvalidInterval warning event, got %v", eventList)
-		}
+		requiref(t, len(eventList) > 0, "expected InvalidInterval warning event, got none")
+		expectf(t, strings.Contains(eventList[0], reasonInvalidInterval), "expected InvalidInterval warning event, got %v", eventList)
 	})
 }
 
@@ -244,12 +222,8 @@ func TestGroupSync_SettleWebhookError(t *testing.T) {
 		sync := (&FeedGroupReconciler{}).openGroupSync(fg)
 
 		res, err := sync.settleWebhookError(t.Context(), webhookErr)
-		if err != nil {
-			t.Fatalf("settleWebhookError error: %v", err)
-		}
-		if res.RequeueAfter <= 0 {
-			t.Errorf("expected positive RequeueAfter, got %v", res.RequeueAfter)
-		}
+		requiref(t, err == nil, "settleWebhookError error: %v", err)
+		expectf(t, res.RequeueAfter > 0, "expected positive RequeueAfter, got %v", res.RequeueAfter)
 		requireObservedGeneration(t, fg, 4)
 		requireReady(t, fg, metav1.ConditionFalse, reasonWebhookUnresolved)
 	})
@@ -262,9 +236,8 @@ func TestGroupSync_SettleWebhookError(t *testing.T) {
 		sync := (&FeedGroupReconciler{}).openGroupSync(fg)
 		fg.Status.Feeds[0].LastError = "changed" // make it not deep equal
 
-		if _, err := sync.settleWebhookError(t.Context(), webhookErr); err == nil {
-			t.Fatal("expected status conversion error")
-		}
+		_, err := sync.settleWebhookError(t.Context(), webhookErr)
+		requiref(t, err != nil, "expected status conversion error")
 		requireObservedGeneration(t, fg, fg.Generation)
 	})
 }
@@ -288,16 +261,14 @@ func TestGroupSync_SettlePanic(t *testing.T) {
 
 		sync := (&FeedGroupReconciler{}).openGroupSync(fg)
 
-		if err := sync.settlePanic(t.Context(), panicked); err != nil {
-			t.Fatalf("settlePanic returned unexpected error: %v", err)
-		}
+		err := sync.settlePanic(t.Context(), panicked)
+		requiref(t, err == nil, "settlePanic returned unexpected error: %v", err)
 		requireObservedGeneration(t, fg, 3)
 		requireReady(t, fg, metav1.ConditionFalse, reasonReconcilePanicked)
 
 		// Verify errors.Join behavior: when settlePanic returns nil, errors.Join(panicked, nil) wraps panicked
-		if joined := errors.Join(panicked, sync.settlePanic(t.Context(), panicked)); !errors.Is(joined, panicked) {
-			t.Errorf("joined error = %v, want error matching panicked", joined)
-		}
+		joined := errors.Join(panicked, sync.settlePanic(t.Context(), panicked))
+		expectf(t, errors.Is(joined, panicked), "joined error = %v, want error matching panicked", joined)
 	})
 
 	t.Run("a failed write is returned alongside the panic", func(t *testing.T) {
@@ -311,13 +282,10 @@ func TestGroupSync_SettlePanic(t *testing.T) {
 		fg.Status.Feeds[0].LastError = "changed" // make it not deep equal
 
 		writeErr := sync.settlePanic(t.Context(), panicked)
-		if writeErr == nil {
-			t.Fatal("expected status conversion error from settlePanic")
-		}
+		requiref(t, writeErr != nil, "expected status conversion error from settlePanic")
 		joined := errors.Join(panicked, writeErr)
-		if !errors.Is(joined, panicked) || !errors.Is(joined, writeErr) {
-			t.Errorf("joined error = %v, want error containing panicked and writeErr", joined)
-		}
+		expectf(t, errors.Is(joined, panicked), "joined error = %v, want error containing panicked", joined)
+		expectf(t, errors.Is(joined, writeErr), "joined error = %v, want error containing writeErr", joined)
 	})
 }
 
@@ -355,25 +323,20 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 	// reconcile would load it.
 	settled := suspendedGroup(ns, name)
 	res, err := r.openGroupSync(settled).settleSuspend(t.Context())
-	if err != nil {
-		t.Fatalf("settleSuspend error: %v", err)
-	}
+	requiref(t, err == nil, "settleSuspend error: %v", err)
 
-	t.Run("settles Unknown and preserves watermark and backoff", func(t *testing.T) {
-		if res.RequeueAfter != 0 {
-			t.Errorf("RequeueAfter = %v, want 0", res.RequeueAfter)
-		}
+	t.Run("settles Unknown without requeueing", func(t *testing.T) {
+		expectf(t, res.RequeueAfter == 0, "RequeueAfter = %v, want 0", res.RequeueAfter)
 		requireObservedGeneration(t, settled, 2)
 		requireReady(t, settled, metav1.ConditionUnknown, "Suspended")
+	})
 
-		// Watermark and retry backoff must be preserved during suspension
+	t.Run("preserves watermark and backoff", func(t *testing.T) {
 		fs := feedStatusFor(settled, testFeedName(exampleFeedURL))
-		if fs == nil || fs.LastSeenEntry != "wm-1" {
-			t.Fatalf("feed status watermark not preserved: %+v", fs)
-		}
-		if fs.RetryCount != 4 || fs.BackoffUntil == nil {
-			t.Fatalf("expected RetryCount and BackoffUntil preserved during suspension: %+v", fs)
-		}
+		requiref(t, fs != nil, "feed status missing after suspension")
+		expectf(t, fs.LastSeenEntry == "wm-1", "feed status watermark not preserved: %+v", fs)
+		expectf(t, fs.RetryCount == 4, "expected RetryCount preserved during suspension: %+v", fs)
+		expectf(t, fs.BackoffUntil != nil, "expected BackoffUntil preserved during suspension: %+v", fs)
 	})
 
 	t.Run("resuming clears backoff when generation changes", func(t *testing.T) {
@@ -382,19 +345,14 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 		resumed.Generation = 3
 		r.openGroupSync(resumed)
 		fs := feedStatusFor(resumed, testFeedName(exampleFeedURL))
-		if fs.RetryCount != 0 || fs.BackoffUntil != nil {
-			t.Fatalf("expected RetryCount and BackoffUntil cleared on resume: %+v", fs)
-		}
+		expectf(t, fs.RetryCount == 0, "expected RetryCount cleared on resume: %+v", fs)
+		expectf(t, fs.BackoffUntil == nil, "expected BackoffUntil cleared on resume: %+v", fs)
 	})
 
 	t.Run("unchanged suspend skips the write", func(t *testing.T) {
 		res, err := r.openGroupSync(settled).settleSuspend(t.Context())
-		if err != nil {
-			t.Fatalf("second settleSuspend error: %v", err)
-		}
-		if res.RequeueAfter != 0 {
-			t.Errorf("second RequeueAfter = %v, want 0", res.RequeueAfter)
-		}
+		requiref(t, err == nil, "second settleSuspend error: %v", err)
+		expectf(t, res.RequeueAfter == 0, "second RequeueAfter = %v, want 0", res.RequeueAfter)
 	})
 
 	t.Run("status apply error is propagated", func(t *testing.T) {
@@ -402,8 +360,7 @@ func TestGroupSync_SettleSuspend(t *testing.T) {
 		failing := &FeedGroupReconciler{Client: &failingApplyClient{Client: fakeApplyClient(), err: boom}}
 		fg := settled.DeepCopy()
 		fg.Generation = 3
-		if _, err := failing.openGroupSync(fg).settleSuspend(t.Context()); !errors.Is(err, boom) {
-			t.Fatalf("settleSuspend error = %v, want %v", err, boom)
-		}
+		_, err := failing.openGroupSync(fg).settleSuspend(t.Context())
+		requiref(t, errors.Is(err, boom), "settleSuspend error = %v, want %v", err, boom)
 	})
 }

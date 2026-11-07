@@ -26,19 +26,12 @@ func TestEnsureFeedStatuses_NormalizesOversizedStoredValues(t *testing.T) {
 	ensureFeedStatuses(fg)
 
 	fs = feedStatusFor(fg, feed.Name)
-	if len(fs.LastError) > maxStatusTextBytes {
-		t.Errorf("LastError is %d bytes after load, want <= %d", len(fs.LastError), maxStatusTextBytes)
-	}
-	if len(fs.LastSeenEntry) > maxStatusTextBytes {
-		t.Errorf("LastSeenEntry is %d bytes after load, want <= %d", len(fs.LastSeenEntry), maxStatusTextBytes)
-	}
-	if !ledgerResumes([]rss.Entry{{ID: longID}}, fs.LastSeenEntry) {
-		t.Error("normalized watermark no longer matches the entry it was derived from")
-	}
+	expectf(t, len(fs.LastError) <= maxStatusTextBytes, "LastError is %d bytes after load, want <= %d", len(fs.LastError), maxStatusTextBytes)
+	expectf(t, len(fs.LastSeenEntry) <= maxStatusTextBytes, "LastSeenEntry is %d bytes after load, want <= %d", len(fs.LastSeenEntry), maxStatusTextBytes)
+	expectf(t, ledgerResumes([]rss.Entry{{ID: longID}}, fs.LastSeenEntry), "normalized watermark no longer matches the entry it was derived from")
 	// A watermark freshly stored for the same entry is the same value.
-	if fresh := clampWatermark(entryIdentity(rss.Entry{ID: longID})); fresh != fs.LastSeenEntry {
-		t.Errorf("fresh watermark %q != normalized legacy watermark %q", fresh, fs.LastSeenEntry)
-	}
+	fresh := clampWatermark(entryIdentity(rss.Entry{ID: longID}))
+	expectf(t, fresh == fs.LastSeenEntry, "fresh watermark %q != normalized legacy watermark %q", fresh, fs.LastSeenEntry)
 }
 
 // TestEnsureFeedStatuses asserts ensureFeedStatuses drops the FeedStatus
@@ -65,32 +58,23 @@ func TestEnsureFeedStatuses(t *testing.T) {
 	ensureFeedStatuses(fg)
 
 	t.Run("drops a feed no longer in spec", func(t *testing.T) {
-		if got := feedStatusFor(fg, testFeedName(staleURL)); got != nil {
-			t.Fatalf("expected stale URL's FeedStatus to be removed, got %+v", got)
-		}
+		got := feedStatusFor(fg, testFeedName(staleURL))
+		expectf(t, got == nil, "expected stale URL's FeedStatus to be removed, got %+v", got)
 	})
 	t.Run("keeps an existing feed's state", func(t *testing.T) {
 		kept := feedStatusFor(fg, testFeedName(keptURL))
-		if kept == nil {
-			t.Fatal("expected kept URL's FeedStatus to be retained")
-		}
-		if kept.LastError != "x" || kept.RetryCount != 1 {
-			t.Fatalf("expected kept URL's existing state to be preserved, got %+v", kept)
-		}
+		requiref(t, kept != nil, "expected kept URL's FeedStatus to be retained")
+		expectf(t, kept.LastError == "x", "expected kept URL's existing state to be preserved, got %+v", kept)
+		expectf(t, kept.RetryCount == 1, "expected kept URL's existing state to be preserved, got %+v", kept)
 	})
 	t.Run("adds a zero-valued entry for a new feed", func(t *testing.T) {
-		newEntry := feedStatusFor(fg, testFeedName(newURL))
-		if newEntry == nil {
-			t.Fatal("expected new URL to get a fresh FeedStatus entry")
-		}
-		if newEntry.LastError != "" || newEntry.RetryCount != 0 {
-			t.Fatalf("expected new URL's FeedStatus to be zero-valued, got %+v", newEntry)
-		}
+		added := feedStatusFor(fg, testFeedName(newURL))
+		requiref(t, added != nil, "expected new URL to get a fresh FeedStatus entry")
+		expectf(t, added.LastError == "", "expected new URL's FeedStatus to be zero-valued, got %+v", added)
+		expectf(t, added.RetryCount == 0, "expected new URL's FeedStatus to be zero-valued, got %+v", added)
 	})
 	t.Run("one status per spec feed", func(t *testing.T) {
-		if len(fg.Status.Feeds) != 2 {
-			t.Fatalf("expected exactly one FeedStatus per spec feed, got %d", len(fg.Status.Feeds))
-		}
+		expectf(t, len(fg.Status.Feeds) == 2, "expected exactly one FeedStatus per spec feed, got %d", len(fg.Status.Feeds))
 	})
 }
 
@@ -120,31 +104,28 @@ func TestEnsureFeedStatuses_URLChangeKeepsHistoryNotServerState(t *testing.T) {
 		}}},
 	}
 
-	if pruned := ensureFeedStatuses(fg); len(pruned) != 0 {
-		t.Fatalf("pruned = %v, want none: the feed's name is unchanged", pruned)
-	}
+	pruned := ensureFeedStatuses(fg)
+	expectf(t, len(pruned) == 0, "pruned = %v, want none: the feed's name is unchanged", pruned)
 
 	fs := feedStatusFor(fg, feedName)
-	if fs == nil || fs.URL != newURL {
-		t.Fatalf("fs = %+v, want the status re-pointed at %s", fs, newURL)
-	}
-	if !keepsDeliveryHistory(fs) {
-		t.Errorf("delivery history not preserved: %+v", fs)
-	}
-	if fs.ETag != "" || fs.LastModified != "" {
-		t.Errorf("validators carried to the new URL: etag=%q lastModified=%q", fs.ETag, fs.LastModified)
-	}
-	if !hasNoCheckOrRetryState(fs) {
-		t.Errorf("check/retry state carried to the new URL: %+v", fs)
-	}
+	requiref(t, fs != nil, "no status for %q after the URL change", feedName)
+	requiref(t, fs.URL == newURL, "fs = %+v, want the status re-pointed at %s", fs, newURL)
+	expectf(t, keepsDeliveryHistory(fs), "delivery history not preserved: %+v", fs)
+	expectf(t, carriesNoValidators(fs), "validators carried to the new URL: etag=%q lastModified=%q", fs.ETag, fs.LastModified)
+	expectf(t, hasNoCheckOrRetryState(fs), "check/retry state carried to the new URL: %+v", fs)
 }
 
 // keepsDeliveryHistory reports whether fs still holds the delivery history the
 // URL-change test seeds: initialized, its watermark and its one sent entry.
 func keepsDeliveryHistory(fs *v1beta1.FeedStatus) bool {
-	return fs.Initialized &&
-		fs.LastSeenEntry == "entry-123" &&
-		fs.LastSent["hash1"].Time.Equal(ts("2026-01-01T00:00:00Z").Time)
+	sent := fs.LastSent["hash1"]
+	return fs.Initialized && fs.LastSeenEntry == "entry-123" && sent.Time.Equal(ts("2026-01-01T00:00:00Z").Time)
+}
+
+// carriesNoValidators reports whether fs holds neither an ETag nor a
+// Last-Modified.
+func carriesNoValidators(fs *v1beta1.FeedStatus) bool {
+	return fs.ETag == "" && fs.LastModified == ""
 }
 
 // hasNoCheckOrRetryState reports whether fs carries no check time and no
@@ -161,9 +142,10 @@ func TestEnsureFeedStatuses_SameURLKeepsValidators(t *testing.T) {
 		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{Name: "a", URL: url, ETag: `"e"`, LastModified: "lm", RetryCount: 1}}},
 	}
 	ensureFeedStatuses(fg)
-	if fs := feedStatusFor(fg, "a"); fs.ETag != `"e"` || fs.LastModified != "lm" || fs.RetryCount != 1 {
-		t.Fatalf("fs = %+v, want validators and retry state kept", fs)
-	}
+	fs := feedStatusFor(fg, "a")
+	expectf(t, fs.ETag == `"e"`, "fs = %+v, want validators and retry state kept", fs)
+	expectf(t, fs.LastModified == "lm", "fs = %+v, want validators and retry state kept", fs)
+	expectf(t, fs.RetryCount == 1, "fs = %+v, want validators and retry state kept", fs)
 }
 
 // Renaming a feed is a different feed: the old name's status is pruned and
@@ -174,15 +156,14 @@ func TestEnsureFeedStatuses_RenameStartsFresh(t *testing.T) {
 		Spec:   v1beta1.FeedGroupSpec{Feeds: []v1beta1.FeedSpec{{Name: "new-name", URL: url}}},
 		Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{{Name: "old-name", URL: url, LastSeenEntry: "entry"}}},
 	}
-	if pruned := ensureFeedStatuses(fg); !slices.Equal(pruned, []string{"old-name"}) {
-		t.Fatalf("pruned = %v, want [old-name]", pruned)
-	}
-	if fs := feedStatusFor(fg, "new-name"); fs == nil || fs.LastSeenEntry != "" || fs.URL != url {
-		t.Fatalf("fs = %+v, want a fresh status for new-name", fs)
-	}
-	if feedStatusFor(fg, "old-name") != nil {
-		t.Fatal("old-name's status survived")
-	}
+	pruned := ensureFeedStatuses(fg)
+	expectf(t, slices.Equal(pruned, []string{"old-name"}), "pruned = %v, want [old-name]", pruned)
+
+	fs := feedStatusFor(fg, "new-name")
+	requiref(t, fs != nil, "no status for new-name")
+	expectf(t, fs.LastSeenEntry == "", "fs = %+v, want a fresh status for new-name", fs)
+	expectf(t, fs.URL == url, "fs = %+v, want a fresh status for new-name", fs)
+	expectf(t, feedStatusFor(fg, "old-name") == nil, "old-name's status survived")
 }
 
 // Two feeds swapping URLs keep their own histories.
@@ -196,10 +177,10 @@ func TestEnsureFeedStatuses_SwappedURLsFollowNames(t *testing.T) {
 		}},
 	}
 	ensureFeedStatuses(fg)
-	if fs := feedStatusFor(fg, "a"); fs.URL != urlB || fs.LastSeenEntry != "a-entry" {
-		t.Fatalf("a = %+v", fs)
-	}
-	if fs := feedStatusFor(fg, "b"); fs.URL != urlA || fs.LastSeenEntry != "b-entry" {
-		t.Fatalf("b = %+v", fs)
-	}
+	a := feedStatusFor(fg, "a")
+	expectf(t, a.URL == urlB, "a = %+v", a)
+	expectf(t, a.LastSeenEntry == "a-entry", "a = %+v", a)
+	b := feedStatusFor(fg, "b")
+	expectf(t, b.URL == urlA, "b = %+v", b)
+	expectf(t, b.LastSeenEntry == "b-entry", "b = %+v", b)
 }
