@@ -146,15 +146,15 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 			if len(inner.sent) != 1 || inner.sent[0].Content != messageContent {
 				t.Fatalf("inner received %+v, want the one message passed in", inner.sent)
 			}
-			if got := histogramSampleCount(t, ns, name, operationSend); got != 1 {
+			if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 1 {
 				t.Fatalf("send sample count = %d, want 1", got)
 			}
-			if got := histogramSampleCount(t, ns, name, operationFetch); got != 0 {
+			if got := histogramSampleCount(t, groupKey(ns, name), operationFetch); got != 0 {
 				t.Fatalf("fetch sample count = %d, want 0", got)
 			}
 
 			_ = sender.SendMessage(t.Context(), discord.Message{})
-			if got := histogramSampleCount(t, ns, name, operationSend); got != 2 {
+			if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 2 {
 				t.Fatalf("send sample count after a second call = %d, want 2", got)
 			}
 		})
@@ -191,10 +191,10 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 			if inner.gotURL != exampleFeedURL || inner.gotCache != validators {
 				t.Fatalf("inner called with (%q, %+v), want the arguments passed in", inner.gotURL, inner.gotCache)
 			}
-			if got := histogramSampleCount(t, ns, name, operationFetch); got != 1 {
+			if got := histogramSampleCount(t, groupKey(ns, name), operationFetch); got != 1 {
 				t.Fatalf("fetch sample count = %d, want 1", got)
 			}
-			if got := histogramSampleCount(t, ns, name, operationSend); got != 0 {
+			if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 0 {
 				t.Fatalf("send sample count = %d, want 0", got)
 			}
 		})

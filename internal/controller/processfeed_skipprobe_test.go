@@ -81,7 +81,7 @@ func TestProcessFeed_SkipProbeDoesNotRecordOverflow(t *testing.T) {
 	if got := server.MessageCount(); got != 1 {
 		t.Fatalf("messages sent = %d, want 1", got)
 	}
-	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 1 {
 		t.Fatalf("messageOverflowChars sample count = %d, want exactly 1 (the send)", got)
 	}
 	if fs.LastSeenEntry != entries[1].ID {
@@ -114,7 +114,7 @@ func TestProcessFeed_SkipProbeOverflowOnAlreadySentSibling(t *testing.T) {
 	if fs.LastSeenEntry != entries[1].ID {
 		t.Fatalf("poison entry should be skipped using the sent sibling as the only evidence: LastSeenEntry = %q", fs.LastSeenEntry)
 	}
-	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
 	}
 }
@@ -144,7 +144,7 @@ func TestProcessFeed_SkipProbeIgnoresFilteredSibling(t *testing.T) {
 	if got := outcomeCount(ns, name, outcomeSkipped); got != 0 {
 		t.Fatalf("skipped outcomes = %v, want 0", got)
 	}
-	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
 	}
 }
@@ -173,12 +173,12 @@ func TestProcessFeed_OverflowRecordedPerSendAttempt(t *testing.T) {
 	if got := discordServer.MessageCount(); got != 1 {
 		t.Fatalf("messages delivered = %d, want 1", got)
 	}
-	if got := messageOverflowSampleCount(t, ns, name); got != 3 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 3 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 3 (two failed attempts + delivery)", got)
 	}
 	// The default template renders 2548 runes (2500 description + 48 of
 	// title, link and markup), 548 over the limit, on each of the 3 attempts.
-	if got := messageOverflowSampleSum(t, ns, name); got != 3*548 {
+	if got := messageOverflowSampleSum(t, groupKey(ns, name)); got != 3*548 {
 		t.Fatalf("messageOverflowChars sample sum = %v, want %d", got, 3*548)
 	}
 }

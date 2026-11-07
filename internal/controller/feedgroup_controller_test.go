@@ -1571,7 +1571,7 @@ var _ = Describe("FeedGroup Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 
 			By("Verifying no reconcile-duration series was created for a FeedGroup that doesn't exist")
-			count, err := reconcileDurationSampleCountErr(namespace, "nonexistent")
+			count, err := reconcileDurationSampleCountErr(groupKey(namespace, "nonexistent"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(count).To(Equal(uint64(0)))
 		})
