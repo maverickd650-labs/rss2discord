@@ -90,11 +90,11 @@ func vectorsOfScope(scope metricScope) []metricVec {
 
 // assertSeriesCounts fails for each vec unless it has series matching sel
 // exactly when wantPresent.
-func assertSeriesCounts(t *testing.T, vecs []metricVec, sel map[string]string, wantPresent bool, msg string) {
+func assertSeriesCounts(t *testing.T, vecs []metricVec, sel map[string]string, wantPresent bool) {
 	t.Helper()
 	for _, vec := range vecs {
 		if got := countSeries(vec, sel); (got > 0) != wantPresent {
-			t.Errorf("%T: %s (%d series match)", vec, msg, got)
+			t.Errorf("%T: %d series match %v, want present=%v", vec, got, sel, wantPresent)
 		}
 	}
 }
@@ -111,9 +111,9 @@ func TestGroupMetrics_ForgetFeedDropsOnlyThatFeed(t *testing.T) {
 	groupMetrics{namespace: group.namespace, name: group.group}.forgetFeed(exampleFeedURL)
 
 	perFeed, perGroup := vectorsOfScope(scopePerFeed), vectorsOfScope(scopePerGroup)
-	assertSeriesCounts(t, perFeed, forgotten.feedSelector(), false, "series for the forgotten feed survive")
-	assertSeriesCounts(t, perFeed, sibling.feedSelector(), true, "the sibling feed's series were dropped")
-	assertSeriesCounts(t, perGroup, group.groupSelector(), true, "per-group series were dropped by forgetFeed")
+	assertSeriesCounts(t, perFeed, forgotten.feedSelector(), false)
+	assertSeriesCounts(t, perFeed, sibling.feedSelector(), true)
+	assertSeriesCounts(t, perGroup, group.groupSelector(), true)
 }
 
 // requireGaugeSeries fails unless the presence of the key's feed series in a

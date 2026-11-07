@@ -142,7 +142,7 @@ func TestProcessFeed_SentRecordsDurationAndFreshness(t *testing.T) {
 	if got := testutil.ToFloat64(feedLastSuccessTimestamp.WithLabelValues(ns, name)); got <= 0 {
 		t.Fatalf("feedLastSuccessTimestamp = %v, want > 0", got)
 	}
-	if got := histogramSampleCount(t, ns, name, operationSend); got != 1 {
+	if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 1 {
 		t.Fatalf("send duration sample count = %d, want 1", got)
 	}
 }
@@ -201,7 +201,7 @@ func TestProcessFeed_RecordsMessageOverflow(t *testing.T) {
 
 	processFeed(ctx, testRun(t, fg, feed, fetchResult, nil, client))
 
-	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 1 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 1", got)
 	}
 }
@@ -221,7 +221,7 @@ func TestProcessFeed_NoOverflowMetricWhenContentFits(t *testing.T) {
 
 	processFeed(ctx, testRun(t, fg, feed, oneEntryFetch(), nil, client))
 
-	if got := messageOverflowSampleCount(t, ns, name); got != 0 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 0 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 0", got)
 	}
 }
@@ -250,13 +250,13 @@ func TestProcessFeed_RecordsMessageOverflowFromEmbedTotalLengthClamp(t *testing.
 
 	processFeed(ctx, testRun(t, fg, feed, fetch, nil, client))
 
-	if got := messageOverflowSampleCount(t, ns, name); got != 1 {
+	if got := messageOverflowSampleCount(t, groupKey(ns, name)); got != 1 {
 		t.Fatalf("messageOverflowChars sample count = %d, want 1", got)
 	}
 	title := len([]rune(fetch.Entries[0].Title))
 	want := float64(title + discord.MaxEmbedDescriptionLength + discord.MaxEmbedFooterTextLength +
 		discord.MaxEmbedAuthorNameLength - discord.MaxEmbedTotalLength)
-	if got := messageOverflowSampleSum(t, ns, name); got != want {
+	if got := messageOverflowSampleSum(t, groupKey(ns, name)); got != want {
 		t.Fatalf("messageOverflowChars sample sum = %v, want %v", got, want)
 	}
 }

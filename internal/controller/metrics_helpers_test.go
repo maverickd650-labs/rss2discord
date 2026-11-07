@@ -17,74 +17,12 @@ limitations under the License.
 package controller
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 )
-
-// observerVec is the part of a *prometheus.HistogramVec the readers below use.
-type observerVec interface {
-	GetMetricWithLabelValues(lvs ...string) (prometheus.Observer, error)
-}
-
-// readHistogramErr reads back a single histogram series, usable from contexts
-// (like Ginkgo specs) that don't have a *testing.T to call Fatal on.
-func readHistogramErr(vec observerVec, lvs ...string) (*dto.Histogram, error) {
-	obs, err := vec.GetMetricWithLabelValues(lvs...)
-	if err != nil {
-		return nil, fmt.Errorf("get histogram metric: %w", err)
-	}
-	var m dto.Metric
-	if err := obs.(prometheus.Metric).Write(&m); err != nil {
-		return nil, fmt.Errorf("write histogram metric: %w", err)
-	}
-	return m.GetHistogram(), nil
-}
-
-// readHistogram is readHistogramErr failing the test on error.
-func readHistogram(t *testing.T, vec observerVec, lvs ...string) *dto.Histogram {
-	t.Helper()
-	h, err := readHistogramErr(vec, lvs...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return h
-}
-
-// histogramSampleCount reads the observation count of a single
-// feedRequestDuration series.
-func histogramSampleCount(t *testing.T, namespace, name, operation string) uint64 {
-	t.Helper()
-	return readHistogram(t, feedRequestDuration, namespace, name, operation).GetSampleCount()
-}
-
-// messageOverflowSampleCount reads the observation count of a single
-// messageOverflowChars series.
-func messageOverflowSampleCount(t *testing.T, namespace, name string) uint64 {
-	t.Helper()
-	return readHistogram(t, messageOverflowChars, namespace, name).GetSampleCount()
-}
-
-// messageOverflowSampleSum reads the sum of observed values of a single
-// messageOverflowChars series.
-func messageOverflowSampleSum(t *testing.T, namespace, name string) float64 {
-	t.Helper()
-	return readHistogram(t, messageOverflowChars, namespace, name).GetSampleSum()
-}
-
-// reconcileDurationSampleCountErr reads the observation count of a single
-// feedGroupReconcileDuration series, usable from contexts (like Ginkgo specs)
-// that don't have a *testing.T to call Fatalf on.
-func reconcileDurationSampleCountErr(namespace, name string) (uint64, error) {
-	h, err := readHistogramErr(feedGroupReconcileDuration, namespace, name)
-	if err != nil {
-		return 0, err
-	}
-	return h.GetSampleCount(), nil
-}
 
 // seriesKey identifies a FeedGroup's series (feed is empty for a group-level
 // one), so helpers take one value instead of several strings.
@@ -205,4 +143,9 @@ func touchSeries(t *testing.T, vec metricVec, labels prometheus.Labels) {
 	default:
 		t.Fatalf("touchSeries: unsupported vector type %T", vec)
 	}
+}
+
+// groupKey is the key of a group's series.
+func groupKey(namespace, group string) seriesKey {
+	return seriesKey{namespace: namespace, group: group}
 }
