@@ -42,6 +42,71 @@ var authorField = "{{" + ".Author}}"
 // notSupportedErrText is the substring every rejected-template error carries.
 const notSupportedErrText = "not supported"
 
+// outputLimit is the template output cap (1 MiB) the boundary tests probe.
+const outputLimit = 1 << 20
+
+// mustCompile compiles a template that the test expects to be accepted.
+func mustCompile(t *testing.T, name, format, fallback string) *Template {
+	t.Helper()
+	tmpl, err := Compile(name, format, fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tmpl
+}
+
+// assertRenders fails unless tmpl renders data to exactly want.
+func assertRenders(t *testing.T, tmpl *Template, data any, want string) {
+	t.Helper()
+	got, err := tmpl.Execute(data)
+	if err != nil {
+		t.Fatalf("Execute: %v; want %.80q (len %d)", err, want, len(want))
+	}
+	if got != want {
+		t.Fatalf("Execute = %.80q (len %d); want %.80q (len %d)", got, len(got), want, len(want))
+	}
+}
+
+// failsWith reports whether err is non-nil and mentions substr.
+func failsWith(err error, substr string) bool {
+	return err != nil && strings.Contains(err.Error(), substr)
+}
+
+// assertFailsWith fails unless rendering data errors with substr and yields
+// no partial output, which must never become a sendable message.
+func assertFailsWith(t *testing.T, tmpl *Template, data any, substr string) {
+	t.Helper()
+	got, err := tmpl.Execute(data)
+	if !failsWith(err, substr) {
+		t.Fatalf("Execute err = %v; want an error containing %q", err, substr)
+	}
+	if got != "" {
+		t.Fatalf("Execute returned %d bytes of partial output alongside the error", len(got))
+	}
+}
+
+// assertParses fails if format is not valid text/template syntax, so a
+// syntax error cannot masquerade as rejection by the safety check.
+func assertParses(t *testing.T, format string) {
+	t.Helper()
+	if _, err := template.New("t").Funcs(templateFuncs).Parse(format); err != nil {
+		t.Fatalf("invalid test template: %v", err)
+	}
+}
+
+// assertNotSupported fails unless Compile rejects format (or an unsafe
+// fallback) with the "not supported" error and returns no template.
+func assertNotSupported(t *testing.T, format, fallback string) {
+	t.Helper()
+	tmpl, err := Compile("rejected", format, fallback)
+	if tmpl != nil {
+		t.Fatalf("unsafe template compiled: %v", tmpl)
+	}
+	if !failsWith(err, notSupportedErrText) {
+		t.Fatalf("expected a %q error, got %v", notSupportedErrText, err)
+	}
+}
+
 func TestTemplateFuncs_StringBoundaries(t *testing.T) {
 	const japaneseText = "日本語"
 	for _, tc := range []struct {
@@ -62,84 +127,64 @@ func TestTemplateFuncs_StringBoundaries(t *testing.T) {
 		{name: "replace deletes matches", format: `{{.Author | replace "猫" ""}}`, author: "猫と猫", want: "と"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpl, err := Compile("boundary", tc.format, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := tmpl.Execute(entry{Author: tc.author})
-			if err != nil || got != tc.want {
-				t.Fatalf("Execute = %q, err=%v; want %q", got, err, tc.want)
-			}
+			assertRenders(t, mustCompile(t, "boundary", tc.format, ""), entry{Author: tc.author}, tc.want)
 		})
 	}
 }
 
-func TestTemplateFuncs_DiscordTimeStylesAndUndatedValidation(t *testing.T) {
+func TestTemplateFuncs_DiscordTimeStyles(t *testing.T) {
 	for _, style := range []string{"t", "T", "d", "D", "f", "F", "R"} {
 		t.Run(style, func(t *testing.T) {
-			tmpl, err := Compile("timestamp", fmt.Sprintf(`{{.PublishedUnix | discordTime %q}}`, style), "")
-			if err != nil {
-				t.Fatal(err)
-			}
+			tmpl := mustCompile(t, "timestamp", fmt.Sprintf(`{{.PublishedUnix | discordTime %q}}`, style), "")
 			for _, unix := range []int64{-1, 1714979289} {
-				got, err := tmpl.Execute(entry{PublishedUnix: unix})
-				if want := fmt.Sprintf("<t:%d:%s>", unix, style); err != nil || got != want {
-					t.Fatalf("timestamp = %q, err=%v; want %q", got, err, want)
-				}
+				assertRenders(t, tmpl, entry{PublishedUnix: unix}, fmt.Sprintf("<t:%d:%s>", unix, style))
 			}
-			if got, err := tmpl.Execute(entry{}); err != nil || got != "" {
-				t.Fatalf("undated timestamp = %q, err=%v; want empty", got, err)
-			}
+			assertRenders(t, tmpl, entry{}, "") // undated renders empty
 		})
 	}
-	// Style validation must also run for undated entries. Partial output
-	// from a failed template must never become a sendable message.
-	tmpl, err := Compile("invalid-style", `prefix{{.PublishedUnix | discordTime ""}}`, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := tmpl.Execute(entry{})
-	if err == nil || !strings.Contains(err.Error(), "discordTime: unknown style") || got != "" {
-		t.Fatalf("invalid undated timestamp = %q, err=%v", got, err)
-	}
+}
+
+// Style validation must also run for undated entries. Partial output from a
+// failed template must never become a sendable message.
+func TestTemplateFuncs_DiscordTimeValidatesStyleForUndatedEntries(t *testing.T) {
+	tmpl := mustCompile(t, "invalid-style", `prefix{{.PublishedUnix | discordTime ""}}`, "")
+	assertFailsWith(t, tmpl, entry{}, "discordTime: unknown style")
 }
 
 func TestTemplateFuncs_ReplaceSizeLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name, format, title, author, want string
-		wantError                         bool
 	}{
 		{name: "at limit", format: `{{replace "a" .Author .Title}}`, title: "a", author: strings.Repeat("x", maxTemplateReplaceBytes), want: strings.Repeat("x", maxTemplateReplaceBytes)},
-		{name: "over limit", format: `{{replace "a" .Author .Title}}`, title: "aa", author: strings.Repeat("x", maxTemplateReplaceBytes/2+1), wantError: true},
-		{name: "empty pattern counts rune boundaries", format: `{{replace "" .Author .Title}}`, title: "é", author: strings.Repeat("x", maxTemplateReplaceBytes/2), wantError: true},
 		{name: "empty pattern unicode", format: `{{replace "" "x" .Title}}`, title: "é", want: "xéx"},
 		{name: "shrinking replacement", format: `{{replace "xx" "x" .Title}}`, title: strings.Repeat("x", maxTemplateReplaceBytes+2), want: strings.Repeat("x", maxTemplateReplaceBytes/2+1)},
-		{name: "absent pattern oversized input", format: `{{replace "absent" "x" .Title}}`, title: strings.Repeat("x", maxTemplateReplaceBytes+1), wantError: true},
-		{name: "pipeline expansion", format: `{{.Title | replace "a" .Author | replace "x" .Author | truncate 10}}`, title: "a", author: strings.Repeat("x", 1025), wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpl, err := Compile("replace", tc.format, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := tmpl.Execute(entry{Title: tc.title, Author: tc.author})
-			if tc.wantError {
-				if err == nil || !strings.Contains(err.Error(), "replace: result exceeds maximum size") {
-					t.Fatalf("expected size error, got %v", err)
-				}
-			} else if err != nil || got != tc.want {
-				t.Fatalf("result length=%d, want=%d, err=%v", len(got), len(tc.want), err)
-			}
+			tmpl := mustCompile(t, "replace", tc.format, "")
+			assertRenders(t, tmpl, entry{Title: tc.title, Author: tc.author}, tc.want)
+		})
+	}
+}
+
+func TestTemplateFuncs_ReplaceRejectsOversizedResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, format, title, author string
+	}{
+		{name: "over limit", format: `{{replace "a" .Author .Title}}`, title: "aa", author: strings.Repeat("x", maxTemplateReplaceBytes/2+1)},
+		{name: "empty pattern counts rune boundaries", format: `{{replace "" .Author .Title}}`, title: "é", author: strings.Repeat("x", maxTemplateReplaceBytes/2)},
+		{name: "absent pattern oversized input", format: `{{replace "absent" "x" .Title}}`, title: strings.Repeat("x", maxTemplateReplaceBytes+1)},
+		{name: "pipeline expansion", format: `{{.Title | replace "a" .Author | replace "x" .Author | truncate 10}}`, title: "a", author: strings.Repeat("x", 1025)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := mustCompile(t, "replace", tc.format, "")
+			assertFailsWith(t, tmpl, entry{Title: tc.title, Author: tc.author}, "replace: result exceeds maximum size")
 		})
 	}
 }
 
 func TestTemplateFuncs_DiscordTimeRejectsUnknownStyle(t *testing.T) {
 	for _, style := range []string{"x", "", "RR", "r"} {
-		tmpl, err := Compile("test", `{{.PublishedUnix | discordTime "`+style+`"}}`, "")
-		if err != nil {
-			t.Fatalf("compile: %v", err)
-		}
+		tmpl := mustCompile(t, "test", `{{.PublishedUnix | discordTime "`+style+`"}}`, "")
 		if _, err := tmpl.Execute(entry{PublishedUnix: 1700000000}); err == nil {
 			t.Errorf("style %q: expected a render error", style)
 		}
@@ -190,24 +235,16 @@ func TestCompile_RejectsUnboundedConstructs(t *testing.T) {
 		"println":               `{{println .Title}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			// A syntax error must not masquerade as rejection by the safety check.
-			if _, err := template.New("t").Funcs(templateFuncs).Parse(format); err != nil {
-				t.Fatalf("invalid test template: %v", err)
-			}
-			if tmpl, err := Compile("t", format, ""); tmpl != nil || err == nil || !strings.Contains(err.Error(), notSupportedErrText) {
-				t.Fatalf("expected a 'not supported' error, got %v", err)
-			}
+			assertParses(t, format)
+			assertNotSupported(t, format, "")
 		})
 	}
-	// if/else and helpers must keep working.
-	tmpl, err := Compile("t", `{{if .Title}}{{.Title}}{{else}}none{{end}}{{if .Author}}/{{.Author}}{{end}}`, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := tmpl.Execute(entry{Title: "a", Author: "b"})
-	if err != nil || got != "a/b" {
-		t.Fatalf("got %q, err=%v", got, err)
-	}
+}
+
+// if/else and helpers must keep working alongside the rejections.
+func TestCompile_AcceptsIfElseAndHelpers(t *testing.T) {
+	tmpl := mustCompile(t, "t", `{{if .Title}}{{.Title}}{{else}}none{{end}}{{if .Author}}/{{.Author}}{{end}}`, "")
+	assertRenders(t, tmpl, entry{Title: "a", Author: "b"}, "a/b")
 }
 
 func TestCompile_RejectsGrowthBuiltinsInNestedPipelines(t *testing.T) {
@@ -222,13 +259,8 @@ func TestCompile_RejectsGrowthBuiltinsInNestedPipelines(t *testing.T) {
 		} {
 			t.Run(action+"/"+name, func(t *testing.T) {
 				format := fmt.Sprintf(wrapper, action)
-				if _, err := template.New("nested").Funcs(templateFuncs).Parse(format); err != nil {
-					t.Fatalf("invalid test template: %v", err)
-				}
-				tmpl, err := Compile("nested", format, "")
-				if tmpl != nil || err == nil || !strings.Contains(err.Error(), notSupportedErrText) {
-					t.Fatalf("unsafe nested action compiled: template=%v, err=%v", tmpl, err)
-				}
+				assertParses(t, format)
+				assertNotSupported(t, format, "")
 			})
 		}
 	}
@@ -241,10 +273,7 @@ func TestCompile_FallbackRestrictions(t *testing.T) {
 		`{{define "unused"}}x{{end}}`, `{{template "missing"}}`,
 	} {
 		t.Run(fallback, func(t *testing.T) {
-			tmpl, err := Compile("fallback", " \t\n", fallback)
-			if tmpl != nil || err == nil || !strings.Contains(err.Error(), notSupportedErrText) {
-				t.Fatalf("unsafe fallback compiled: template=%v, err=%v", tmpl, err)
-			}
+			assertNotSupported(t, " \t\n", fallback)
 		})
 	}
 }
@@ -267,54 +296,55 @@ func TestCompile_SupportedConstructs(t *testing.T) {
 		{name: "unused unsafe fallback", format: `{{ .Title }}`, fallback: `{{range 2}}{{end}}`, entry: entry{Title: tmplSafeText}, want: tmplSafeText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpl, err := Compile("supported", tc.format, tc.fallback)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := tmpl.Execute(tc.entry)
-			if err != nil || got != tc.want {
-				t.Fatalf("render = %q, err=%v; want %q", got, err, tc.want)
-			}
+			assertRenders(t, mustCompile(t, "supported", tc.format, tc.fallback), tc.entry, tc.want)
 		})
 	}
 }
 
 func TestExecute_OutputByteBoundaries(t *testing.T) {
-	const limit = 1 << 20
+	const limit = outputLimit
 	truncated8 := strings.Repeat("x", 7) + "…" // an 8-rune cut of a run of x
 	for _, tc := range []struct {
 		name, format, author, want string
 		wantOverflow               int
-		wantError                  bool
 	}{
 		{name: "one byte below", format: authorField, author: strings.Repeat("x", limit-1), want: truncated8, wantOverflow: limit - 1 - 8},
 		{name: "exactly one MiB", format: authorField, author: strings.Repeat("x", limit), want: truncated8, wantOverflow: limit - 8},
-		{name: "one byte above", format: authorField, author: strings.Repeat("x", limit+1), wantError: true},
 		{name: "cumulative exact limit", format: `{{.Author}}{{.Author}}`, author: strings.Repeat("x", limit/2), want: truncated8, wantOverflow: limit - 8},
-		{name: "literal crosses cumulative limit", format: `{{.Author}}{{.Author}}x`, author: strings.Repeat("x", limit/2), wantError: true},
 		{name: "multibyte exact limit", format: authorField, author: strings.Repeat("é", limit/2), want: "ééééééé…", wantOverflow: limit/2 - 8},
-		{name: "bytes exceed limit but runes do not", format: `{{.Author}}x`, author: strings.Repeat("é", limit/2), wantError: true},
-		{name: "oversized literal", format: strings.Repeat("x", limit+1), wantError: true},
 		{name: "unexecuted text does not count", format: `{{if false}}` + strings.Repeat("x", limit+1) + `{{end}}ok`, want: "ok"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpl, err := Compile("limit", tc.format, "")
+			raw, err := mustCompile(t, "limit", tc.format, "").Execute(entry{Author: tc.author})
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("Execute: %v", err)
 			}
 			// The byte cap applies before any rune limit (here a stand-in
 			// 8-rune clamp applied to the raw output).
-			raw, err := tmpl.Execute(entry{Author: tc.author})
-			if tc.wantError {
-				if err == nil || !strings.Contains(err.Error(), "template output exceeds") || raw != "" {
-					t.Fatalf("render returned %d bytes, err=%v; want output-limit error and no partial output", len(raw), err)
-				}
-				return
-			}
 			got, overflow := discord.Truncate(raw, 8)
-			if err != nil || got != tc.want || overflow != tc.wantOverflow {
-				t.Fatalf("render = %q, overflow=%d, err=%v; want %q, overflow=%d", got, overflow, err, tc.want, tc.wantOverflow)
+			if got != tc.want {
+				t.Fatalf("render = %q; want %q", got, tc.want)
 			}
+			if overflow != tc.wantOverflow {
+				t.Fatalf("overflow = %d; want %d", overflow, tc.wantOverflow)
+			}
+		})
+	}
+}
+
+func TestExecute_OutputByteBoundariesExceeded(t *testing.T) {
+	const limit = outputLimit
+	for _, tc := range []struct {
+		name, format, author string
+	}{
+		{name: "one byte above", format: authorField, author: strings.Repeat("x", limit+1)},
+		{name: "literal crosses cumulative limit", format: `{{.Author}}{{.Author}}x`, author: strings.Repeat("x", limit/2)},
+		{name: "bytes exceed limit but runes do not", format: `{{.Author}}x`, author: strings.Repeat("é", limit/2)},
+		{name: "oversized literal", format: strings.Repeat("x", limit+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := mustCompile(t, "limit", tc.format, "")
+			assertFailsWith(t, tmpl, entry{Author: tc.author}, "template output exceeds")
 		})
 	}
 }
@@ -322,14 +352,8 @@ func TestExecute_OutputByteBoundaries(t *testing.T) {
 func TestExecute_OutputLimit(t *testing.T) {
 	// A single large value passes through untruncated by the helpers, so only
 	// the output cap stops it.
-	tmpl, err := Compile("t", `{{.Title}}{{.Title}}`, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = tmpl.Execute(entry{Title: strings.Repeat("x", maxTemplateOutputBytes/2+1)})
-	if err == nil || !strings.Contains(err.Error(), "template output exceeds") {
-		t.Fatalf("expected output limit error, got %v", err)
-	}
+	tmpl := mustCompile(t, "t", `{{.Title}}{{.Title}}`, "")
+	assertFailsWith(t, tmpl, entry{Title: strings.Repeat("x", maxTemplateOutputBytes/2+1)}, "template output exceeds")
 }
 
 func TestRejectUnboundedConstructs_UnparsedTemplateIsAccepted(t *testing.T) {
