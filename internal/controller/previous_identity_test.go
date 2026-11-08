@@ -91,11 +91,18 @@ func TestMigratePreviousIdentities(t *testing.T) {
 
 // migrationCases is the table behind TestMigratePreviousIdentities.
 func migrationCases() []migrationCase {
-	guid := func() rss.Entry { return changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID) }
+	return slices.Concat(guidMigrationCases(), linkMigrationCases(), leftAloneMigrationCases())
+}
+
+// guidMove is an entry whose GUID-derived ID moved from prevIDOld to prevIDNew.
+func guidMove() rss.Entry { return changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID) }
+
+// guidMigrationCases move GUID-derived identities.
+func guidMigrationCases() []migrationCase {
 	return []migrationCase{
 		{
 			name:      "guid moves the watermark and its dedup key",
-			entries:   []rss.Entry{guid()},
+			entries:   []rss.Entry{guidMove()},
 			watermark: prevIDOld,
 			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDNew,
@@ -103,7 +110,7 @@ func migrationCases() []migrationCase {
 		},
 		{
 			name:      "a watermark that names another entry is untouched",
-			entries:   []rss.Entry{guid()},
+			entries:   []rss.Entry{guidMove()},
 			watermark: prevIDOther,
 			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
 			wantMark:  prevIDOther,
@@ -111,12 +118,24 @@ func migrationCases() []migrationCase {
 		},
 		{
 			name:      "an existing key for the new identity is not overwritten",
-			entries:   []rss.Entry{guid()},
+			entries:   []rss.Entry{guidMove()},
 			watermark: prevIDOld,
 			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDNew): prevSentLater},
 			wantMark:  prevIDNew,
 			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentLater},
 		},
+		{
+			name:      "no recorded sends is fine",
+			entries:   []rss.Entry{guidMove()},
+			watermark: prevIDOld,
+			wantMark:  prevIDNew,
+		},
+	}
+}
+
+// linkMigrationCases move link-derived identities and their stripped keys.
+func linkMigrationCases() []migrationCase {
+	return []migrationCase{
 		{
 			name:      "link to link moves the stripped key too",
 			entries:   []rss.Entry{changedID(prevLinkNew, rss.IDFromLink, prevLinkOld, rss.IDFromLink)},
@@ -154,6 +173,12 @@ func migrationCases() []migrationCase {
 			wantMark:  prevIDNew,
 			wantSent:  map[string]metav1.Time{hashIdentity(prevIDNew): prevSentAt},
 		},
+	}
+}
+
+// leftAloneMigrationCases are unchanged or ambiguous, so nothing moves.
+func leftAloneMigrationCases() []migrationCase {
+	return []migrationCase{
 		{
 			name:      "an entry whose identity did not change is untouched",
 			entries:   []rss.Entry{{ID: prevIDNew, PreviousID: prevIDNew}},
@@ -172,7 +197,7 @@ func migrationCases() []migrationCase {
 		},
 		{
 			name:      "an old identity two entries share is left alone",
-			entries:   []rss.Entry{guid(), changedID(prevIDOther, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)},
+			entries:   []rss.Entry{guidMove(), changedID(prevIDOther, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)},
 			watermark: prevIDOld,
 			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDOld,
@@ -180,7 +205,7 @@ func migrationCases() []migrationCase {
 		},
 		{
 			name:      "an old identity that is another entry's current one is left alone",
-			entries:   []rss.Entry{guid(), {ID: prevIDOld}},
+			entries:   []rss.Entry{guidMove(), {ID: prevIDOld}},
 			watermark: prevIDOld,
 			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt},
 			wantMark:  prevIDOld,
@@ -196,12 +221,6 @@ func migrationCases() []migrationCase {
 			sent:      map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
 			wantMark:  prevIDOld,
 			wantSent:  map[string]metav1.Time{hashIdentity(prevIDOld): prevSentAt, hashIdentity(prevIDOther): prevSentLater},
-		},
-		{
-			name:      "no recorded sends is fine",
-			entries:   []rss.Entry{guid()},
-			watermark: prevIDOld,
-			wantMark:  prevIDNew,
 		},
 	}
 }
