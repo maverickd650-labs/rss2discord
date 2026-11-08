@@ -98,13 +98,19 @@ func (tc summaryCase) checkEmission(t *testing.T, warning string, emit bool, wan
 	}
 }
 
-// requireCondition asserts the named condition has the wanted status and
-// reason, and returns it (nil when absent).
-func requireCondition(t *testing.T, fg *v1beta1.FeedGroup, condType string, status metav1.ConditionStatus, reason string) *metav1.Condition {
+// wantCondition is the status and reason a condition is expected to carry.
+type wantCondition struct {
+	status metav1.ConditionStatus
+	reason string
+}
+
+// requireCondition asserts the named condition is as wanted, and returns it
+// (nil when absent).
+func requireCondition(t *testing.T, fg *v1beta1.FeedGroup, condType string, want wantCondition) *metav1.Condition {
 	t.Helper()
 	c := apimeta.FindStatusCondition(fg.Status.Conditions, condType)
-	if c == nil || c.Status != status || c.Reason != reason {
-		t.Errorf("%s = %+v, want status %s reason %s", condType, c, status, reason)
+	if c == nil || c.Status != want.status || c.Reason != want.reason {
+		t.Errorf("%s = %+v, want status %s reason %s", condType, c, want.status, want.reason)
 	}
 	return c
 }
@@ -234,8 +240,8 @@ func TestSummarizeGroup(t *testing.T) {
 			warning, emit := summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
 
 			tc.checkEmission(t, warning, emit, wantMessage)
-			ready := requireCondition(t, fg, v1beta1.ConditionTypeReady, tc.wantReady, tc.wantReadyWhy)
-			requireCondition(t, fg, v1beta1.ConditionTypeFeedReachable, tc.wantReachable, tc.wantReachWhy)
+			ready := requireCondition(t, fg, v1beta1.ConditionTypeReady, wantCondition{tc.wantReady, tc.wantReadyWhy})
+			requireCondition(t, fg, v1beta1.ConditionTypeFeedReachable, wantCondition{tc.wantReachable, tc.wantReachWhy})
 			if ready != nil && ready.ObservedGeneration != fg.Generation {
 				t.Errorf("Ready.ObservedGeneration = %d, want %d", ready.ObservedGeneration, fg.Generation)
 			}
