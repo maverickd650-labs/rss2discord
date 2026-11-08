@@ -20,6 +20,7 @@ import (
 	"cmp"
 	"encoding/xml"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -140,15 +141,21 @@ func (c *atomLinks) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	if err := d.DecodeElement(&l, &start); err != nil {
 		return err
 	}
-	hasAlternate, hasEnclosure := false, false
-	for _, kept := range *c {
-		hasAlternate = hasAlternate || kept.isAlternate()
-		hasEnclosure = hasEnclosure || kept.isImageEnclosure()
-	}
-	if len(*c) == 0 || (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure()) {
+	if c.retains(l) {
 		*c = append(*c, l)
 	}
 	return nil
+}
+
+// retains reports whether l is worth keeping beside the links already kept: it
+// is the first link, or the first alternate, or the first image enclosure.
+func (c atomLinks) retains(l atomLink) bool {
+	if len(c) == 0 {
+		return true
+	}
+	hasAlternate := slices.ContainsFunc(c, atomLink.isAlternate)
+	hasEnclosure := slices.ContainsFunc(c, atomLink.isImageEnclosure)
+	return (!hasAlternate && l.isAlternate()) || (!hasEnclosure && l.isImageEnclosure())
 }
 
 // primaryLink returns the entry's main article link: the "alternate" rel,
@@ -254,6 +261,18 @@ type atomIdentityFields struct {
 	image     string
 }
 
+// atomIdentityReading is one vocabulary's reading of the elements an Atom
+// entry's identity is derived from: its id, dates and links.
+type atomIdentityReading struct {
+	ID, Updated, Published string
+	Links                  atomLinks
+}
+
+// reading is the entry's own reading of its identity elements.
+func (item atomItem) reading() atomIdentityReading {
+	return atomIdentityReading{ID: item.ID, Updated: item.Updated, Published: item.Published, Links: item.Links}
+}
+
 // identityFields derives an entry's identity fields from one reading of its
 // id, dates and links, resolved against base (the entry's effective
 // xml:base). The title and Media RSS elements are shared by every reading: an
@@ -261,53 +280,56 @@ type atomIdentityFields struct {
 // links differ with the vocabulary. Published falls back to Updated when it
 // is missing or invalid; the image falls back from an enclosure link to Media
 // RSS (direct thumbnail, then the group), resolved against base.
-func (item atomItem) identityFields(base, id, updated, published string, links atomLinks) atomIdentityFields {
+func (item atomItem) identityFields(base string, r atomIdentityReading) atomIdentityFields {
 	var f atomIdentityFields
-	f.link = resolveAtomURL(base, primaryLink(links))
-	f.id, f.idSource = pickIdentity(id, f.link, atomText(item.Title))
+	f.link = resolveAtomURL(base, primaryLink(r.Links))
+	f.id, f.idSource = pickIdentity(r.ID, f.link, atomText(item.Title))
 
-	f.published, _ = parseTime(published)
+	f.published, _ = parseTime(r.Published)
 	if f.published.IsZero() {
-		f.published, _ = parseTime(updated)
+		f.published, _ = parseTime(r.Updated)
 	}
 
-	image := cmp.Or(enclosureImage(links), mediaImage(item.MediaThumbnail, nil, item.MediaGroup))
+	image := cmp.Or(enclosureImage(r.Links), mediaImage(item.MediaThumbnail, nil, item.MediaGroup))
 	f.image = strings.TrimSpace(resolveAtomURL(base, image))
 	return f
+}
+
+// item is the vocabulary-neutral form of an Atom 1.0 entry.
+func (e atomEntry) item() atomItem {
+	return atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
+}
+
+// item is the vocabulary-neutral form of a loosely read Atom entry.
+func (e looseAtomEntry) item() atomItem {
+	return atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
+}
+
+// atomItemsOf converts one vocabulary's entries into atomItems, in order.
+func atomItemsOf[E interface{ item() atomItem }](entries []E) []atomItem {
+	items := make([]atomItem, len(entries))
+	for i, e := range entries {
+		items[i] = e.item()
+	}
+	return items
 }
 
 // decodeAtomItems decodes data into its atomItems, feed title, and feedBase
 // attribute, selecting strict Atom 1.0 or loose Atom based on whether rootSpace
 // matches atomNamespace.
 func decodeAtomItems(data []byte, rootSpace string) ([]atomItem, nsTexts, string, error) {
-	var (
-		items        []atomItem
-		title        nsTexts
-		feedBaseAttr string
-	)
 	if rootSpace == atomNamespace {
 		var feed atomFeed
 		if err := unmarshalXML(data, &feed); err != nil {
 			return nil, nil, "", err
 		}
-		items = make([]atomItem, len(feed.Entries))
-		for i, e := range feed.Entries {
-			items[i] = atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
-		}
-		title, feedBaseAttr = feed.Title, feed.Base
-	} else {
-		var feed looseAtomFeed
-		if err := unmarshalXML(data, &feed); err != nil {
-			return nil, nil, "", err
-		}
-		items = make([]atomItem, len(feed.Entries))
-		for i, e := range feed.Entries {
-			items[i] = atomItem{atomEntryCore: e.atomEntryCore, ID: e.ID, Links: e.Links, Updated: e.Updated, Published: e.Published}
-		}
-		title, feedBaseAttr = feed.Title, feed.Base
+		return atomItemsOf(feed.Entries), feed.Title, strings.TrimSpace(feed.Base), nil
 	}
-
-	return items, title, strings.TrimSpace(feedBaseAttr), nil
+	var feed looseAtomFeed
+	if err := unmarshalXML(data, &feed); err != nil {
+		return nil, nil, "", err
+	}
+	return atomItemsOf(feed.Entries), feed.Title, strings.TrimSpace(feed.Base), nil
 }
 
 // atomItemsToEntries converts Atom items in document order into Entries.
@@ -316,7 +338,7 @@ func atomItemsToEntries(items []atomItem, feedBase string) []Entry {
 	for i, item := range items {
 		base := item.effectiveBase(feedBase)
 
-		current := item.identityFields(base, item.ID, item.Updated, item.Published, item.Links)
+		current := item.identityFields(base, item.reading())
 
 		// Content is exposed even when it doubles as Description (no
 		// summary), so templates can use {{.Content}} regardless of which
