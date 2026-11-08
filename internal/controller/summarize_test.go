@@ -18,6 +18,7 @@ package controller
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -44,6 +45,84 @@ func feedWithReachable(url string, status metav1.ConditionStatus, reason, lastEr
 	return fs
 }
 
+// summaryCase is one TestSummarizeGroup scenario: the group's inputs and the
+// Ready/FeedReachable conditions and InvalidInterval Event it must produce.
+type summaryCase struct {
+	name          string
+	interval      string
+	feeds         []v1beta1.FeedStatus
+	webhookErr    error
+	priorReady    *metav1.Condition
+	wantReady     metav1.ConditionStatus
+	wantReadyWhy  string
+	wantReachable metav1.ConditionStatus
+	wantReachWhy  string
+	wantEmit      bool
+	wantWarning   bool
+}
+
+// group builds the FeedGroup under test and the InvalidInterval message its
+// spec produces (empty for a valid interval), which a prior Ready condition
+// without a message of its own is given.
+func (tc summaryCase) group() (fg *v1beta1.FeedGroup, wantMessage string) {
+	fg = &v1beta1.FeedGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "fg", Generation: 3},
+		Spec:       v1beta1.FeedGroupSpec{Interval: tc.interval},
+		Status:     v1beta1.FeedGroupStatus{Feeds: tc.feeds},
+	}
+	if err := cadenceOf(&fg.Spec).err; err != nil {
+		wantMessage = err.Error()
+	}
+	if tc.priorReady != nil {
+		prior := *tc.priorReady
+		if prior.Message == "" {
+			prior.Message = wantMessage
+		}
+		fg.Status.Conditions = []metav1.Condition{prior}
+	}
+	return fg, wantMessage
+}
+
+// checkEmission asserts the InvalidInterval Event decision and its warning.
+func (tc summaryCase) checkEmission(t *testing.T, warning string, emit bool, wantMessage string) {
+	t.Helper()
+	if emit != tc.wantEmit {
+		t.Errorf("emit = %v, want %v", emit, tc.wantEmit)
+	}
+	wantWarning := ""
+	if tc.wantWarning {
+		wantWarning = wantMessage
+	}
+	if warning != wantWarning {
+		t.Errorf("warning = %q, want %q", warning, wantWarning)
+	}
+}
+
+// requireCondition asserts the named condition has the wanted status and
+// reason, and returns it (nil when absent).
+func requireCondition(t *testing.T, fg *v1beta1.FeedGroup, condType string, status metav1.ConditionStatus, reason string) *metav1.Condition {
+	t.Helper()
+	c := apimeta.FindStatusCondition(fg.Status.Conditions, condType)
+	if c == nil || c.Status != status || c.Reason != reason {
+		t.Errorf("%s = %+v, want status %s reason %s", condType, c, status, reason)
+	}
+	return c
+}
+
+// checkSummarizeIsIdempotent asserts that summarizing an unchanged status again
+// is a no-op: same conditions, and never a repeat Event.
+func checkSummarizeIsIdempotent(t *testing.T, fg *v1beta1.FeedGroup, webhookErr error) {
+	t.Helper()
+	before := fg.Status.DeepCopy()
+	warning, emit := summarizeGroup(fg, cadenceOf(&fg.Spec), webhookErr)
+	if emit || warning != "" {
+		t.Errorf("second summarize emitted %q (emit=%v), want none", warning, emit)
+	}
+	if !conditionsEqual(before.Conditions, fg.Status.Conditions) {
+		t.Errorf("second summarize changed conditions:\nbefore %+v\nafter  %+v", before.Conditions, fg.Status.Conditions)
+	}
+}
+
 // TestSummarizeGroup covers the pure group summary: which Ready and
 // FeedReachable conditions a status produces, which of them wins when several
 // problems coexist, and when the InvalidInterval Event fires. No reconciler or
@@ -52,20 +131,7 @@ func TestSummarizeGroup(t *testing.T) {
 	const badInterval = "9999999999999h"
 	webhookErr := errors.New("secret not found")
 
-	tests := []struct {
-		name string
-		// in
-		interval      string
-		feeds         []v1beta1.FeedStatus
-		webhookErr    error
-		priorReady    *metav1.Condition
-		wantReady     metav1.ConditionStatus
-		wantReadyWhy  string
-		wantReachable metav1.ConditionStatus
-		wantReachWhy  string
-		wantEmit      bool
-		wantWarning   bool
-	}{
+	tests := []summaryCase{
 		{
 			name:          "healthy group",
 			feeds:         []v1beta1.FeedStatus{feedWithReachable("a", metav1.ConditionTrue, "FetchSucceeded", "")},
@@ -163,72 +229,35 @@ func TestSummarizeGroup(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fg := &v1beta1.FeedGroup{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "fg", Generation: 3},
-				Spec:       v1beta1.FeedGroupSpec{Interval: tc.interval},
-				Status:     v1beta1.FeedGroupStatus{Feeds: tc.feeds},
-			}
-			wantMessage := ""
-			if err := cadenceOf(&fg.Spec).err; err != nil {
-				wantMessage = err.Error()
-			}
-			if tc.priorReady != nil {
-				prior := *tc.priorReady
-				if prior.Message == "" {
-					prior.Message = wantMessage
-				}
-				fg.Status.Conditions = []metav1.Condition{prior}
-			}
+			fg, wantMessage := tc.group()
 
 			warning, emit := summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
 
-			if emit != tc.wantEmit {
-				t.Errorf("emit = %v, want %v", emit, tc.wantEmit)
-			}
-			if tc.wantWarning && warning != wantMessage {
-				t.Errorf("warning = %q, want %q", warning, wantMessage)
-			}
-			if !tc.wantWarning && warning != "" {
-				t.Errorf("warning = %q, want empty", warning)
-			}
-
-			ready := apimeta.FindStatusCondition(fg.Status.Conditions, v1beta1.ConditionTypeReady)
-			if ready == nil || ready.Status != tc.wantReady || ready.Reason != tc.wantReadyWhy {
-				t.Errorf("Ready = %+v, want status %s reason %s", ready, tc.wantReady, tc.wantReadyWhy)
-			}
-			reachable := apimeta.FindStatusCondition(fg.Status.Conditions, v1beta1.ConditionTypeFeedReachable)
-			if reachable == nil || reachable.Status != tc.wantReachable || reachable.Reason != tc.wantReachWhy {
-				t.Errorf("FeedReachable = %+v, want status %s reason %s", reachable, tc.wantReachable, tc.wantReachWhy)
-			}
+			tc.checkEmission(t, warning, emit, wantMessage)
+			ready := requireCondition(t, fg, v1beta1.ConditionTypeReady, tc.wantReady, tc.wantReadyWhy)
+			requireCondition(t, fg, v1beta1.ConditionTypeFeedReachable, tc.wantReachable, tc.wantReachWhy)
 			if ready != nil && ready.ObservedGeneration != fg.Generation {
 				t.Errorf("Ready.ObservedGeneration = %d, want %d", ready.ObservedGeneration, fg.Generation)
 			}
 
-			// Summarizing an unchanged status again is a no-op: same
-			// conditions, and never a repeat Event.
-			before := fg.Status.DeepCopy()
-			warning, emit = summarizeGroup(fg, cadenceOf(&fg.Spec), tc.webhookErr)
-			if emit || warning != "" {
-				t.Errorf("second summarize emitted %q (emit=%v), want none", warning, emit)
-			}
-			if !conditionsEqual(before.Conditions, fg.Status.Conditions) {
-				t.Errorf("second summarize changed conditions:\nbefore %+v\nafter  %+v", before.Conditions, fg.Status.Conditions)
-			}
+			checkSummarizeIsIdempotent(t, fg, tc.webhookErr)
 		})
 	}
 }
 
+// conditionKey is the part of a condition the summary is responsible for.
+type conditionKey struct {
+	Type, Reason, Message string
+	Status                metav1.ConditionStatus
+	ObservedGeneration    int64
+}
+
+func keyOf(c metav1.Condition) conditionKey {
+	return conditionKey{c.Type, c.Reason, c.Message, c.Status, c.ObservedGeneration}
+}
+
 func conditionsEqual(a, b []metav1.Condition) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Type != b[i].Type || a[i].Status != b[i].Status || a[i].Reason != b[i].Reason ||
-			a[i].Message != b[i].Message || a[i].ObservedGeneration != b[i].ObservedGeneration {
-			return false
-		}
-	}
-	return true
+	return slices.EqualFunc(a, b, func(x, y metav1.Condition) bool { return keyOf(x) == keyOf(y) })
 }
 
 // TestSetReadyCondition_InvalidIntervalPrecedence asserts InvalidInterval
