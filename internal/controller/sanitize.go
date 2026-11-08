@@ -20,6 +20,7 @@ import (
 	"io"
 	neturl "net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -56,10 +57,15 @@ const scriptLookaheadBudgetFactor = 4
 // those out before they ever reach a user's client.
 func httpURLOrEmpty(rawURL string) string {
 	parsed, err := neturl.Parse(rawURL)
-	if err != nil || (parsed.Scheme != schemeHTTP && parsed.Scheme != schemeHTTPS) {
+	if err != nil || !isHTTPScheme(parsed.Scheme) {
 		return ""
 	}
 	return rawURL
+}
+
+// isHTTPScheme reports whether scheme is http or https.
+func isHTTPScheme(scheme string) bool {
+	return scheme == schemeHTTP || scheme == schemeHTTPS
 }
 
 // blankLineRegex collapses runs of 3+ newlines (left behind once tags are
@@ -90,87 +96,125 @@ var continueReadingTextRegex = regexp.MustCompile(`(?i)continue reading\s*(\.{2,
 func stripHTML(input string) string {
 	input = continueReadingLinkRegex.ReplaceAllString(input, "")
 
-	var sb strings.Builder
-	sb.Grow(len(input))
-
-	var skipUntil string  // qualified name; non-empty while inside a <script>/<style> element
-	var skipDepth int     // open skipUntil elements; the body ends when it returns to 0
-	var skipPrefixed bool // the outer script/style element has a namespace prefix
-	lookahead := rawTextEndTagLookahead{input: input}
-	z := html.NewTokenizer(strings.NewReader(input))
-	inputOffset := 0
+	st := &htmlStripper{
+		lookahead: rawTextEndTagLookahead{input: input},
+		z:         html.NewTokenizer(strings.NewReader(input)),
+	}
+	st.sb.Grow(len(input))
 	for {
-		tokenType := z.Next()
-		inputOffset += len(z.Raw())
+		tokenType := st.z.Next()
+		st.offset += len(st.z.Raw())
 		switch tokenType {
 		case html.ErrorToken:
-			return finishStrippedText(sb.String())
+			return finishStrippedText(st.sb.String())
 		case html.TextToken:
-			if skipUntil == "" {
-				sb.Write(z.Text())
+			if !st.skip.active() {
+				st.sb.Write(st.z.Text())
 			}
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
-			name, _ := z.TagName()
-			tag := string(name)
-			localTag := tag
-			// Atom XHTML may use prefixes inherited from the feed element.
-			if _, local, ok := strings.Cut(tag, ":"); ok {
-				localTag = local
-			}
-			// A self-closing <script/> or <style/> has no body, but the
-			// tokenizer still enters raw-text mode after it and would swallow
-			// the following markup (including an outer end tag) as text.
-			if tokenType == html.SelfClosingTagToken {
-				z.NextIsNotRawText()
-			}
-			switch {
-			case skipUntil != "":
-				// A nested raw-text/RCDATA element can contain the outer
-				// qualified end tag as text. Let the tokenizer consume it
-				// normally when it has a matching end tag; for an unclosed
-				// element (or plaintext), keep the outer boundary visible.
-				if skipPrefixed && tokenType == html.StartTagToken &&
-					isRawTextElement(tag) && !lookahead.hasEndTagAt(inputOffset, tag) {
-					z.NextIsNotRawText()
-				}
-				// Match the qualified name: </script> must not close <x:script>.
-				// Count nested starts of the same name so an inner end tag
-				// doesn't expose the rest of the outer body.
-				if tag == skipUntil {
-					switch tokenType {
-					case html.StartTagToken:
-						skipDepth++
-					case html.EndTagToken:
-						if skipDepth--; skipDepth == 0 {
-							skipUntil = ""
-							skipPrefixed = false
-						}
-					}
-				}
-			case localTag == scriptTagName || localTag == styleTagName:
-				// Keep the full tag name so only its matching qualified end
-				// tag can terminate a prefixed Atom XHTML body.
-				if tokenType == html.StartTagToken {
-					skipUntil = tag
-					skipDepth = 1
-					skipPrefixed = tag != localTag
-				}
-			case isBlockTag(localTag):
-				sb.WriteByte('\n')
-			}
+			st.tag(tokenType)
 		}
 	}
+}
+
+// skipState tracks a script/style element whose body stripHTML is dropping.
+type skipState struct {
+	until    string // qualified name; non-empty while inside a <script>/<style> element
+	depth    int    // open until elements; the body ends when it returns to 0
+	prefixed bool   // the outer script/style element has a namespace prefix
+}
+
+func (s *skipState) active() bool { return s.until != "" }
+
+// begin starts skipping the body of the script/style start tag. It keeps the
+// full tag name so only its matching qualified end tag can terminate a
+// prefixed Atom XHTML body.
+func (s *skipState) begin(tag, localTag string) {
+	s.until = tag
+	s.depth = 1
+	s.prefixed = tag != localTag
+}
+
+// observe counts nested starts of the same qualified name, so an inner end tag
+// doesn't expose the rest of the outer body, and ends the skip when the outer
+// end tag arrives. </script> must not close <x:script>, hence the exact match.
+func (s *skipState) observe(tag string, tokenType html.TokenType) {
+	if tag != s.until {
+		return
+	}
+	switch tokenType {
+	case html.StartTagToken:
+		s.depth++
+	case html.EndTagToken:
+		if s.depth--; s.depth == 0 {
+			*s = skipState{}
+		}
+	}
+}
+
+// htmlStripper is the state of one stripHTML pass over the tokenizer.
+type htmlStripper struct {
+	sb        strings.Builder
+	skip      skipState
+	lookahead rawTextEndTagLookahead
+	z         *html.Tokenizer
+	offset    int // bytes of input the tokenizer has consumed
+}
+
+// tag handles one start, self-closing or end tag token.
+func (st *htmlStripper) tag(tokenType html.TokenType) {
+	name, _ := st.z.TagName()
+	tag := string(name)
+	// Atom XHTML may use prefixes inherited from the feed element.
+	_, localTag, ok := strings.Cut(tag, ":")
+	if !ok {
+		localTag = tag
+	}
+	// A self-closing <script/> or <style/> has no body, but the
+	// tokenizer still enters raw-text mode after it and would swallow
+	// the following markup (including an outer end tag) as text.
+	if tokenType == html.SelfClosingTagToken {
+		st.z.NextIsNotRawText()
+	}
+	switch {
+	case st.skip.active():
+		st.skipTag(tag, tokenType)
+	case isSkippedElement(localTag):
+		if tokenType == html.StartTagToken {
+			st.skip.begin(tag, localTag)
+		}
+	case isBlockTag(localTag):
+		st.sb.WriteByte('\n')
+	}
+}
+
+// skipTag handles a tag seen while dropping a script/style body.
+func (st *htmlStripper) skipTag(tag string, tokenType html.TokenType) {
+	// A nested raw-text/RCDATA element can contain the outer
+	// qualified end tag as text. Let the tokenizer consume it
+	// normally when it has a matching end tag; for an unclosed
+	// element (or plaintext), keep the outer boundary visible.
+	if st.skip.prefixed && tokenType == html.StartTagToken &&
+		isRawTextElement(tag) && !st.lookahead.hasEndTagAt(st.offset, tag) {
+		st.z.NextIsNotRawText()
+	}
+	st.skip.observe(tag, tokenType)
+}
+
+// isSkippedElement reports whether stripHTML drops the body of the element.
+func isSkippedElement(localTag string) bool {
+	return localTag == scriptTagName || localTag == styleTagName
 }
 
 // isRawTextElement reports whether the HTML tokenizer treats the next
 // token after a start tag as raw text or RCDATA.
 func isRawTextElement(tag string) bool {
-	switch tag {
-	case "iframe", "noembed", "noframes", "noscript", plaintextTagName,
-		scriptTagName, styleTagName, textareaTagName, "title", "xmp":
-		return true
-	}
-	return false
+	return slices.Contains(rawTextElements, tag)
+}
+
+var rawTextElements = []string{
+	"iframe", "noembed", "noframes", "noscript", plaintextTagName,
+	scriptTagName, styleTagName, textareaTagName, "title", "xmp",
 }
 
 // rawTextEndTagLookahead caches suffixes that contain no matching end tag.
@@ -194,28 +238,44 @@ type rawTextEndTagLookahead struct {
 // hasEndTagAt reports whether input after offset contains a matching end tag
 // for tag according to the HTML tokenizer. Plaintext has no matching end tag.
 func (l *rawTextEndTagLookahead) hasEndTagAt(offset int, tag string) bool {
-	if tag == plaintextTagName {
-		return false
-	}
-	if _, knownMissing := l.noEndTags[tag]; knownMissing {
+	if tag == plaintextTagName || l.knownMissing(tag) {
 		return false
 	}
 	suffix := l.input[offset:]
-	if tag == scriptTagName && l.scriptMissBytes+len(suffix) > scriptLookaheadBudgetFactor*len(l.input) {
+	if l.overBudget(tag, len(suffix)) {
 		return false
 	}
 	if hasRawTextEndTag(strings.NewReader(suffix), tag) {
 		return true
 	}
-	if tag == scriptTagName {
-		l.scriptMissBytes += len(suffix)
-	} else {
-		if l.noEndTags == nil {
-			l.noEndTags = make(map[string]struct{})
-		}
-		l.noEndTags[tag] = struct{}{}
-	}
+	l.recordMiss(tag, len(suffix))
 	return false
+}
+
+// knownMissing reports whether an earlier scan found no end tag for tag.
+func (l *rawTextEndTagLookahead) knownMissing(tag string) bool {
+	_, missing := l.noEndTags[tag]
+	return missing
+}
+
+// overBudget reports whether scanning a suffix of the given length for a
+// script end tag would exceed the script miss budget.
+func (l *rawTextEndTagLookahead) overBudget(tag string, suffixLen int) bool {
+	return tag == scriptTagName &&
+		l.scriptMissBytes+suffixLen > scriptLookaheadBudgetFactor*len(l.input)
+}
+
+// recordMiss remembers a scan that found no end tag: script misses are charged
+// to the budget, any other tag is cached.
+func (l *rawTextEndTagLookahead) recordMiss(tag string, suffixLen int) {
+	if tag == scriptTagName {
+		l.scriptMissBytes += suffixLen
+		return
+	}
+	if l.noEndTags == nil {
+		l.noEndTags = make(map[string]struct{})
+	}
+	l.noEndTags[tag] = struct{}{}
 }
 
 // hasRawTextEndTag uses the HTML tokenizer to preserve its matching end-tag
@@ -240,12 +300,10 @@ func hasRawTextEndTag(input io.Reader, tag string) bool {
 // isBlockTag reports whether tag delimits block-level content (or a line
 // break), which stripHTML converts to a newline.
 func isBlockTag(tag string) bool {
-	switch tag {
-	case "p", "li", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6":
-		return true
-	}
-	return false
+	return slices.Contains(blockTags, tag)
 }
+
+var blockTags = []string{"p", "li", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6"}
 
 // finishStrippedText normalizes whitespace in text left after tag removal:
 // trims each line, collapses runs of blank lines, and drops a trailing
