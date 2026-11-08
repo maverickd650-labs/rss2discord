@@ -60,16 +60,39 @@ func indexOfEntry(entries []rss.Entry, entry rss.Entry) int {
 	return slices.IndexFunc(entries, func(e rss.Entry) bool { return refOf(e) == refOf(entry) })
 }
 
+// migrationCase is one scenario for TestMigratePreviousIdentities: the entries
+// and stored state going in, the watermark and dedup keys expected out.
+type migrationCase struct {
+	name      string
+	entries   []rss.Entry
+	watermark string
+	sent      map[string]metav1.Time
+	wantMark  string
+	wantSent  map[string]metav1.Time
+}
+
 func TestMigratePreviousIdentities(t *testing.T) {
+	for _, tc := range migrationCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &v1beta1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: maps.Clone(tc.sent)}
+			// Check both the initial migration and its idempotent second pass.
+			for pass := range 2 {
+				newDeliveryLedger(fs, tc.entries)
+				if fs.LastSeenEntry != tc.wantMark {
+					t.Errorf("pass %d: LastSeenEntry = %q, want %q", pass+1, fs.LastSeenEntry, tc.wantMark)
+				}
+				if !maps.Equal(fs.LastSent, tc.wantSent) {
+					t.Errorf("pass %d: LastSent = %v, want %v", pass+1, fs.LastSent, tc.wantSent)
+				}
+			}
+		})
+	}
+}
+
+// migrationCases is the table behind TestMigratePreviousIdentities.
+func migrationCases() []migrationCase {
 	guid := func() rss.Entry { return changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID) }
-	for _, tc := range []struct {
-		name      string
-		entries   []rss.Entry
-		watermark string
-		sent      map[string]metav1.Time
-		wantMark  string
-		wantSent  map[string]metav1.Time
-	}{
+	return []migrationCase{
 		{
 			name:      "guid moves the watermark and its dedup key",
 			entries:   []rss.Entry{guid()},
@@ -180,20 +203,6 @@ func TestMigratePreviousIdentities(t *testing.T) {
 			watermark: prevIDOld,
 			wantMark:  prevIDNew,
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fs := &v1beta1.FeedStatus{LastSeenEntry: tc.watermark, LastSent: maps.Clone(tc.sent)}
-			// Check both the initial migration and its idempotent second pass.
-			for pass := range 2 {
-				newDeliveryLedger(fs, tc.entries)
-				if fs.LastSeenEntry != tc.wantMark {
-					t.Errorf("pass %d: LastSeenEntry = %q, want %q", pass+1, fs.LastSeenEntry, tc.wantMark)
-				}
-				if !maps.Equal(fs.LastSent, tc.wantSent) {
-					t.Errorf("pass %d: LastSent = %v, want %v", pass+1, fs.LastSent, tc.wantSent)
-				}
-			}
-		})
 	}
 }
 
@@ -253,6 +262,16 @@ func TestMigratePreviousIdentities_SharedStrippedTargetNotRecorded(t *testing.T)
 	}
 }
 
+// movedKeyAsExpected reports whether a moved entry's LastSent lookup (got,
+// present) matches the expectation: absent when wantPresent is false, and
+// present with the original send time when it is true.
+func movedKeyAsExpected(got metav1.Time, present, wantPresent bool) bool {
+	if present != wantPresent {
+		return false
+	}
+	return !present || got == prevSentAt
+}
+
 // When pruning has left a moved entry's send recorded only under its old
 // stripped key and its new stripped identity is shared, that record falls back
 // to the entry's new key, so the entry is not sent again; but only when no
@@ -289,7 +308,7 @@ func TestMigratePreviousIdentities_SharedTargetFallsBackToEntryKey(t *testing.T)
 				t.Errorf("shared new stripped key recorded; LastSent = %v", fs.LastSent)
 			}
 			got, ok := fs.LastSent[computeEntryKey(moved)]
-			if ok != tc.wantMoved || (ok && got != prevSentAt) {
+			if !movedKeyAsExpected(got, ok, tc.wantMoved) {
 				t.Errorf("moved entry key = %q (present %v), want present %v at %q", got, ok, tc.wantMoved, prevSentAt)
 			}
 			if newDeliveryLedger(fs, []rss.Entry{sibling}).sent(sibling) {
