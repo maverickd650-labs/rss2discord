@@ -314,6 +314,8 @@ func (fr *feedRenderer) fillAttribution(embed *discord.Embed, entry displayEntry
 		return err
 	}
 	if name != "" {
+		// name is only non-blank when fr.authorName is set, which
+		// compileEmbedTemplates does only when spec.Author is non-nil.
 		embed.AuthorName = name
 		embed.AuthorURL = httpURLOrEmpty(spec.Author.URL)
 		embed.AuthorIconURL = httpURLOrEmpty(spec.Author.IconURL)
@@ -323,6 +325,7 @@ func (fr *feedRenderer) fillAttribution(embed *discord.Embed, entry displayEntry
 		return err
 	}
 	if text != "" {
+		// Likewise fr.footerText is set only when spec.Footer is non-nil.
 		embed.FooterText = text
 		embed.FooterIconURL = httpURLOrEmpty(spec.Footer.IconURL)
 	}
