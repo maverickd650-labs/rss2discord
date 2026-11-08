@@ -88,7 +88,7 @@ func applyPreviousIDs(entries []Entry, items []atomItem, feedBase string, prior 
 	}
 	for i, p := range prior {
 		current := entries[i]
-		read := items[i].identityFields(items[i].effectiveBase(feedBase), p.ID, p.Updated, p.Published, p.Links)
+		read := items[i].identityFields(items[i].effectiveBase(feedBase), atomIdentityReading(p))
 		previous := current
 		previous.ID, previous.IDSource = read.id, read.idSource
 		// A ContentID is also hashed from the date and the image, which
