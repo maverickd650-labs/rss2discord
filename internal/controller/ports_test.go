@@ -121,9 +121,8 @@ func (f *fakeFetcher) FetchEntries(_ context.Context, url string, validators rss
 
 // assertSampleCounts fails unless the group's request-duration histogram holds
 // exactly the wanted number of send and fetch observations.
-func assertSampleCounts(t *testing.T, ns, name string, send, fetch uint64) {
+func assertSampleCounts(t *testing.T, key seriesKey, send, fetch uint64) {
 	t.Helper()
-	key := groupKey(ns, name)
 	if got := histogramSampleCount(t, key, operationSend); got != send {
 		t.Fatalf("send sample count = %d, want %d", got, send)
 	}
@@ -159,10 +158,10 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 			if len(inner.sent) != 1 || inner.sent[0].Content != messageContent {
 				t.Fatalf("inner received %+v, want the one message passed in", inner.sent)
 			}
-			assertSampleCounts(t, ns, name, 1, 0)
+			assertSampleCounts(t, groupKey(ns, name), 1, 0)
 
 			_ = sender.SendMessage(t.Context(), discord.Message{})
-			assertSampleCounts(t, ns, name, 2, 0)
+			assertSampleCounts(t, groupKey(ns, name), 2, 0)
 		})
 	}
 }
@@ -204,7 +203,7 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 			if inner.gotURL != exampleFeedURL || inner.gotCache != validators {
 				t.Fatalf("inner called with (%q, %+v), want the arguments passed in", inner.gotURL, inner.gotCache)
 			}
-			assertSampleCounts(t, ns, name, 0, 1)
+			assertSampleCounts(t, groupKey(ns, name), 0, 1)
 		})
 	}
 }
