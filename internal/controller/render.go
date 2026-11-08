@@ -108,34 +108,52 @@ func newFeedRenderer(group *v1beta1.FeedGroup, feed *v1beta1.FeedSpec) (*feedRen
 
 	fr := &feedRenderer{group: group, feed: feed, message: resolveMessage(group, feed), filter: filter}
 	fr.mentions = mentionText(fr.message.Mentions)
-	var errs []error
-	compile := func(name, text, fallback string) *msgtemplate.Template {
-		tmpl, err := msgtemplate.Compile(name, text, fallback)
-		errs = append(errs, err)
-		return tmpl
-	}
-	if fr.message.Content != "" {
-		fr.content = compile("discordMessage", fr.message.Content, "")
-	}
-	if embed := fr.message.Embed; embed != nil {
-		fr.title = compile("discordEmbedTitle", embed.Title, defaultEmbedTitle)
-		fr.description = compile("discordEmbedDescription", embed.Description, defaultEmbedDescription)
-		if embed.Author != nil {
-			fr.authorName = compile("discordEmbedAuthorName", embed.Author.Name, "")
-		}
-		if embed.Footer != nil {
-			fr.footerText = compile("discordEmbedFooterText", embed.Footer.Text, "")
-		}
-	}
-	if feed.ForumPost != nil {
-		fr.threadName = compile("discordThreadName", feed.ForumPost.Name, "")
-	}
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
+	if err := fr.compileTemplates(); err != nil {
+		return nil, err
 	}
 	return fr, nil
+}
+
+// templateCompiler compiles templates in order and keeps only the first
+// error; once one has failed, later compiles are skipped and yield nil.
+type templateCompiler struct{ err error }
+
+func (c *templateCompiler) compile(name, text, fallback string) *msgtemplate.Template {
+	if c.err != nil {
+		return nil
+	}
+	tmpl, err := msgtemplate.Compile(name, text, fallback)
+	c.err = err
+	return tmpl
+}
+
+// compileTemplates compiles every template the message and the feed's forum
+// post use, returning the first error unwrapped.
+func (fr *feedRenderer) compileTemplates() error {
+	var c templateCompiler
+	if fr.message.Content != "" {
+		fr.content = c.compile("discordMessage", fr.message.Content, "")
+	}
+	if embed := fr.message.Embed; embed != nil {
+		fr.compileEmbedTemplates(&c, embed)
+	}
+	if fr.feed.ForumPost != nil {
+		fr.threadName = c.compile("discordThreadName", fr.feed.ForumPost.Name, "")
+	}
+	return c.err
+}
+
+// compileEmbedTemplates compiles the embed's title, description and, when
+// configured, author name and footer text.
+func (fr *feedRenderer) compileEmbedTemplates(c *templateCompiler, embed *v1beta1.EmbedSpec) {
+	fr.title = c.compile("discordEmbedTitle", embed.Title, defaultEmbedTitle)
+	fr.description = c.compile("discordEmbedDescription", embed.Description, defaultEmbedDescription)
+	if embed.Author != nil {
+		fr.authorName = c.compile("discordEmbedAuthorName", embed.Author.Name, "")
+	}
+	if embed.Footer != nil {
+		fr.footerText = c.compile("discordEmbedFooterText", embed.Footer.Text, "")
+	}
 }
 
 // mentionText is the ping text for m: each role as <@&id> and each user as
@@ -179,6 +197,20 @@ var errEmptyContent = errors.New("message template rendered empty content for th
 // entryDelivery.otherEntryRenders) don't add samples.
 func (fr *feedRenderer) build(raw rss.Entry) (discord.Message, int, error) {
 	entry := displayOf(raw)
+	msg := fr.baseMessage()
+	if err := fr.fillBody(&msg, entry); err != nil {
+		return discord.Message{}, 0, err
+	}
+	if err := fr.fillThread(&msg, entry); err != nil {
+		return discord.Message{}, 0, err
+	}
+	fitted, overflow := discord.Fit(msg)
+	return fitted, overflow, nil
+}
+
+// baseMessage is the entry-independent part of a message: branding, flags and
+// the mention allow-list.
+func (fr *feedRenderer) baseMessage() discord.Message {
 	msg := discord.Message{
 		Username:       cmp.Or(fr.feed.Username, fr.group.Spec.Username),
 		AvatarURL:      cmp.Or(fr.feed.AvatarURL, fr.group.Spec.AvatarURL),
@@ -188,44 +220,54 @@ func (fr *feedRenderer) build(raw rss.Entry) (discord.Message, int, error) {
 	if m := fr.message.Mentions; m != nil {
 		msg.MentionRoleIDs, msg.MentionUserIDs = m.RoleIDs, m.UserIDs
 	}
+	return msg
+}
 
+// fillBody renders entry's content and embed into msg. Without an embed, blank
+// content is errEmptyContent.
+func (fr *feedRenderer) fillBody(msg *discord.Message, entry displayEntry) error {
 	var content string
 	if fr.content != nil {
 		var err error
 		if content, err = renderTemplate(fr.content, entry); err != nil {
-			return discord.Message{}, 0, err
+			return err
 		}
 	}
-	if fr.message.Embed != nil {
+	if fr.message.Embed == nil {
+		if strings.TrimSpace(content) == "" {
+			return errEmptyContent
+		}
+	} else {
 		embed, err := fr.buildEmbed(entry)
 		if err != nil {
-			return discord.Message{}, 0, err
+			return err
 		}
 		msg.Embed = embed
-	} else if strings.TrimSpace(content) == "" {
-		return discord.Message{}, 0, errEmptyContent
 	}
 	msg.Content = joinNonBlank(fr.mentions, content)
+	return nil
+}
 
+// fillThread sets msg's thread target: an existing thread ID, or a rendered
+// forum post name with its tags. A blank forum post name is an error, as a
+// forum webhook rejects a post without a thread_name (the same reason as
+// blank content).
+func (fr *feedRenderer) fillThread(msg *discord.Message, entry displayEntry) error {
 	switch {
 	case fr.feed.Thread != nil:
 		msg.ThreadID = fr.feed.Thread.ID
 	case fr.threadName != nil:
 		threadName, err := renderTemplate(fr.threadName, entry)
 		if err != nil {
-			return discord.Message{}, 0, err
+			return err
 		}
-		// Without a thread_name a forum webhook rejects the post; fail as a
-		// render error for the same reason as blank content.
 		if strings.TrimSpace(threadName) == "" {
-			return discord.Message{}, 0, errors.New("forum post name template rendered empty for this entry")
+			return errors.New("forum post name template rendered empty for this entry")
 		}
 		msg.ThreadName = threadName
 		msg.AppliedTags = fr.feed.ForumPost.AppliedTagIDs
 	}
-
-	fitted, overflow := discord.Fit(msg)
-	return fitted, overflow, nil
+	return nil
 }
 
 // joinNonBlank joins the non-blank of mentions and content with a newline.
@@ -252,36 +294,64 @@ func (fr *feedRenderer) buildEmbed(entry displayEntry) (*discord.Embed, error) {
 	if embed.Description, err = renderTemplate(fr.description, entry); err != nil {
 		return nil, err
 	}
-	if spec.Author != nil {
-		name, err := renderTemplate(fr.authorName, entry)
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(name) != "" {
-			embed.AuthorName = name
-			embed.AuthorURL = httpURLOrEmpty(spec.Author.URL)
-			embed.AuthorIconURL = httpURLOrEmpty(spec.Author.IconURL)
-		}
+	if err := fr.fillAuthor(embed, entry); err != nil {
+		return nil, err
 	}
-	if spec.Footer != nil {
-		text, err := renderTemplate(fr.footerText, entry)
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(text) != "" {
-			embed.FooterText = text
-			embed.FooterIconURL = httpURLOrEmpty(spec.Footer.IconURL)
-		}
+	if err := fr.fillFooter(embed, entry); err != nil {
+		return nil, err
 	}
 	if spec.Timestamp != v1beta1.EmbedTimestampNone {
 		embed.Timestamp = entry.Published
 	}
-	switch spec.ImageStyle {
+	placeImage(embed, spec.ImageStyle, entry.Image)
+	return embed, nil
+}
+
+// fillAuthor sets the embed author when configured and its name renders
+// non-blank.
+func (fr *feedRenderer) fillAuthor(embed *discord.Embed, entry displayEntry) error {
+	author := fr.message.Embed.Author
+	if author == nil {
+		return nil
+	}
+	name, err := renderTemplate(fr.authorName, entry)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(name) != "" {
+		embed.AuthorName = name
+		embed.AuthorURL = httpURLOrEmpty(author.URL)
+		embed.AuthorIconURL = httpURLOrEmpty(author.IconURL)
+	}
+	return nil
+}
+
+// fillFooter sets the embed footer when configured and its text renders
+// non-blank.
+func (fr *feedRenderer) fillFooter(embed *discord.Embed, entry displayEntry) error {
+	footer := fr.message.Embed.Footer
+	if footer == nil {
+		return nil
+	}
+	text, err := renderTemplate(fr.footerText, entry)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) != "" {
+		embed.FooterText = text
+		embed.FooterIconURL = httpURLOrEmpty(footer.IconURL)
+	}
+	return nil
+}
+
+// placeImage puts the entry image where style says: nowhere, the large image,
+// or (the default) the thumbnail.
+func placeImage(embed *discord.Embed, style, image string) {
+	switch style {
 	case v1beta1.EmbedImageStyleNone:
 	case v1beta1.EmbedImageStyleImage:
-		embed.ImageURL = entry.Image
+		embed.ImageURL = image
 	default:
-		embed.ThumbnailURL = entry.Image
+		embed.ThumbnailURL = image
 	}
-	return embed, nil
 }
