@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -43,68 +44,191 @@ func TestNormalizeWebhookURL_PreservesURLComponents(t *testing.T) {
 	}
 }
 
+// sentRequest is what a stubbed transport saw: enough to assert on the
+// request target and payload after the call has returned.
+type sentRequest struct {
+	Method string
+	URL    *url.URL
+	Body   []byte
+}
+
+// stubClient answers every request with status and header, and records each
+// request it was asked to make. It never touches the network.
+func stubClient(t *testing.T, status int, header http.Header) (*http.Client, *[]sentRequest) {
+	t.Helper()
+	var sent []sentRequest
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		sent = append(sent, sentRequest{Method: r.Method, URL: r.URL, Body: body})
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}, &sent
+}
+
+// requestTarget is the part of a request that normalization must get right.
+type requestTarget struct {
+	Method, Scheme, Host, EscapedPath, Wait string
+	ThreadIDs                               string // every thread_id value, comma-joined
+}
+
+func targetOf(r sentRequest) requestTarget {
+	q := r.URL.Query()
+	return requestTarget{
+		Method:      r.Method,
+		Scheme:      r.URL.Scheme,
+		Host:        r.URL.Host,
+		EscapedPath: r.URL.EscapedPath(),
+		Wait:        q.Get("wait"),
+		ThreadIDs:   strings.Join(q["thread_id"], ","),
+	}
+}
+
 func TestSendMessage_NormalizedURLPreservesThreadTarget(t *testing.T) {
-	var requests []*http.Request
-	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		requests = append(requests, r)
-		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
-	})}
+	httpClient, requests := stubClient(t, http.StatusNoContent, nil)
 	c := NewClient(" \nhttps://PTB.Discord.com/api/v10/webhooks/1/a%2Fb?wait=true&thread_id=old\t ", WithHTTPClient(httpClient))
 	if err := c.SendMessage(t.Context(), Message{Content: "thread-target", ThreadID: "12345"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 1 {
-		t.Fatalf("got %d requests, want 1", len(requests))
+	if len(*requests) != 1 {
+		t.Fatalf("got %d requests, want 1", len(*requests))
 	}
-	r := requests[0]
-	if r.Method != http.MethodPost || r.URL.Scheme != "https" || r.URL.Host != canonicalWebhookHost ||
-		r.URL.EscapedPath() != "/api/v10/webhooks/1/a%2Fb" || r.URL.Query().Get("wait") != "true" ||
-		r.URL.Query().Get("thread_id") != "12345" || len(r.URL.Query()["thread_id"]) != 1 {
-		t.Fatalf("normalization changed request target: %s %s", r.Method, r.URL)
+	want := requestTarget{
+		Method:      http.MethodPost,
+		Scheme:      "https",
+		Host:        canonicalWebhookHost,
+		EscapedPath: "/api/v10/webhooks/1/a%2Fb",
+		Wait:        "true",
+		ThreadIDs:   "12345",
+	}
+	if got := targetOf((*requests)[0]); got != want {
+		t.Fatalf("normalization changed request target: got %+v, want %+v", got, want)
+	}
+}
+
+var webhookHostAliases = []string{canonicalWebhookHost, ptbWebhookHost, canaryWebhookHost}
+
+// cooldownFixture is a webhook whose first send drew a 429 with a long
+// Retry-After, plus the transport and limiter shared by every client built
+// from it.
+type cooldownFixture struct {
+	httpClient *http.Client
+	requests   *[]sentRequest
+	limiter    *RateLimiter
+	path       string
+}
+
+func newCooldownFixture(t *testing.T, host string) cooldownFixture {
+	t.Helper()
+	httpClient, requests := stubClient(t, http.StatusTooManyRequests, http.Header{"Retry-After": {"3600"}})
+	f := cooldownFixture{httpClient: httpClient, requests: requests, limiter: NewRateLimiter(), path: "/api/webhooks/1/token"}
+	first := NewClient("https://"+host+f.path, WithHTTPClient(httpClient), WithRateLimiter(f.limiter))
+	if err := first.SendMessageText(t.Context(), "first"); err == nil {
+		t.Fatal("expected first request to be rate limited")
+	}
+	return f
+}
+
+// assertHeld requires a client for alias to be refused by the shared limiter
+// with a bounded RateLimitError, without reaching the transport.
+func (f cooldownFixture) assertHeld(t *testing.T, alias string) {
+	t.Helper()
+	other := NewClient(" \nhttps://"+alias+f.path+"\t", WithHTTPClient(f.httpClient), WithRateLimiter(f.limiter))
+	rle, ok := errors.AsType[*RateLimitError](other.SendMessageText(t.Context(), "held"))
+	if !ok {
+		t.Fatalf("%s did not share cooldown: not a RateLimitError", alias)
+	}
+	if rle.RetryAfter <= 0 || rle.RetryAfter > time.Hour {
+		t.Fatalf("%s did not share cooldown: RetryAfter = %v", alias, rle.RetryAfter)
+	}
+}
+
+func (f cooldownFixture) assertAllAliasesHeld(t *testing.T) {
+	t.Helper()
+	for _, alias := range webhookHostAliases {
+		f.assertHeld(t, alias)
+	}
+	if got := len(*f.requests); got != 1 {
+		t.Fatalf("cooldown allowed %d network requests, want 1", got)
+	}
+}
+
+// assertOtherTokenIndependent requires a different token to keep its own
+// rate-limit bucket, so its send reaches the transport.
+func (f cooldownFixture) assertOtherTokenIndependent(t *testing.T) {
+	t.Helper()
+	independent := NewClient("https://discord.com/api/webhooks/1/other-token", WithHTTPClient(f.httpClient), WithRateLimiter(f.limiter))
+	err := independent.SendMessageText(t.Context(), "independent")
+	if err == nil || len(*f.requests) != 2 {
+		t.Fatalf("different webhook did not reach transport: requests=%d err=%v", len(*f.requests), err)
+	}
+}
+
+func requireCanonicalHosts(t *testing.T, requests []sentRequest) {
+	t.Helper()
+	for _, r := range requests {
+		if r.URL.Host != canonicalWebhookHost {
+			t.Errorf("request host = %q", r.URL.Host)
+		}
 	}
 }
 
 // Exercise a real 429 response through the client: equal normalized strings
 // alone would not catch a constructor using the original URL as its limiter key.
 func TestSendMessage_NormalizedHostsShareCooldown(t *testing.T) {
-	for _, host := range []string{canonicalWebhookHost, ptbWebhookHost, canaryWebhookHost} {
+	for _, host := range webhookHostAliases {
 		t.Run(host, func(t *testing.T) {
-			requests := 0
-			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				requests++
-				if r.URL.Host != canonicalWebhookHost {
-					t.Errorf("request host = %q", r.URL.Host)
-				}
-				return &http.Response{
-					StatusCode: http.StatusTooManyRequests,
-					Header:     http.Header{"Retry-After": {"3600"}},
-					Body:       io.NopCloser(strings.NewReader("")),
-				}, nil
-			})}
-			limiter := NewRateLimiter()
-			const path = "/api/webhooks/1/token"
-			first := NewClient("https://"+host+path, WithHTTPClient(httpClient), WithRateLimiter(limiter))
-			if err := first.SendMessageText(t.Context(), "first"); err == nil {
-				t.Fatal("expected first request to be rate limited")
-			}
-			for _, alias := range []string{canonicalWebhookHost, ptbWebhookHost, canaryWebhookHost} {
-				other := NewClient(" \nhttps://"+alias+path+"\t", WithHTTPClient(httpClient), WithRateLimiter(limiter))
-				err := other.SendMessageText(t.Context(), "held")
-				rle, ok := errors.AsType[*RateLimitError](err)
-				if !ok || rle.RetryAfter <= 0 || rle.RetryAfter > time.Hour {
-					t.Fatalf("%s did not share cooldown: %v", alias, err)
-				}
-			}
-			if requests != 1 {
-				t.Fatalf("cooldown allowed %d network requests, want 1", requests)
-			}
-			// A different token must retain its own rate-limit bucket.
-			independent := NewClient("https://discord.com/api/webhooks/1/other-token", WithHTTPClient(httpClient), WithRateLimiter(limiter))
-			if err := independent.SendMessageText(t.Context(), "independent"); err == nil || requests != 2 {
-				t.Fatalf("different webhook did not reach transport: requests=%d err=%v", requests, err)
-			}
+			f := newCooldownFixture(t, host)
+			f.assertAllAliasesHeld(t)
+			f.assertOtherTokenIndependent(t)
+			requireCanonicalHosts(t, *f.requests)
 		})
 	}
+}
+
+// requireMedia checks that an embed's media field is present exactly when a URL
+// was supplied, and that it carries that URL.
+func requireMedia(t *testing.T, embed map[string]json.RawMessage, field, want string) {
+	t.Helper()
+	raw, present := embed[field]
+	if present != (want != "") {
+		t.Fatalf("%s presence=%t, want URL %q", field, present, want)
+	}
+	if !present {
+		return
+	}
+	var got discordEmbedMedia
+	if err := json.Unmarshal(raw, &got); err != nil || got.URL != want {
+		t.Fatalf("%s = %s, err=%v; want %q", field, raw, err, want)
+	}
+}
+
+// decodeSingleEmbed decodes a request body twice: typed, for the payload, and
+// raw, so absent media fields can be told apart from empty ones.
+func decodeSingleEmbed(t *testing.T, body []byte) (discordPayload, map[string]json.RawMessage) {
+	t.Helper()
+	var payload discordPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("got %d embeds, want 1", len(payload.Embeds))
+	}
+	var raw struct {
+		Embeds []json.RawMessage `json:"embeds"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Embeds) != 1 {
+		t.Fatalf("got %d raw embeds, want 1", len(raw.Embeds))
+	}
+	var media map[string]json.RawMessage
+	if err := json.Unmarshal(raw.Embeds[0], &media); err != nil {
+		t.Fatal(err)
+	}
+	return payload, media
 }
 
 func TestSendMessage_EmbedMediaJSON(t *testing.T) {
@@ -117,54 +241,17 @@ func TestSendMessage_EmbedMediaJSON(t *testing.T) {
 		{name: "independent media", thumbnail: imageFixtureURL, image: "https://x/large.png"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var payload discordPayload
-			var media map[string]json.RawMessage
-			calls := 0
-			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				calls++
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := json.Unmarshal(body, &payload); err != nil {
-					t.Fatal(err)
-				}
-				if len(payload.Embeds) != 1 {
-					t.Fatalf("got %d embeds, want 1", len(payload.Embeds))
-				}
-				var rawPayload struct {
-					Embeds []json.RawMessage `json:"embeds"`
-				}
-				if err := json.Unmarshal(body, &rawPayload); err != nil {
-					t.Fatal(err)
-				}
-				if len(rawPayload.Embeds) != 1 {
-					t.Fatalf("got %d raw embeds, want 1", len(rawPayload.Embeds))
-				}
-				if err := json.Unmarshal(rawPayload.Embeds[0], &media); err != nil {
-					t.Fatal(err)
-				}
-				return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
-			})}
+			httpClient, requests := stubClient(t, http.StatusNoContent, nil)
 			c := NewClient("https://discord.com/api/webhooks/1/token", WithHTTPClient(httpClient))
 			if err := c.SendMessage(t.Context(), Message{Embed: &Embed{Title: "Title", ThumbnailURL: tc.thumbnail, ImageURL: tc.image}}); err != nil {
 				t.Fatal(err)
 			}
-			if calls != 1 {
-				t.Fatalf("got %d requests, want 1", calls)
+			if len(*requests) != 1 {
+				t.Fatalf("got %d requests, want 1", len(*requests))
 			}
-			for field, want := range map[string]string{"thumbnail": tc.thumbnail, "image": tc.image} {
-				raw, present := media[field]
-				if present != (want != "") {
-					t.Fatalf("%s presence=%t, want URL %q", field, present, want)
-				}
-				if present {
-					var got discordEmbedMedia
-					if err := json.Unmarshal(raw, &got); err != nil || got.URL != want {
-						t.Fatalf("%s = %s, err=%v; want %q", field, raw, err, want)
-					}
-				}
-			}
+			payload, media := decodeSingleEmbed(t, (*requests)[0].Body)
+			requireMedia(t, media, "thumbnail", tc.thumbnail)
+			requireMedia(t, media, "image", tc.image)
 			if payload.AllowedMentions.Parse == nil || len(payload.AllowedMentions.Parse) != 0 {
 				t.Fatalf("embed delivery must disable mentions: %+v", payload.AllowedMentions)
 			}
@@ -242,13 +329,28 @@ func TestNormalizeWebhookURL_SharesRateLimitKey(t *testing.T) {
 
 const imageFixtureURL = "https://x/a.png"
 
-func TestEmbedToPayload_ImageStyles(t *testing.T) {
-	thumb := embedToPayload(Embed{Title: "t", ThumbnailURL: imageFixtureURL})
-	if thumb.Thumbnail == nil || thumb.Image != nil {
-		t.Fatalf("thumbnail style: %+v", thumb)
+// mediaURL is the URL of an embed media field, or "" when the field is absent.
+func mediaURL(m *discordEmbedMedia) string {
+	if m == nil {
+		return ""
 	}
-	img := embedToPayload(Embed{Title: "t", ImageURL: imageFixtureURL})
-	if img.Image == nil || img.Image.URL != imageFixtureURL || img.Thumbnail != nil {
-		t.Fatalf("image style: %+v", img)
+	return m.URL
+}
+
+func TestEmbedToPayload_ImageStyles(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		embed                Embed
+		wantThumb, wantImage string
+	}{
+		{name: "thumbnail", embed: Embed{Title: "t", ThumbnailURL: imageFixtureURL}, wantThumb: imageFixtureURL},
+		{name: "image", embed: Embed{Title: "t", ImageURL: imageFixtureURL}, wantImage: imageFixtureURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := embedToPayload(tc.embed)
+			if thumb, image := mediaURL(got.Thumbnail), mediaURL(got.Image); thumb != tc.wantThumb || image != tc.wantImage {
+				t.Fatalf("thumbnail=%q image=%q, want thumbnail=%q image=%q", thumb, image, tc.wantThumb, tc.wantImage)
+			}
+		})
 	}
 }
