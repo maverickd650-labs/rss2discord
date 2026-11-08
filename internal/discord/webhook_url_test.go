@@ -109,11 +109,32 @@ func TestSendMessage_NormalizedURLPreservesThreadTarget(t *testing.T) {
 
 var webhookHostAliases = []string{canonicalWebhookHost, ptbWebhookHost, canaryWebhookHost}
 
-// assertHeldByCooldown sends through a fresh client for alias and requires the
-// shared limiter to refuse it with a bounded RateLimitError.
-func assertHeldByCooldown(t *testing.T, alias, path string, httpClient *http.Client, limiter *RateLimiter) {
+// cooldownFixture is a webhook whose first send drew a 429 with a long
+// Retry-After, plus the transport and limiter shared by every client built
+// from it.
+type cooldownFixture struct {
+	httpClient *http.Client
+	requests   *[]sentRequest
+	limiter    *RateLimiter
+	path       string
+}
+
+func newCooldownFixture(t *testing.T, host string) cooldownFixture {
 	t.Helper()
-	other := NewClient(" \nhttps://"+alias+path+"\t", WithHTTPClient(httpClient), WithRateLimiter(limiter))
+	httpClient, requests := stubClient(t, http.StatusTooManyRequests, http.Header{"Retry-After": {"3600"}})
+	f := cooldownFixture{httpClient: httpClient, requests: requests, limiter: NewRateLimiter(), path: "/api/webhooks/1/token"}
+	first := NewClient("https://"+host+f.path, WithHTTPClient(httpClient), WithRateLimiter(f.limiter))
+	if err := first.SendMessageText(t.Context(), "first"); err == nil {
+		t.Fatal("expected first request to be rate limited")
+	}
+	return f
+}
+
+// assertHeld requires a client for alias to be refused by the shared limiter
+// with a bounded RateLimitError, without reaching the transport.
+func (f cooldownFixture) assertHeld(t *testing.T, alias string) {
+	t.Helper()
+	other := NewClient(" \nhttps://"+alias+f.path+"\t", WithHTTPClient(f.httpClient), WithRateLimiter(f.limiter))
 	rle, ok := errors.AsType[*RateLimitError](other.SendMessageText(t.Context(), "held"))
 	if !ok {
 		t.Fatalf("%s did not share cooldown: not a RateLimitError", alias)
@@ -123,38 +144,45 @@ func assertHeldByCooldown(t *testing.T, alias, path string, httpClient *http.Cli
 	}
 }
 
+func (f cooldownFixture) assertAllAliasesHeld(t *testing.T) {
+	t.Helper()
+	for _, alias := range webhookHostAliases {
+		f.assertHeld(t, alias)
+	}
+	if got := len(*f.requests); got != 1 {
+		t.Fatalf("cooldown allowed %d network requests, want 1", got)
+	}
+}
+
+// assertOtherTokenIndependent requires a different token to keep its own
+// rate-limit bucket, so its send reaches the transport.
+func (f cooldownFixture) assertOtherTokenIndependent(t *testing.T) {
+	t.Helper()
+	independent := NewClient("https://discord.com/api/webhooks/1/other-token", WithHTTPClient(f.httpClient), WithRateLimiter(f.limiter))
+	err := independent.SendMessageText(t.Context(), "independent")
+	if err == nil || len(*f.requests) != 2 {
+		t.Fatalf("different webhook did not reach transport: requests=%d err=%v", len(*f.requests), err)
+	}
+}
+
+func requireCanonicalHosts(t *testing.T, requests []sentRequest) {
+	t.Helper()
+	for _, r := range requests {
+		if r.URL.Host != canonicalWebhookHost {
+			t.Errorf("request host = %q", r.URL.Host)
+		}
+	}
+}
+
 // Exercise a real 429 response through the client: equal normalized strings
 // alone would not catch a constructor using the original URL as its limiter key.
 func TestSendMessage_NormalizedHostsShareCooldown(t *testing.T) {
 	for _, host := range webhookHostAliases {
 		t.Run(host, func(t *testing.T) {
-			httpClient, requests := stubClient(t, http.StatusTooManyRequests, http.Header{"Retry-After": {"3600"}})
-			limiter := NewRateLimiter()
-			const path = "/api/webhooks/1/token"
-			first := NewClient("https://"+host+path, WithHTTPClient(httpClient), WithRateLimiter(limiter))
-			if err := first.SendMessageText(t.Context(), "first"); err == nil {
-				t.Fatal("expected first request to be rate limited")
-			}
-			for _, alias := range webhookHostAliases {
-				assertHeldByCooldown(t, alias, path, httpClient, limiter)
-			}
-			if len(*requests) != 1 {
-				t.Fatalf("cooldown allowed %d network requests, want 1", len(*requests))
-			}
-			// A different token must retain its own rate-limit bucket.
-			independent := NewClient("https://discord.com/api/webhooks/1/other-token", WithHTTPClient(httpClient), WithRateLimiter(limiter))
-			err := independent.SendMessageText(t.Context(), "independent")
-			if err == nil {
-				t.Fatalf("different webhook was not rate limited by its own 429")
-			}
-			if len(*requests) != 2 {
-				t.Fatalf("different webhook did not reach transport: requests=%d err=%v", len(*requests), err)
-			}
-			for _, r := range *requests {
-				if r.URL.Host != canonicalWebhookHost {
-					t.Errorf("request host = %q", r.URL.Host)
-				}
-			}
+			f := newCooldownFixture(t, host)
+			f.assertAllAliasesHeld(t)
+			f.assertOtherTokenIndependent(t)
+			requireCanonicalHosts(t, *f.requests)
 		})
 	}
 }
