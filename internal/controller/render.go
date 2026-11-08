@@ -184,6 +184,10 @@ func (fr *feedRenderer) matches(entry rss.Entry) bool {
 // date).
 var errEmptyContent = errors.New("message template rendered empty content for this entry")
 
+// errEmptyThreadName is the render error for a forum post whose name template
+// rendered blank for this entry.
+var errEmptyThreadName = errors.New("forum post name template rendered empty for this entry")
+
 // build renders entry into the message that should actually be sent: the
 // resolved message's content (after its mentions) and/or embed, its flags and
 // mentions, the feed's thread target, and webhook branding (FeedSpec overrides
@@ -226,23 +230,17 @@ func (fr *feedRenderer) baseMessage() discord.Message {
 // fillBody renders entry's content and embed into msg. Without an embed, blank
 // content is errEmptyContent.
 func (fr *feedRenderer) fillBody(msg *discord.Message, entry displayEntry) error {
-	var content string
-	if fr.content != nil {
-		var err error
-		if content, err = renderTemplate(fr.content, entry); err != nil {
-			return err
-		}
+	content, err := renderOrEmpty(fr.content, entry)
+	if err != nil {
+		return err
 	}
-	if fr.message.Embed == nil {
-		if strings.TrimSpace(content) == "" {
-			return errEmptyContent
-		}
-	} else {
-		embed, err := fr.buildEmbed(entry)
-		if err != nil {
+	if fr.message.Embed == nil && strings.TrimSpace(content) == "" {
+		return errEmptyContent
+	}
+	if fr.message.Embed != nil {
+		if msg.Embed, err = fr.buildEmbed(entry); err != nil {
 			return err
 		}
-		msg.Embed = embed
 	}
 	msg.Content = joinNonBlank(fr.mentions, content)
 	return nil
@@ -253,20 +251,22 @@ func (fr *feedRenderer) fillBody(msg *discord.Message, entry displayEntry) error
 // forum webhook rejects a post without a thread_name (the same reason as
 // blank content).
 func (fr *feedRenderer) fillThread(msg *discord.Message, entry displayEntry) error {
-	switch {
-	case fr.feed.Thread != nil:
+	if fr.feed.Thread != nil {
 		msg.ThreadID = fr.feed.Thread.ID
-	case fr.threadName != nil:
-		threadName, err := renderTemplate(fr.threadName, entry)
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(threadName) == "" {
-			return errors.New("forum post name template rendered empty for this entry")
-		}
-		msg.ThreadName = threadName
-		msg.AppliedTags = fr.feed.ForumPost.AppliedTagIDs
+		return nil
 	}
+	if fr.threadName == nil {
+		return nil
+	}
+	threadName, err := renderNonBlank(fr.threadName, entry)
+	if err != nil {
+		return err
+	}
+	if threadName == "" {
+		return errEmptyThreadName
+	}
+	msg.ThreadName = threadName
+	msg.AppliedTags = fr.feed.ForumPost.AppliedTagIDs
 	return nil
 }
 
@@ -305,36 +305,41 @@ func (fr *feedRenderer) buildEmbed(entry displayEntry) (*discord.Embed, error) {
 }
 
 // fillAttribution sets the embed author and footer. Each is left out when not
-// configured or when its text renders blank, since Discord requires the text.
+// configured (its template is nil) or when its text renders blank, since
+// Discord requires the text.
 func (fr *feedRenderer) fillAttribution(embed *discord.Embed, entry displayEntry) error {
 	spec := fr.message.Embed
-	if spec.Author != nil {
-		name, err := renderNonBlank(fr.authorName, entry)
-		if err != nil {
-			return err
-		}
-		if name != "" {
-			embed.AuthorName = name
-			embed.AuthorURL = httpURLOrEmpty(spec.Author.URL)
-			embed.AuthorIconURL = httpURLOrEmpty(spec.Author.IconURL)
-		}
+	name, err := renderNonBlank(fr.authorName, entry)
+	if err != nil {
+		return err
 	}
-	if spec.Footer != nil {
-		text, err := renderNonBlank(fr.footerText, entry)
-		if err != nil {
-			return err
-		}
-		if text != "" {
-			embed.FooterText = text
-			embed.FooterIconURL = httpURLOrEmpty(spec.Footer.IconURL)
-		}
+	if name != "" {
+		embed.AuthorName = name
+		embed.AuthorURL = httpURLOrEmpty(spec.Author.URL)
+		embed.AuthorIconURL = httpURLOrEmpty(spec.Author.IconURL)
+	}
+	text, err := renderNonBlank(fr.footerText, entry)
+	if err != nil {
+		return err
+	}
+	if text != "" {
+		embed.FooterText = text
+		embed.FooterIconURL = httpURLOrEmpty(spec.Footer.IconURL)
 	}
 	return nil
 }
 
-// renderNonBlank renders tmpl, returning "" when the output is blank.
+// renderOrEmpty renders tmpl, or returns "" for a nil (unconfigured) template.
+func renderOrEmpty(tmpl *msgtemplate.Template, entry displayEntry) (string, error) {
+	if tmpl == nil {
+		return "", nil
+	}
+	return renderTemplate(tmpl, entry)
+}
+
+// renderNonBlank is renderOrEmpty with blank output also reported as "".
 func renderNonBlank(tmpl *msgtemplate.Template, entry displayEntry) (string, error) {
-	text, err := renderTemplate(tmpl, entry)
+	text, err := renderOrEmpty(tmpl, entry)
 	if err != nil || strings.TrimSpace(text) == "" {
 		return "", err
 	}
