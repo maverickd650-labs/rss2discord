@@ -294,10 +294,7 @@ func (fr *feedRenderer) buildEmbed(entry displayEntry) (*discord.Embed, error) {
 	if embed.Description, err = renderTemplate(fr.description, entry); err != nil {
 		return nil, err
 	}
-	if err := fr.fillAuthor(embed, entry); err != nil {
-		return nil, err
-	}
-	if err := fr.fillFooter(embed, entry); err != nil {
+	if err := fr.fillAttribution(embed, entry); err != nil {
 		return nil, err
 	}
 	if spec.Timestamp != v1beta1.EmbedTimestampNone {
@@ -307,41 +304,41 @@ func (fr *feedRenderer) buildEmbed(entry displayEntry) (*discord.Embed, error) {
 	return embed, nil
 }
 
-// fillAuthor sets the embed author when configured and its name renders
-// non-blank.
-func (fr *feedRenderer) fillAuthor(embed *discord.Embed, entry displayEntry) error {
-	author := fr.message.Embed.Author
-	if author == nil {
-		return nil
+// fillAttribution sets the embed author and footer. Each is left out when not
+// configured or when its text renders blank, since Discord requires the text.
+func (fr *feedRenderer) fillAttribution(embed *discord.Embed, entry displayEntry) error {
+	spec := fr.message.Embed
+	if spec.Author != nil {
+		name, err := renderNonBlank(fr.authorName, entry)
+		if err != nil {
+			return err
+		}
+		if name != "" {
+			embed.AuthorName = name
+			embed.AuthorURL = httpURLOrEmpty(spec.Author.URL)
+			embed.AuthorIconURL = httpURLOrEmpty(spec.Author.IconURL)
+		}
 	}
-	name, err := renderTemplate(fr.authorName, entry)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(name) != "" {
-		embed.AuthorName = name
-		embed.AuthorURL = httpURLOrEmpty(author.URL)
-		embed.AuthorIconURL = httpURLOrEmpty(author.IconURL)
+	if spec.Footer != nil {
+		text, err := renderNonBlank(fr.footerText, entry)
+		if err != nil {
+			return err
+		}
+		if text != "" {
+			embed.FooterText = text
+			embed.FooterIconURL = httpURLOrEmpty(spec.Footer.IconURL)
+		}
 	}
 	return nil
 }
 
-// fillFooter sets the embed footer when configured and its text renders
-// non-blank.
-func (fr *feedRenderer) fillFooter(embed *discord.Embed, entry displayEntry) error {
-	footer := fr.message.Embed.Footer
-	if footer == nil {
-		return nil
+// renderNonBlank renders tmpl, returning "" when the output is blank.
+func renderNonBlank(tmpl *msgtemplate.Template, entry displayEntry) (string, error) {
+	text, err := renderTemplate(tmpl, entry)
+	if err != nil || strings.TrimSpace(text) == "" {
+		return "", err
 	}
-	text, err := renderTemplate(fr.footerText, entry)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(text) != "" {
-		embed.FooterText = text
-		embed.FooterIconURL = httpURLOrEmpty(footer.IconURL)
-	}
-	return nil
+	return text, nil
 }
 
 // placeImage puts the entry image where style says: nowhere, the large image,
