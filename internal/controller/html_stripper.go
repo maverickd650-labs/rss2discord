@@ -106,8 +106,17 @@ func (st *htmlStripper) skipTag(tag tagName, tokenType html.TokenType) {
 // raw-text start tag as swallowing the rest of a prefixed outer body, because
 // it has no matching end tag of its own.
 func (st *htmlStripper) hidesOuterBoundary(tag tagName, tokenType html.TokenType) bool {
-	if !st.skip.prefixed || tokenType != html.StartTagToken || !isRawTextElement(tag) {
+	if !st.skip.prefixed {
+		return false
+	}
+	if !startsRawTextElement(tag, tokenType) {
 		return false
 	}
 	return !st.lookahead.hasEndTagAt(st.offset, tag)
+}
+
+// startsRawTextElement reports whether the token opens a raw-text/RCDATA
+// element.
+func startsRawTextElement(tag tagName, tokenType html.TokenType) bool {
+	return tokenType == html.StartTagToken && isRawTextElement(tag)
 }
