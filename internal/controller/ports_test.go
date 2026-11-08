@@ -119,6 +119,19 @@ func (f *fakeFetcher) FetchEntries(_ context.Context, url string, validators rss
 	return f.result, f.err
 }
 
+// assertSampleCounts fails unless the group's request-duration histogram holds
+// exactly the wanted number of send and fetch observations.
+func assertSampleCounts(t *testing.T, ns, name string, send, fetch uint64) {
+	t.Helper()
+	key := groupKey(ns, name)
+	if got := histogramSampleCount(t, key, operationSend); got != send {
+		t.Fatalf("send sample count = %d, want %d", got, send)
+	}
+	if got := histogramSampleCount(t, key, operationFetch); got != fetch {
+		t.Fatalf("fetch sample count = %d, want %d", got, fetch)
+	}
+}
+
 func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 	boom := errors.New(testBoom)
 	rateLimited := &discord.RateLimitError{RetryAfter: time.Second}
@@ -146,18 +159,20 @@ func TestTimedSender_ObservesOncePerCallAndPassesErrorsThrough(t *testing.T) {
 			if len(inner.sent) != 1 || inner.sent[0].Content != messageContent {
 				t.Fatalf("inner received %+v, want the one message passed in", inner.sent)
 			}
-			if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 1 {
-				t.Fatalf("send sample count = %d, want 1", got)
-			}
-			if got := histogramSampleCount(t, groupKey(ns, name), operationFetch); got != 0 {
-				t.Fatalf("fetch sample count = %d, want 0", got)
-			}
+			assertSampleCounts(t, ns, name, 1, 0)
 
 			_ = sender.SendMessage(t.Context(), discord.Message{})
-			if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 2 {
-				t.Fatalf("send sample count after a second call = %d, want 2", got)
-			}
+			assertSampleCounts(t, ns, name, 2, 0)
 		})
+	}
+}
+
+// assertSameFetchShape fails unless got carries the same NotModified flag and
+// entry count as want.
+func assertSameFetchShape(t *testing.T, got, want rss.FetchResult) {
+	t.Helper()
+	if got.NotModified != want.NotModified || len(got.Entries) != len(want.Entries) {
+		t.Fatalf("FetchEntries result = %+v, want %+v", got, want)
 	}
 }
 
@@ -185,20 +200,32 @@ func TestTimedFetcher_ObservesOncePerCallAndPassesResultsThrough(t *testing.T) {
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("FetchEntries error = %v, want %v", err, tc.err)
 			}
-			if got.NotModified != tc.result.NotModified || len(got.Entries) != len(tc.result.Entries) {
-				t.Fatalf("FetchEntries result = %+v, want %+v", got, tc.result)
-			}
+			assertSameFetchShape(t, got, tc.result)
 			if inner.gotURL != exampleFeedURL || inner.gotCache != validators {
 				t.Fatalf("inner called with (%q, %+v), want the arguments passed in", inner.gotURL, inner.gotCache)
 			}
-			if got := histogramSampleCount(t, groupKey(ns, name), operationFetch); got != 1 {
-				t.Fatalf("fetch sample count = %d, want 1", got)
-			}
-			if got := histogramSampleCount(t, groupKey(ns, name), operationSend); got != 0 {
-				t.Fatalf("send sample count = %d, want 0", got)
-			}
+			assertSampleCounts(t, ns, name, 0, 1)
 		})
 	}
+}
+
+// assertOutcomeCountIsOne fails unless feedOperationsTotal for the group's
+// example feed holds exactly one count for outcome.
+func assertOutcomeCountIsOne(t *testing.T, ns, name, outcome string) {
+	t.Helper()
+	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), outcome)); got != 1 {
+		t.Fatalf("feedOperationsTotal{outcome=%q} = %v, want 1", outcome, got)
+	}
+}
+
+// processFailingSend runs processFeed over one entry whose send fails with
+// sendErr, after configure has adjusted the group's spec.
+func processFailingSend(t *testing.T, ns, name string, sendErr error, configure func(*v1beta1.FeedGroup)) (*v1beta1.FeedGroup, v1beta1.FeedSpec, attemptVerdict) {
+	t.Helper()
+	fg, feed := newMetricsFeedGroup(ns, name, "")
+	configure(fg)
+	sender := &fakeSender{results: []error{sendErr}}
+	return fg, feed, processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
 }
 
 // TestProcessFeed_FakeSenderRateLimited asserts a 429 from the sender yields a
@@ -220,9 +247,7 @@ func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 	if got := feedStatusFor(fg, feed.Name).LastSent; len(got) != 0 {
 		t.Fatalf("LastSent = %v, want the entry left unsent", got)
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), outcomeRateLimited)); got != 1 {
-		t.Fatalf("feedOperationsTotal{outcome=%q} = %v, want 1", outcomeRateLimited, got)
-	}
+	assertOutcomeCountIsOne(t, ns, name, outcomeRateLimited)
 }
 
 // TestProcessFeed_FakeSenderServerError asserts a 5xx counts a retry, asks for
@@ -230,11 +255,9 @@ func TestProcessFeed_FakeSenderRateLimited(t *testing.T) {
 func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	ns, name := "ports-fake-5xx", "fg-fake-5xx"
 
-	fg, feed := newMetricsFeedGroup(ns, name, "")
-	fg.Spec.Retries = new(int32(3))
-	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 503, Status: "503 Service Unavailable"}}}
-
-	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
+	fg, feed, verdict := processFailingSend(t, ns, name,
+		&discord.HTTPStatusError{StatusCode: 503, Status: "503 Service Unavailable"},
+		func(fg *v1beta1.FeedGroup) { fg.Spec.Retries = new(int32(3)) })
 
 	if !verdict.retry {
 		t.Fatal("verdict.retry = false, want a transient send failure to ask for a retry")
@@ -249,9 +272,7 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 	if len(fs.LastSent) != 0 {
 		t.Fatalf("LastSent = %v, want the entry left unsent", fs.LastSent)
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), sendErrorOutcome(classServerError))); got != 1 {
-		t.Fatalf("feedOperationsTotal{outcome=send_error_server_error} = %v, want 1", got)
-	}
+	assertOutcomeCountIsOne(t, ns, name, sendErrorOutcome(classServerError))
 }
 
 // TestProcessFeed_FakeSenderPermanentClientError asserts a permanent 4xx backs
@@ -259,11 +280,9 @@ func TestProcessFeed_FakeSenderServerError(t *testing.T) {
 func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	ns, name := "ports-fake-4xx", "fg-fake-4xx"
 
-	fg, feed := newMetricsFeedGroup(ns, name, "")
-	fg.Spec.RetryInterval = "5m"
-	sender := &fakeSender{results: []error{&discord.HTTPStatusError{StatusCode: 400, Status: "400 Bad Request"}}}
-
-	verdict := processFeed(t.Context(), testRun(t, fg, feed, oneEntryFetch(), nil, sender))
+	fg, feed, verdict := processFailingSend(t, ns, name,
+		&discord.HTTPStatusError{StatusCode: 400, Status: "400 Bad Request"},
+		func(fg *v1beta1.FeedGroup) { fg.Spec.RetryInterval = "5m" })
 
 	if verdict.retry {
 		t.Fatal("verdict.retry = true, want a permanent failure to back off instead")
@@ -276,9 +295,7 @@ func TestProcessFeed_FakeSenderPermanentClientError(t *testing.T) {
 	if want := nextBackoffUntil(testReconcileInstant, 10*time.Minute); !fs.BackoffUntil.Equal(want) {
 		t.Fatalf("BackoffUntil = %v, want %v", fs.BackoffUntil, want)
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), sendErrorOutcome(classClientError))); got != 1 {
-		t.Fatalf("feedOperationsTotal{outcome=send_error_client_error} = %v, want 1", got)
-	}
+	assertOutcomeCountIsOne(t, ns, name, sendErrorOutcome(classClientError))
 }
 
 // TestProcessFeed_FakeSenderSuccess asserts a nil send marks the entry sent.
@@ -296,9 +313,7 @@ func TestProcessFeed_FakeSenderSuccess(t *testing.T) {
 	if len(sender.sent) != 1 {
 		t.Fatalf("sender called %d times, want 1", len(sender.sent))
 	}
-	if got := testutil.ToFloat64(feedOperationsTotal.WithLabelValues(ns, name, testFeedName(exampleFeedURL), outcomeSent)); got != 1 {
-		t.Fatalf("feedOperationsTotal{outcome=sent} = %v, want 1", got)
-	}
+	assertOutcomeCountIsOne(t, ns, name, outcomeSent)
 }
 
 // concurrencyFetcher is a FeedFetcher that returns a result whose title
@@ -375,17 +390,41 @@ func (f *concurrencyFetcher) FetchEntries(_ context.Context, url string, _ rss.C
 	return rss.FetchResult{FeedTitle: url}, f.errFor[url]
 }
 
-func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
-	const n = maxConcurrentFetches*3 + 1
-	fg := &v1beta1.FeedGroup{}
+// fetchAllGroup returns a FeedGroup with n distinctly named feeds and its
+// statuses initialised.
+func fetchAllGroup(n int) (*v1beta1.FeedGroup, []v1beta1.FeedSpec) {
 	feeds := make([]v1beta1.FeedSpec, n)
 	for i := range feeds {
 		feeds[i].URL = fmt.Sprintf("https://example.com/feed-%d.xml", i)
 		feeds[i].Name = testFeedName(feeds[i].URL)
 	}
+	fg := &v1beta1.FeedGroup{}
 	fg.Spec.Feeds = feeds
 	ensureFeedStatuses(fg)
-	errFor := map[string]error{feeds[3].URL: errors.New(testBoom)}
+	return fg, feeds
+}
+
+// assertOutcomesInInputOrder fails unless got holds one outcome per feed, in
+// input order, with an error only for the feed at index failing.
+func assertOutcomesInInputOrder(t *testing.T, got []fetchOutcome, feeds []v1beta1.FeedSpec, failing int) {
+	t.Helper()
+	for i, o := range got {
+		if o.result.FeedTitle != feeds[i].URL {
+			t.Fatalf("outcome %d is for %q, want %q (input order)", i, o.result.FeedTitle, feeds[i].URL)
+		}
+		if (o.err != nil) != (i == failing) {
+			t.Fatalf("outcome %d err = %v, want error only at index %d", i, o.err, failing)
+		}
+	}
+}
+
+func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
+	const (
+		n       = maxConcurrentFetches*3 + 1
+		failing = 3
+	)
+	fg, feeds := fetchAllGroup(n)
+	errFor := map[string]error{feeds[failing].URL: errors.New(testBoom)}
 	// Feed 0 completes last, so outcomes in completion order would put it at
 	// the end; fetchAll must still return it first.
 	f := newConcurrencyFetcher(maxConcurrentFetches, feeds[0].URL, n-1, errFor)
@@ -414,14 +453,7 @@ func TestFetchAll_InputOrderAndBoundedConcurrency(t *testing.T) {
 	if len(got) != n || f.calls != n {
 		t.Fatalf("got %d outcomes from %d calls, want %d of each", len(got), f.calls, n)
 	}
-	for i, o := range got {
-		if o.result.FeedTitle != feeds[i].URL {
-			t.Fatalf("outcome %d is for %q, want %q (input order)", i, o.result.FeedTitle, feeds[i].URL)
-		}
-		if (o.err != nil) != (i == 3) {
-			t.Fatalf("outcome %d err = %v, want error only at index 3", i, o.err)
-		}
-	}
+	assertOutcomesInInputOrder(t, got, feeds, failing)
 	if f.peak != maxConcurrentFetches {
 		t.Fatalf("peak concurrency = %d, want exactly %d", f.peak, maxConcurrentFetches)
 	}
