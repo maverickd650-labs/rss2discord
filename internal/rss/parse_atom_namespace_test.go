@@ -28,7 +28,8 @@ const (
 )
 
 // Element builders for the Atom namespace tests.
-func idEl(v string) string { return "<id>" + v + "</id>" }
+// nsIDRealEl is the entry's own <id> element.
+const nsIDRealEl = "<id>" + nsIDReal + "</id>"
 
 // linkEl is a self-closing <tag> carrying attrs (each ending in a space) and an href.
 func linkEl(tag, attrs, href string) string {
@@ -44,8 +45,8 @@ func TestParseFeed_AtomExtensionElementsNeverTouchCoreFields(t *testing.T) {
 		name, ns, entry             string
 		wantID, wantLink, wantImage string
 	}{
-		{name: "foreign id after real", ns: atomNamespace, entry: idEl(nsIDReal) + nsExtIDFake, wantID: nsIDReal},
-		{name: "foreign id before real", ns: atomNamespace, entry: nsExtIDFake + idEl(nsIDReal), wantID: nsIDReal},
+		{name: "foreign id after real", ns: atomNamespace, entry: nsIDRealEl + nsExtIDFake, wantID: nsIDReal},
+		{name: "foreign id before real", ns: atomNamespace, entry: nsExtIDFake + nsIDRealEl, wantID: nsIDReal},
 		{name: "foreign id alone is ignored", ns: atomNamespace, entry: nsExtIDFake, wantID: "T"},
 		{name: "foreign link first", ns: atomNamespace, entry: linkEl("ext:link", "", nsLinkFake) + linkEl("link", `rel="alternate" `, nsLinkReal), wantLink: nsLinkReal, wantID: nsLinkReal},
 		{name: "foreign alternate after real", ns: atomNamespace, entry: linkEl("link", "", nsLinkReal) + linkEl("ext:link", `rel="alternate" `, nsLinkFake), wantLink: nsLinkReal, wantID: nsLinkReal},
@@ -54,11 +55,11 @@ func TestParseFeed_AtomExtensionElementsNeverTouchCoreFields(t *testing.T) {
 		{
 			name:   "foreign image enclosure first",
 			ns:     atomNamespace,
-			entry:  idEl(nsIDReal) + linkEl("ext:link", nsEnclosure, nsImgFake) + linkEl("link", nsEnclosure, nsImgReal),
+			entry:  nsIDRealEl + linkEl("ext:link", nsEnclosure, nsImgFake) + linkEl("link", nsEnclosure, nsImgReal),
 			wantID: nsIDReal, wantLink: nsImgReal, wantImage: nsImgReal, // the only native link doubles as the link
 		},
-		{name: "lookalike default namespace is read by local name", ns: nsAtomOld, entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
-		{name: "no namespace is read by local name", entry: idEl(nsIDReal) + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
+		{name: "lookalike default namespace is read by local name", ns: nsAtomOld, entry: nsIDRealEl + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
+		{name: "no namespace is read by local name", entry: nsIDRealEl + linkEl("link", "", nsLinkReal), wantID: nsIDReal, wantLink: nsLinkReal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := mustParseOne(t, atomDocNS(tc.ns, tc.entry))

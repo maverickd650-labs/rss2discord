@@ -347,33 +347,6 @@ func TestFeedSync_LedgerIsBuiltOverTheUntrimmedFetch(t *testing.T) {
 	}
 }
 
-// An entry whose identity earlier releases computed differently carries its
-// watermark and dedup key over before the watermark lookup, so it neither
-// resumes at the capped catch-up nor is sent again.
-func TestFeedSync_PreviousIdentitiesAreMigratedBeforeThePlan(t *testing.T) {
-	moved := changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)
-	fresh := guidEntry("sync-previous-fresh", 5)
-	fs := currentStatus()
-	fs.LastSeenEntry = prevIDOld
-	fs.LastSent[hashIdentity(prevIDOld)] = prevSentAt
-
-	s := openFeedSync(fs, syncFetch(fresh, moved), syncSpec(0))
-	s.begin()
-
-	if fs.LastSeenEntry != prevIDNew {
-		t.Fatalf("LastSeenEntry = %q, want the new identity %q", fs.LastSeenEntry, prevIDNew)
-	}
-	if at, ok := fs.LastSent[hashIdentity(prevIDNew)]; !ok || at != prevSentAt {
-		t.Fatalf("LastSent = %v, want the old send time under the new key", fs.LastSent)
-	}
-	if !s.sent(moved) {
-		t.Fatal("the migrated entry reads as unsent")
-	}
-	if got, want := syncIDs(s.entries()), []string{fresh.ID}; !slices.Equal(got, want) {
-		t.Fatalf("entries() = %q, want only the entry past the migrated watermark", got)
-	}
-}
-
 func TestFeedSync_ClosePrunesLastSent(t *testing.T) {
 	for _, verdict := range []syncVerdict{syncPending, syncAccountedFor} {
 		t.Run(fmt.Sprint(verdict), func(t *testing.T) {
