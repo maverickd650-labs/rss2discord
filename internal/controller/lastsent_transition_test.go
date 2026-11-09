@@ -145,7 +145,7 @@ func applyLastSent(c client.Client, gvk schema.GroupVersionKind, keys []string) 
 func managedLastSent(obj *unstructured.Unstructured) (lastSent map[string]any, full string) {
 	GinkgoHelper()
 	for _, mf := range obj.GetManagedFields() {
-		if mf.Manager != transitionManager || mf.Subresource != "status" || mf.FieldsV1 == nil {
+		if !ownsTransitionStatus(mf) {
 			continue
 		}
 		full = mf.FieldsV1.GetRawString()
@@ -154,6 +154,18 @@ func managedLastSent(obj *unstructured.Unstructured) (lastSent map[string]any, f
 		lastSent = descend(tree, "f:status", "f:feeds", `k:{"name":"`+transitionFeed+`"}`, "f:lastSent")
 	}
 	return lastSent, full
+}
+
+// ownsTransitionStatus reports whether mf is the transition manager's entry
+// for the status subresource.
+func ownsTransitionStatus(mf metav1.ManagedFieldsEntry) bool {
+	if mf.Manager != transitionManager {
+		return false
+	}
+	if mf.Subresource != "status" {
+		return false
+	}
+	return mf.FieldsV1 != nil
 }
 
 // descend follows keys through nested JSON objects; nil if any is missing.
