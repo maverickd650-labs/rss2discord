@@ -38,15 +38,36 @@ import (
 // body that would otherwise fail. Only the explicit parameter is honoured; the
 // body is never sniffed for an encoding.
 func utf8FromHeader(data []byte, contentType string) []byte {
-	_, params, _ := mime.ParseMediaType(contentType)
-	enc, name := charset.Lookup(params["charset"])
-	if enc == nil || name == "utf-8" || utf8.Valid(data) || declaresEncoding(data) {
+	label := headerCharset(contentType)
+	if label == "" {
+		return data
+	}
+	if utf8.Valid(data) {
+		return data
+	}
+	if declaresEncoding(data) {
 		return data
 	}
 	// charset's decoders substitute U+FFFD for invalid input rather than
 	// failing, so there is no error to handle.
+	enc, _ := charset.Lookup(label)
 	out, _ := enc.NewDecoder().Bytes(data)
 	return out
+}
+
+// headerCharset is the canonical name of the encoding a Content-Type's charset
+// parameter names, or "" when there is none, it is UTF-8, or charset.Lookup
+// does not know it.
+func headerCharset(contentType string) string {
+	_, params, _ := mime.ParseMediaType(contentType)
+	enc, name := charset.Lookup(params["charset"])
+	if enc == nil {
+		return ""
+	}
+	if name == "utf-8" {
+		return ""
+	}
+	return name
 }
 
 // declaresEncoding reports whether data's XML declaration carries an encoding
@@ -58,16 +79,23 @@ func declaresEncoding(data []byte) bool {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	for {
 		tok, err := decoder.Token()
-		if err != nil {
-			return true
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			return false
-		case xml.ProcInst:
-			if t.Target == "xml" {
-				return bytes.Contains(t.Inst, []byte("encoding"))
-			}
+		if declares, decided := encodingVerdict(tok, err); decided {
+			return declares
 		}
 	}
+}
+
+// encodingVerdict is declaresEncoding's answer for one token: decided is false
+// while the prolog (comments, other processing instructions) continues.
+func encodingVerdict(tok xml.Token, err error) (declares, decided bool) {
+	if err != nil {
+		return true, true
+	}
+	switch t := tok.(type) {
+	case xml.StartElement:
+		return false, true
+	case xml.ProcInst:
+		return bytes.Contains(t.Inst, []byte("encoding")), t.Target == "xml"
+	}
+	return false, false
 }

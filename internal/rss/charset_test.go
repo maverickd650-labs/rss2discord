@@ -50,9 +50,7 @@ func TestUTF8FromHeader(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || len(entries) != 1 || entries[0].Title != utf8Title {
-				t.Fatalf("entries = %+v, err = %v, want title %q", entries, err, utf8Title)
-			}
+			requireOneTitle(t, entries, err)
 		})
 	}
 }
@@ -87,14 +85,27 @@ func TestFetchEntries_HonoursContentTypeCharset(t *testing.T) {
 	doc := `<?xml version="1.0"?><rss><channel><title>` + latin1Title + `</title><item><title>` + latin1Title + `</title><guid>1</guid></item></channel></rss>`
 
 	result, err := serve(t, latin1Type, doc)
-	if err != nil {
-		t.Fatalf("FetchEntries: %v", err)
-	}
-	if result.FeedTitle != utf8Title || len(result.Entries) != 1 || result.Entries[0].Title != utf8Title {
-		t.Fatalf("result = %+v, want titles %q", result, utf8Title)
+	requireOneTitle(t, result.Entries, err)
+	if result.FeedTitle != utf8Title {
+		t.Fatalf("FeedTitle = %q, want %q", result.FeedTitle, utf8Title)
 	}
 
 	if _, err := serve(t, "text/xml", doc); err == nil {
 		t.Fatal("without a charset parameter the Latin-1 body must still fail as invalid UTF-8")
+	}
+}
+
+// requireOneTitle fails unless the parse succeeded with exactly one entry
+// whose title decoded to utf8Title.
+func requireOneTitle(t *testing.T, entries []Entry, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want exactly one", entries)
+	}
+	if entries[0].Title != utf8Title {
+		t.Fatalf("title = %q, want %q", entries[0].Title, utf8Title)
 	}
 }
