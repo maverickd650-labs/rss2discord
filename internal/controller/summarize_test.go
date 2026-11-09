@@ -290,12 +290,9 @@ func leaksPanic(msg string) bool {
 	return strings.Contains(msg, testBoom) || strings.Contains(msg, "goroutine")
 }
 
-// feedGroupWithFeed is a FeedGroup holding one feed named for url; lastError
-// is empty for a feed that has not failed.
-func feedGroupWithFeed(url, lastError string) *v1beta1.FeedGroup {
-	return &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: []v1beta1.FeedStatus{
-		{Name: testFeedName(url), URL: url, LastError: lastError},
-	}}}
+// feedGroupOf is a FeedGroup whose status holds the given feeds.
+func feedGroupOf(feeds ...v1beta1.FeedStatus) *v1beta1.FeedGroup {
+	return &v1beta1.FeedGroup{Status: v1beta1.FeedGroupStatus{Feeds: feeds}}
 }
 
 // TestSetReadyCondition_InvalidIntervalPrecedence asserts InvalidInterval
@@ -305,7 +302,7 @@ func feedGroupWithFeed(url, lastError string) *v1beta1.FeedGroup {
 func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 	intervalErr := cadenceOf(&v1beta1.FeedGroupSpec{Interval: overflowingInterval}).err
 
-	failing := feedGroupWithFeed("u", testBoom)
+	failing := feedGroupOf(v1beta1.FeedStatus{Name: testFeedName("u"), URL: "u", LastError: testBoom})
 	setReadyCondition(failing, nil, intervalErr)
 	requireReadyReason(t, failing, "with a failing feed and a bad interval", reasonInvalidInterval)
 
@@ -315,7 +312,7 @@ func TestSetReadyCondition_InvalidIntervalPrecedence(t *testing.T) {
 
 	// A feed that panicked before handling anything was restored without a
 	// failure, so the feeds alone would read healthy: the panic decides Ready.
-	panicked := feedGroupWithFeed("u", "")
+	panicked := feedGroupOf(v1beta1.FeedStatus{Name: testFeedName("u"), URL: "u"})
 	setReadyCondition(panicked, &feedPanic{url: "u", value: testBoom, stack: []byte("goroutine 1")}, intervalErr)
 	ready := requireReadyReason(t, panicked, "after a feed panicked", reasonReconcilePanicked)
 	if leaksPanic(ready.Message) {
