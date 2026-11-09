@@ -101,6 +101,12 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("kubectl", "delete", "ns", feedGroupNamespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
+		// Cluster-scoped, so deleting the namespaces does not remove it; left
+		// behind it fails the next run's create on a reused cluster.
+		By("removing the metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
 		By("uninstalling the controller-manager Helm release")
 		cmd = exec.Command("mise", "run", "helm-uninstall")
 		_, _ = utils.Run(cmd)
