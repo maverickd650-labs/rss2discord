@@ -108,7 +108,6 @@ func TestProcessFeed_ValidatorsWithheldWhilePending(t *testing.T) {
 			fresh := guidEntry("validators-fresh", 1)
 			fs := feedStatusFor(fg, feed.Name)
 			fs.Initialized = true
-			fs.StateVersion = currentStateVersion
 			fs.LastSeenEntry = entryIdentity(sentBefore)
 			fs.LastSent[computeEntryKey(sentBefore)] = ts(testReconcileTime)
 			fs.ETag = validatorsOld
@@ -177,7 +176,6 @@ func TestProcessFeed_ValidatorsAfterSkippedEntry(t *testing.T) {
 			good := rss.Entry{ID: "https://example.com/skip-good", Title: "good", Seq: 0}
 			fs := feedStatusFor(fg, feed.Name)
 			fs.Initialized = true
-			fs.StateVersion = currentStateVersion
 			fs.ETag = validatorsOld
 			fetch := func() rss.FetchResult {
 				return rss.FetchResult{Entries: []rss.Entry{bad, good}, ETag: validatorsNext}

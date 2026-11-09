@@ -379,7 +379,7 @@ Rolling back to 0.17.x is an ordinary rollback: 0.17.0 already stores and serves
 
 #### Releases before v1beta1
 
-Each feed's status records the format of its delivery state in `status.feeds[].stateVersion`. This release no longer reads feed statuses written before `stateVersion` 1 (releases before 0.14), so upgrade through 0.14.x or 0.15.x first. Before upgrading past that point, confirm that no feed is still on the old format; an empty output with exit status 0 means the cluster is safe to upgrade:
+Releases up to 0.17 recorded the format of each feed's delivery state in `status.feeds[].stateVersion`; this release no longer has that field. It also no longer reads feed statuses written before `stateVersion` 1 (releases before 0.14), so upgrade through 0.14.x or 0.15.x first. Before upgrading past that point, run this check against the release you are upgrading from, and confirm that no feed is still on the old format; an empty output with exit status 0 means the cluster is safe to upgrade:
 
 ```bash
 set -o pipefail
@@ -390,7 +390,7 @@ kubectl get feedgroups -A -o json | jq -r '
 
 A feed that does appear there still holds delivery state in the old format, which this release no longer migrates, so it would resend entries whose stored keys no longer match. The check is conservative: a feed that has never settled a sync since upgrading to 0.14 or later (for example, one whose fetch keeps failing) also keeps `stateVersion` 0 and is listed. Let it complete a successful sync on 0.15.x, or confirm it holds no delivery state, before upgrading.
 
-A release before 0.14 drops `stateVersion` on its status writes, so after rolling back that far, upgrade through 0.15.x again before this release.
+A release before 0.14 drops `stateVersion` on its status writes, and this release never writes it, so after rolling back to 0.14.x or later this release's feed statuses read as `stateVersion` 0, and after rolling back before 0.14 upgrade through 0.15.x again before this release.
 
 Rolling back to a release that migrates `stateVersion` 0 statuses (0.14.x or 0.15.x) is safe, but feeds without GUIDs may post a few duplicates:
 

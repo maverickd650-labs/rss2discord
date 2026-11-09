@@ -161,7 +161,6 @@ An author or footer whose template renders blank for an entry is left out of tha
 | `url` | `string` | The URL this status was last synced from. |
 | `conditions` | `[]Condition` | `Reachable` (fetch) and `Delivered` (render/send), with machine-readable reasons such as `HTTP404`. |
 | `initialized` | `bool` | The feed has been fetched successfully with a usable configuration. |
-| `stateVersion` | `int32` | Format of `lastSeenEntry` and `lastSent` (currently 1). |
 | `lastChecked` | `Time` | When the feed was last checked successfully (a 304 counts). |
 | `lastSeenEntry` | `string` | The delivery watermark: the newest entry handled. |
 | `lastSent` | `map[string]Time` | When each recently sent entry was sent, keyed by entry identity hash. Bounded at 50 per feed. |

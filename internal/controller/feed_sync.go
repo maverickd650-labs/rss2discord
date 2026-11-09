@@ -30,10 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// currentStateVersion is the FeedStatus.StateVersion this controller writes: the
-// format of the stored LastSeenEntry and LastSent identities.
-const currentStateVersion = 1
-
 // A feedSync applies one fetch of one feed to that feed's FeedStatus. It is the
 // single owner of two things:
 //
@@ -43,7 +39,7 @@ const currentStateVersion = 1
 //     an entry's stripped identity is only unique if it is across the feed;
 //     the watermark lookup and planDelivery follow, then the catch-up limit and the backlog skip.
 //   - SETTLEMENT: whether the fetch is accounted for, which is the only thing
-//     that decides FeedStatus.Initialized, the stateVersion, whether the
+//     that decides FeedStatus.Initialized, whether the
 //     response's validators are stored, whether a failure is cleared, and
 //     LastSent pruning (see close).
 //
@@ -363,8 +359,6 @@ func (s *feedSync) skipBacklog(entries []rss.Entry) {
 //     document is accounted for, so a feed that recovered but happens to have
 //     nothing new to send doesn't keep reading as failing.
 //   - LastSent: pruned after a sync that sent or looked at entries.
-//
-// The stateVersion is stamped last, on every verdict that settles anything.
 func (s *feedSync) close(verdict syncVerdict) {
 	s.closing = true
 	switch verdict {
@@ -393,8 +387,6 @@ func (s *feedSync) close(verdict syncVerdict) {
 	default:
 		panic(fmt.Sprintf("feedSync: closed with invalid verdict %v", verdict))
 	}
-
-	s.fs.StateVersion = currentStateVersion
 }
 
 // persistValidators stores the response's cache validators.

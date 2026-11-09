@@ -239,13 +239,11 @@ var schemaYAML = typed.YAMLObject(`types:
         map:
           elementType:
             namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+          elementRelationship: atomic
     - name: name
       type:
         scalar: string
     - name: retryCount
-      type:
-        scalar: numeric
-    - name: stateVersion
       type:
         scalar: numeric
     - name: url

@@ -203,17 +203,13 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "ca714037.rss2discord.maverickd650.dev",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		// LeaderElectionReleaseOnCancel makes the leader step down voluntarily
+		// when the Manager ends, so a new leader doesn't wait LeaseDuration. That
+		// is safe only if the binary exits right after the Manager stops, and
+		// this one does: mgr.Start is the last call in main, with no deferred
+		// work or cleanup after it. The lease is released after the Manager has
+		// stopped its runnables, so no reconcile outlives it.
+		LeaderElectionReleaseOnCancel: true,
 	})
 	exitOnError(err, "Failed to start manager")
 

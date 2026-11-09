@@ -412,11 +412,11 @@ type FeedGroupSpec struct {
 	// +optional
 	RetryInterval string `json:"retryInterval,omitempty"`
 
-	// feeds is the list of feeds in this group, keyed by name. Capped at
-	// maxConcurrentFetches (see feedgroup_controller.go) so a single
-	// reconcile can't fan out an unbounded number of simultaneous outbound
-	// fetches. URLs must also be unique within a group, so one feed is never
-	// fetched and delivered twice.
+	// feeds is the list of feeds in this group, keyed by name. At most 50
+	// feeds per group, so a single FeedGroup (and its status object) stays
+	// bounded; a reconcile fetches at most 10 of them at once. URLs must also
+	// be unique within a group, so one feed is never fetched and delivered
+	// twice.
 	// +required
 	// +listType=map
 	// +listMapKey=name
@@ -497,13 +497,6 @@ type FeedStatus struct {
 	// +optional
 	Initialized bool `json:"initialized,omitempty"`
 
-	// stateVersion is the format of this feed's lastSeenEntry and lastSent
-	// identities. The controller sets it to 1; a status without it (0) was
-	// written before releases that understood it, and is no longer migrated.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	StateVersion int32 `json:"stateVersion,omitempty"`
-
 	// lastSeenEntry is the last seen entry identifier (GUID or Link) for
 	// this feed. Used to fetch only new entries after restarts. Identifiers
 	// longer than the field limit are stored as "sha256:<hex digest>".
@@ -513,8 +506,10 @@ type FeedStatus struct {
 	LastSeenEntry string `json:"lastSeenEntry,omitempty"`
 
 	// lastSent maps the identity of each entry recently sent to Discord to
-	// when it was sent, so an entry is never sent twice.
+	// when it was sent, so an entry is never sent twice. It is replaced as a
+	// whole on every status write, so keys the controller prunes disappear.
 	// +optional
+	// +mapType=atomic
 	// +kubebuilder:validation:MinProperties=1
 	LastSent map[string]metav1.Time `json:"lastSent,omitempty"`
 

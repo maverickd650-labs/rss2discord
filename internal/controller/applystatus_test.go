@@ -27,6 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
 	acv1beta1 "github.com/maverickd650-labs/rss2discord/api/v1beta1/applyconfiguration/api/v1beta1"
@@ -186,4 +188,45 @@ type failingSubResourceWriter struct {
 
 func (w *failingSubResourceWriter) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
 	return w.err
+}
+
+type ctxKey struct{}
+
+// TestApplyStatusSurvivesCancelledContext asserts the status write is
+// detached from the reconcile context's cancellation (so a pass that posted
+// entries during shutdown still records them), is bounded by
+// statusWriteTimeout, and still carries the reconcile context's values.
+func TestApplyStatusSurvivesCancelledContext(t *testing.T) {
+	var seen context.Context
+	c := interceptor.NewClient(fake.NewClientBuilder().Build(), interceptor.Funcs{
+		SubResourceApply: func(ctx context.Context, _ client.Client, _ string, _ runtime.ApplyConfiguration, _ ...client.SubResourceApplyOption) error {
+			seen = ctx
+			return ctx.Err()
+		},
+	})
+	r := &FeedGroupReconciler{Client: c}
+	fg := &v1beta1.FeedGroup{}
+	fg.Name = "test"
+	fg.Namespace = testNamespace
+
+	parent, cancel := context.WithCancel(context.WithValue(t.Context(), ctxKey{}, "carried"))
+	cancel()
+	before := time.Now()
+	if err := r.applyStatus(parent, fg); err != nil {
+		t.Fatalf("applyStatus with a cancelled context: %v", err)
+	}
+	after := time.Now()
+	if seen == nil {
+		t.Fatal("the client never saw the write")
+	}
+	deadline, ok := seen.Deadline()
+	if !ok {
+		t.Fatal("the status write has no deadline")
+	}
+	if deadline.Before(before.Add(statusWriteTimeout)) || deadline.After(after.Add(statusWriteTimeout)) {
+		t.Fatalf("deadline %v, want %v after the call (between %v and %v)", deadline, statusWriteTimeout, before, after)
+	}
+	if got := seen.Value(ctxKey{}); got != "carried" {
+		t.Fatalf("context value = %v, want it to flow through", got)
+	}
 }

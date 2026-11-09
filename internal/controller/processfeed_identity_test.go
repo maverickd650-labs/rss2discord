@@ -83,9 +83,6 @@ func (f feedUnderTest) processTwice(t *testing.T, entries []rss.Entry, want ...s
 	if got := sentContents(t, server); !slices.Equal(got, want) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
-	if fs := feedStatusFor(f.fg, f.feed.Name); fs.StateVersion != currentStateVersion {
-		t.Fatalf("stateVersion=%d, want %d", fs.StateVersion, currentStateVersion)
-	}
 }
 
 // Links that differ only by fragment or ref are distinct entries when they

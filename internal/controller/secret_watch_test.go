@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -138,6 +140,82 @@ func TestFeedGroupsForSecretListFailure(t *testing.T) {
 	}
 }
 
+// TestFeedGroupsForSecretMapsByNamespaceAndName pins which FeedGroups a Secret
+// event enqueues: those in the Secret's namespace that reference it by name,
+// and nothing else (not same-named Secrets elsewhere, not other Secrets).
+func TestFeedGroupsForSecretMapsByNamespaceAndName(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1beta1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	group := func(namespace, name, secret string) *v1beta1.FeedGroup {
+		fg := &v1beta1.FeedGroup{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
+		fg.Spec.DiscordWebhookSecretRef.Name = secret
+		return fg
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&v1beta1.FeedGroup{}, webhookSecretNameField, indexWebhookSecretName).
+		WithObjects(
+			group("ns-a", "references-1", "watched"),
+			group("ns-a", "references-2", "watched"),
+			group("ns-a", "other-secret", "other"),
+			group("ns-b", "same-secret-name-elsewhere", "watched"),
+		).Build()
+	r := &FeedGroupReconciler{Client: c}
+	secret := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "watched", Namespace: "ns-a"}}
+	var got []string
+	for _, req := range r.feedGroupsForSecret(t.Context(), secret) {
+		got = append(got, req.Namespace+"/"+req.Name)
+	}
+	slices.Sort(got)
+	if want := []string{"ns-a/references-1", "ns-a/references-2"}; !slices.Equal(got, want) {
+		t.Fatalf("requests = %v, want %v", got, want)
+	}
+	if got := r.feedGroupsForSecret(t.Context(), &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "unreferenced", Namespace: "ns-a"}}); got != nil {
+		t.Fatalf("requests = %v, want none for an unreferenced Secret", got)
+	}
+}
+
+func TestIndexWebhookSecretName(t *testing.T) {
+	fg := &v1beta1.FeedGroup{}
+	fg.Spec.DiscordWebhookSecretRef.Name = "hook"
+	if got := indexWebhookSecretName(fg); !slices.Equal(got, []string{"hook"}) {
+		t.Fatalf("index = %v, want [hook]", got)
+	}
+	if got := indexWebhookSecretName(&corev1.Secret{}); got != nil {
+		t.Fatalf("index of a non-FeedGroup = %v, want nil", got)
+	}
+}
+
+// failingIndexerManager is a manager whose field indexer always fails.
+type failingIndexerManager struct {
+	ctrl.Manager
+	err error
+}
+
+func (m failingIndexerManager) GetFieldIndexer() client.FieldIndexer {
+	return failingIndexer{err: m.err}
+}
+
+type failingIndexer struct{ err error }
+
+func (i failingIndexer) IndexField(context.Context, client.Object, string, client.IndexerFunc) error {
+	return i.err
+}
+
+var _ = Describe("Webhook Secret index registration", func() {
+	It("returns the error when the field index can't be registered", func() {
+		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+			Scheme:  k8sClient.Scheme(),
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		errBoom := errors.New("boom")
+		r := &FeedGroupReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), WatchWebhookSecrets: true}
+		Expect(r.SetupWithManager(failingIndexerManager{Manager: mgr, err: errBoom})).To(MatchError(errBoom))
+	})
+})
+
 func TestWatchNamespaces(t *testing.T) {
 	if got := WatchNamespaces(" , "); got != nil {
 		t.Errorf("blank flag = %v, want nil (every namespace)", got)
@@ -154,31 +232,6 @@ func TestWatchNamespaces(t *testing.T) {
 }
 
 var _ = Describe("Webhook Secret watch", func() {
-	It("maps a Secret to the FeedGroups in its namespace that reference it", func() {
-		const (
-			watched     = "secret-watch-a"
-			referencesA = "secret-watch-a1"
-			alsoA       = "secret-watch-a2"
-			referencesB = "secret-watch-b"
-		)
-		createWebhookSecret(ctx, watched, "https://discord.com/api/webhooks/1/a")
-		for name, secret := range map[string]string{
-			referencesA: watched, alsoA: watched, referencesB: "secret-watch-other",
-		} {
-			Expect(k8sClient.Create(ctx, newTestFeedGroup(testGroup{name: name, secret: secret}, exampleFeedURL))).To(Succeed())
-		}
-
-		r := &FeedGroupReconciler{Client: k8sClient}
-		secret := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: watched, Namespace: testNamespace}}
-		requests := r.feedGroupsForSecret(ctx, secret)
-		names := make([]string, 0, len(requests))
-		for _, req := range requests {
-			Expect(req.Namespace).To(Equal(testNamespace))
-			names = append(names, req.Name)
-		}
-		Expect(names).To(ConsistOf(referencesA, alsoA))
-	})
-
 	It("retries a feed backed off after a permanent send failure once its webhook Secret changes", func() {
 		const feedGroupName = "test-feedgroup-secret-rotation"
 		const secretName = "discord-webhook-secret-rotation"

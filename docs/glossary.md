@@ -16,7 +16,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
-  `StateVersion`, the stored ETag/Last-Modified validators, a cleared failure
+  stored ETag/Last-Modified validators, a cleared failure
   (`LastError`, `RetryCount`, the feed backoff) and `LastSent` pruning. A fetch is
   *accounted for* when every entry from it was sent, filtered out, already sent or
   skipped; only then are validators stored, because a conditional GET that comes back 304
