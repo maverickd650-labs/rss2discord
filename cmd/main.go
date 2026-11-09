@@ -213,20 +213,7 @@ func main() {
 	})
 	exitOnError(err, "Failed to start manager")
 
-	// Tracing is opt-in: with no --otlp-endpoint, transportWrap stays nil and
-	// rss.NewClientWithTransportWrap / discord.NewHTTPClientWithTransportWrap
-	// behave exactly like the unwrapped constructors they replace.
-	var transportWrap func(http.RoundTripper) http.RoundTripper
-	if otlpEndpoint != "" {
-		tp, shutdown, err := telemetry.Setup(context.Background(), otlpEndpoint)
-		exitOnError(err, "Failed to set up tracing", "otlp-endpoint", otlpEndpoint)
-		transportWrap = telemetry.HTTPTransportWrap(tp)
-
-		exitOnError(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-			<-ctx.Done()
-			return shutdown(context.Background())
-		})), "Failed to register tracer shutdown")
-	}
+	transportWrap := setupTracing(mgr, otlpEndpoint)
 
 	// The RSS client and Discord HTTP client are constructed once here and
 	// shared across every reconcile, so keep-alive connections to feed/webhook
@@ -252,4 +239,23 @@ func main() {
 
 	setupLog.Info("Starting manager")
 	exitOnError(mgr.Start(ctrl.SetupSignalHandler()), "Failed to run manager")
+}
+
+// setupTracing returns the transport wrapper that traces outbound RSS and
+// Discord requests, and registers the tracer's shutdown with mgr. Tracing is
+// opt-in: with no --otlp-endpoint it returns nil, and
+// rss.NewClientWithTransportWrap / discord.NewHTTPClientWithTransportWrap then
+// behave exactly like the unwrapped constructors they replace.
+func setupTracing(mgr manager.Manager, otlpEndpoint string) func(http.RoundTripper) http.RoundTripper {
+	if otlpEndpoint == "" {
+		return nil
+	}
+	tp, shutdown, err := telemetry.Setup(context.Background(), otlpEndpoint)
+	exitOnError(err, "Failed to set up tracing", "otlp-endpoint", otlpEndpoint)
+
+	exitOnError(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return shutdown(context.Background())
+	})), "Failed to register tracer shutdown")
+	return telemetry.HTTPTransportWrap(tp)
 }
