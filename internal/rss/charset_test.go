@@ -58,7 +58,7 @@ func TestUTF8FromHeader(t *testing.T) {
 func TestUTF8FromHeader_LeavesUTF8AndUnparsableBodiesAlone(t *testing.T) {
 	for _, tc := range []struct{ name, doc, contentType string }{
 		{"utf-8 body, utf-8 label", `<rss><channel><item><title>Café</title></item></channel></rss>`, "text/xml; charset=utf-8"},
-		{"declared unknown encoding", `<?xml version="1.0" encoding="no-such"?><rss/>`, latin1Type},
+		{"declared unknown encoding", `<?xml version="1.0" encoding="no-such"?><rss><channel><title>` + latin1Title + `</title></channel></rss>`, latin1Type},
 		{"empty body", ``, latin1Type},
 		{"utf-8 body under a mislabelled latin-1 header", `<rss><channel><item><title>Café</title></item></channel></rss>`, latin1Type},
 	} {

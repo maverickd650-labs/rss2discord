@@ -91,14 +91,20 @@ func ownKubectl(kind, name, namespace string) {
 }
 
 // removeOwned runs the recorded cleanups newest first, so dependents go before
-// what they depend on, and forgets them. Failures are ignored: cleanup is best
-// effort and must not mask a spec failure.
+// what they depend on, and forgets them. Every cleanup is attempted; any that
+// failed are then reported together, so the suite cannot pass while something
+// it created is still on the cluster.
 func removeOwned() {
+	var failed []string
 	for _, command := range slices.Backward(ownedCleanups) {
-		By("removing test-owned resource: " + strings.Join(command[1:], " "))
-		_, _ = utils.Run(exec.Command(command[0], command[1:]...))
+		line := strings.Join(command, " ")
+		By("removing test-owned resource: " + line)
+		if _, err := utils.Run(exec.Command(command[0], command[1:]...)); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", line, err))
+		}
 	}
 	ownedCleanups = nil
+	Expect(failed).To(BeEmpty(), "Failed to remove test-owned resources")
 }
 
 // absent reports whether the lookup command fails, i.e. the resource it names
