@@ -12,6 +12,7 @@ jobs:
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
