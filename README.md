@@ -385,7 +385,7 @@ Releases up to 0.17 recorded the format of each feed's delivery state in `status
 set -o pipefail
 kubectl get feedgroups -A -o json | jq -r '
   .items[] | . as $g | .status.feeds[]? | select((.stateVersion // 0) < 1)
-  | "\($g.metadata.namespace)/\($g.metadata.name)  \(.rssUrl)"'
+  | "\($g.metadata.namespace)/\($g.metadata.name)  \([.name, (.url // .rssUrl)] | map(select(. != null)) | join(" "))"'
 ```
 
 A feed that does appear there still holds delivery state in the old format, which this release no longer migrates, so it would resend entries whose stored keys no longer match. The check is conservative: a feed that has never settled a sync since upgrading to 0.14 or later (for example, one whose fetch keeps failing) also keeps `stateVersion` 0 and is listed. Let it complete a successful sync on 0.15.x, or confirm it holds no delivery state, before upgrading.
