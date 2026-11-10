@@ -70,27 +70,16 @@ func mustIdentify(t *testing.T, kind, name, namespace string) Object {
 	return o
 }
 
-// requireResult fails unless an Object operation succeeded with want.
-func requireResult[T comparable](t *testing.T, operation string, o Object, got T, err error, want T) {
+// requireOutcome fails unless operation, a method of o, succeeds with want.
+func requireOutcome[T comparable](t *testing.T, o Object, operation func() (T, error), want T) {
 	t.Helper()
+	got, err := operation()
 	if err != nil {
-		t.Fatalf("%s(%s): %v", operation, o, err)
+		t.Fatalf("%s: %v", o, err)
 	}
 	if got != want {
-		t.Fatalf("%s(%s) = %v, want %v", operation, o, got, want)
+		t.Fatalf("%s: got %v, want %v", o, got, want)
 	}
-}
-
-func requireDelete(t *testing.T, o Object, want DeleteOutcome) {
-	t.Helper()
-	got, err := o.Delete()
-	requireResult(t, "Delete", o, got, err, want)
-}
-
-func requireExists(t *testing.T, o Object, want bool) {
-	t.Helper()
-	got, err := o.Exists()
-	requireResult(t, "Exists", o, got, err, want)
 }
 
 func createBinding(t *testing.T, name string) Object {
@@ -160,18 +149,18 @@ func TestObjectDeleteIsBoundToUID(t *testing.T) {
 	startCluster(t)
 
 	first := createBinding(t, "owned")
-	requireExists(t, first, true)
-	requireDelete(t, first, Deleted)
-	requireExists(t, first, false)
-	requireDelete(t, first, AlreadyGone)
+	requireOutcome(t, first, first.Exists, true)
+	requireOutcome(t, first, first.Delete, Deleted)
+	requireOutcome(t, first, first.Exists, false)
+	requireOutcome(t, first, first.Delete, AlreadyGone)
 
 	successor := createBinding(t, "owned")
 	if successor.UID == first.UID {
 		t.Fatal("the recreated binding kept the old UID")
 	}
-	requireExists(t, first, false)
-	requireDelete(t, first, Replaced)
-	requireExists(t, successor, true)
+	requireOutcome(t, first, first.Exists, false)
+	requireOutcome(t, first, first.Delete, Replaced)
+	requireOutcome(t, successor, successor.Exists, true)
 }
 
 // Every kind the e2e suite creates has a working delete path.
@@ -193,7 +182,7 @@ func TestObjectDeleteCoversEveryOwnedKind(t *testing.T) {
 		mustIdentify(t, "crd", "widgets.owned.example.com", ""),
 		mustIdentify(t, "ns", "owned-ns", ""),
 	} {
-		requireDelete(t, o, Deleted)
+		requireOutcome(t, o, o.Delete, Deleted)
 	}
 }
 
