@@ -83,10 +83,15 @@ func requireOutcome[T comparable](t *testing.T, o Object, operation func() (T, e
 	}
 }
 
+const (
+	kindClusterRoleBinding = "clusterrolebinding"
+	defaultNamespace       = "default"
+)
+
 func createBinding(t *testing.T, name string) Object {
 	t.Helper()
-	mustRun(t, "create", "clusterrolebinding", name, "--clusterrole=view", "--user=someone")
-	return mustIdentify(t, Object{Kind: "clusterrolebinding", Name: name})
+	mustRun(t, "create", kindClusterRoleBinding, name, "--clusterrole=view", "--user=someone")
+	return mustIdentify(t, Object{Kind: kindClusterRoleBinding, Name: name})
 }
 
 // listCommand is the kind of listing List classifies: one line per match.
@@ -132,14 +137,14 @@ func TestLookupZeroValueIsFailed(t *testing.T) {
 func TestIdentify(t *testing.T) {
 	startCluster(t)
 
-	if _, err := Identify("clusterrolebinding", "missing", ""); err == nil {
+	if _, err := Identify(kindClusterRoleBinding, "missing", ""); err == nil {
 		t.Fatal("Identify of a missing object succeeded")
 	}
-	if _, err := Identify("secret", "x", "default"); err == nil {
+	if _, err := Identify("secret", "x", defaultNamespace); err == nil {
 		t.Fatal("Identify of a kind with no delete path succeeded")
 	}
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "no-such-kubeconfig"))
-	if _, err := Identify("ns", "default", ""); err == nil {
+	if _, err := Identify("ns", defaultNamespace, ""); err == nil {
 		t.Fatal("Identify succeeded although the lookup failed")
 	}
 }
@@ -169,7 +174,7 @@ func TestObjectDeleteCoversEveryOwnedKind(t *testing.T) {
 	startCluster(t)
 
 	mustRun(t, "create", "ns", "owned-ns")
-	mustRun(t, "run", "owned-pod", "--restart=Never", "--image=busybox", "-n", "default")
+	mustRun(t, "run", "owned-pod", "--restart=Never", "--image=busybox", "-n", defaultNamespace)
 	crd := filepath.Join(t.TempDir(), "crd.yaml")
 	if err := os.WriteFile(crd, []byte(ownedCRD), 0o600); err != nil {
 		t.Fatal(err)
@@ -178,8 +183,8 @@ func TestObjectDeleteCoversEveryOwnedKind(t *testing.T) {
 	createBinding(t, "owned-binding")
 
 	for _, o := range []Object{
-		mustIdentify(t, Object{Kind: "pod", Name: "owned-pod", Namespace: "default"}),
-		mustIdentify(t, Object{Kind: "clusterrolebinding", Name: "owned-binding"}),
+		mustIdentify(t, Object{Kind: "pod", Name: "owned-pod", Namespace: defaultNamespace}),
+		mustIdentify(t, Object{Kind: kindClusterRoleBinding, Name: "owned-binding"}),
 		mustIdentify(t, Object{Kind: "crd", Name: "widgets.owned.example.com"}),
 		mustIdentify(t, Object{Kind: "ns", Name: "owned-ns"}),
 	} {
