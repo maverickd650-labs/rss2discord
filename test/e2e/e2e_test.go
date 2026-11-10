@@ -107,11 +107,24 @@ func removeOwned() {
 	Expect(failed).To(BeEmpty(), "Failed to remove test-owned resources")
 }
 
-// absent reports whether the lookup command fails, i.e. the resource it names
-// is not on the cluster before this run creates it.
+// absent reports whether a listing command that prints one line per match
+// (and nothing when there is none) found nothing. A failing lookup is a setup
+// failure, never "absent": treating a timeout or an auth error as absence
+// would record a cleanup for something this run did not create.
 func absent(command ...string) bool {
-	_, err := utils.Run(exec.Command(command[0], command[1:]...))
-	return err != nil
+	GinkgoHelper()
+	out, err := utils.Run(exec.Command(command[0], command[1:]...))
+	Expect(err).NotTo(HaveOccurred(), "Failed to check for a pre-existing resource")
+	return strings.TrimSpace(out) == ""
+}
+
+// envOr is the environment variable name's value, or fallback when unset or
+// empty: the same defaults the helm-* mise tasks apply.
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
 }
 
 var _ = Describe("Manager", Ordered, func() {
@@ -137,10 +150,12 @@ var _ = Describe("Manager", Ordered, func() {
 		// Recorded before the deploy so a half-finished install is still removed,
 		// and only when absent so a release or CRD already on a reused cluster is
 		// left in place. The CRD is recorded first, so it goes after the release.
-		if absent("kubectl", "get", "crd", feedGroupCRDName) {
+		if absent("kubectl", "get", "crd", feedGroupCRDName, "--ignore-not-found", "-o", "name") {
 			ownKubectl("crd", feedGroupCRDName, "")
 		}
-		if absent("mise", "run", "helm-status") {
+		release := envOr("HELM_RELEASE", "rss2discord-operator")
+		if absent("helm", "list", "--namespace", envOr("HELM_NAMESPACE", namespace),
+			"--all", "--short", "--filter", "^"+release+"$") {
 			own("mise", "run", "helm-uninstall")
 		}
 

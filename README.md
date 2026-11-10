@@ -390,7 +390,7 @@ kubectl get feedgroups -A -o json | jq -r '
 
 A feed that does appear there still holds delivery state in the old format, which this release no longer migrates, so it would resend entries whose stored keys no longer match. The check is conservative: a feed that has never settled a sync since upgrading to 0.14 or later (for example, one whose fetch keeps failing) also keeps `stateVersion` 0 and is listed. Let it complete a successful sync on 0.15.x, or confirm it holds no delivery state, before upgrading.
 
-A release before 0.14 drops `stateVersion` on its status writes, and this release never writes it, so after rolling back to 0.14.x or later this release's feed statuses read as `stateVersion` 0, and after rolling back before 0.14 upgrade through 0.15.x again before this release.
+This release never writes `stateVersion`. After you roll back to 0.14.x or later, the feed statuses written by this release read as `stateVersion` 0. A release before 0.14 drops `stateVersion` on its status writes. If you roll back to a release before 0.14, upgrade through 0.15.x again before you return to this release.
 
 Rolling back to a release that migrates `stateVersion` 0 statuses (0.14.x or 0.15.x) is safe, but feeds without GUIDs may post a few duplicates:
 
