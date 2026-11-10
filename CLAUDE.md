@@ -20,7 +20,7 @@ local == CI.** Do not invoke `go test`/`golangci-lint` directly; use the tasks (
 codegen, envtest assets, and the custom lint binary).
 
 - `mise run test` — unit tests (runs `manifests`, `generate`, `fmt`, `vet` first; uses envtest = real K8s API server + etcd; `-race -coverprofile cover.out`). Excludes `/e2e`.
-- `mise run test-e2e` — e2e tests against a Kind cluster (created if missing; deleted afterwards only if this run created it; never run against a real cluster).
+- `mise run test-e2e` — e2e tests against a dedicated, single-tenant Kind cluster (`rss2discord-operator-test-e2e`, created if missing and deleted afterwards only if this run created it; never run against a shared or real cluster, so no shared-cluster ownership plumbing is needed).
 - `mise run lint` / `lint-fix` — golangci-lint. Note: this project builds a **custom** golangci-lint binary (`.custom-gcl.yml` adds the `logcheck` module plugin), so the `lint` task depends on `golangci-lint-custom` which produces `bin/golangci-lint-custom`.
 - `mise run build` — build manager binary to `bin/manager`.
 - `mise run run` — run the controller locally against the current kubeconfig context.

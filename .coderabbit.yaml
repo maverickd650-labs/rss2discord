@@ -127,6 +127,19 @@ reviews:
         Keep the hardened securityContext: runAsNonRoot, readOnlyRootFilesystem,
         allowPrivilegeEscalation false, capabilities drop ALL, seccompProfile
         RuntimeDefault.
+    - path: "test/e2e/**"
+      instructions: >-
+        E2E tests run exclusively against a dedicated, disposable single-tenant
+        Kind cluster (rss2discord-operator-test-e2e), never against a shared or
+        multi-tenant cluster. Do not suggest shared-cluster ownership tracking,
+        UID deletion preconditions, pre-existing release/CRD preservation, or
+        teardown authorization gates.
+    - path: ".mise/config.toml"
+      instructions: >-
+        The test-e2e task always targets a dedicated, single-tenant Kind cluster
+        (rss2discord-operator-test-e2e), never a shared or production cluster.
+        Do not suggest shared-cluster ownership tracking or teardown
+        authorization gates for test-e2e.
 
   tools:
     golangci-lint:

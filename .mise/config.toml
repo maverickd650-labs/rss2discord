@@ -125,29 +125,17 @@ gremlins unleash --exclude-files '.*zz_generated.*' ./internal
 description = "Run e2e tests against a Kind cluster (Kind must be installed)"
 depends = ["manifests", "generate", "fmt", "vet"]
 run = '''
+# E2E tests always run against a dedicated, isolated Kind cluster
+# (rss2discord-operator-test-e2e), never a shared or multi-tenant cluster (see
+# AGENTS.md). A pre-created local Kind cluster is kept on exit for faster
+# iteration; CI creates a fresh cluster and deletes it via the trap below.
 cluster="${KIND_CLUSTER}"
-kubeconfig="$(mktemp)"
-created_cluster=false
-# Ownership is decided by this run alone, never inherited: only a cluster
-# created below is owned. On an existing cluster, CRD teardown needs the
-# explicit E2E_DELETE_CRD=true opt-in.
-owned_cluster=false
-cleanup() {
-  rm -f "$kubeconfig"
-  if [ "$created_cluster" = true ]; then
-    kind delete cluster --name "$cluster"
-  fi
-}
-trap cleanup EXIT
 if ! kind get clusters | grep -qx "$cluster"; then
   echo "Creating Kind cluster '$cluster'..."
-  kind create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --kubeconfig "$kubeconfig"
-  created_cluster=true
-  owned_cluster=true
-else
-  kind export kubeconfig --name "$cluster" --kubeconfig "$kubeconfig"
+  kind create cluster --name "$cluster" --image "$KIND_NODE_IMAGE"
+  trap 'kind delete cluster --name "$cluster"' EXIT
 fi
-KUBECONFIG="$kubeconfig" KIND=kind KIND_CLUSTER="$cluster" E2E_OWNS_CLUSTER="$owned_cluster" go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+KIND=kind KIND_CLUSTER="$cluster" go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 '''
 
 [tasks.promtool-rules]

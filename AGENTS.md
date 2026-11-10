@@ -75,8 +75,8 @@ Do not move files around. The CLI expects files in specific locations.
 Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold. Do NOT create files manually.
 
 ### E2E Tests Require an Isolated Kind Cluster
-The e2e tests are designed to validate the solution in an isolated environment (similar to GitHub Actions CI).
-Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluster (not your “real” dev/prod cluster).
+The e2e tests (`test/e2e/`, `mise run test-e2e`) are designed to validate the solution in a dedicated, single-tenant [Kind](https://kind.sigs.k8s.io/) cluster (`rss2discord-operator-test-e2e`), matching GitHub Actions CI.
+Ensure you run them against a dedicated Kind cluster (never a shared, multi-tenant, or "real" dev/prod cluster). Because the cluster is dedicated to the e2e suite, `test/e2e` tears down its resources directly without shared-cluster ownership tracking, UID deletion preconditions, or teardown authorization gates.
 
 ## After Making Changes
 
