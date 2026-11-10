@@ -26,7 +26,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -68,26 +67,70 @@ const feedGroupCurlPodName = "curl-metrics-feedgroup"
 // uninstall, so the suite removes it itself when this run installed it.
 const feedGroupCRDName = "feedgroups.rss2discord.maverickd650.dev"
 
-// ownedCleanups are the commands that remove what this run created, in
-// creation order. A resource is only recorded once its creation succeeded (or,
-// for the Helm release and CRD, once they were seen to be absent beforehand),
-// so on a reused cluster the suite removes exactly what it added: nothing that
-// was already there, and nothing is left for cluster deletion to mop up.
-var ownedCleanups [][]string
-
-// own records the command that removes a resource this run created.
-func own(command ...string) {
-	ownedCleanups = append(ownedCleanups, command)
+// ownedCleanup removes one thing this run created and reports what it did.
+type ownedCleanup struct {
+	what   string
+	remove func() error
 }
 
-// ownKubectl records a kubectl delete for a resource this run created.
-// namespace is "" for a cluster-scoped resource.
-func ownKubectl(kind, name, namespace string) {
-	command := []string{"kubectl", "delete", kind, name, "--ignore-not-found"}
-	if namespace != "" {
-		command = append(command, "-n", namespace)
+// ownedCleanups remove what this run created, in creation order. An entry is
+// only recorded for something the run demonstrably created: a kubectl create
+// that succeeded, or a Helm release or CRD that a successful lookup found
+// absent before the deploy and present after it. Kubernetes objects are
+// recorded with the UID they were created with and deleted on that UID, so a
+// repeated run or a concurrent replacement can never hand this run's cleanup
+// to an unrelated object of the same name. On a reused cluster the suite
+// therefore removes exactly what it added.
+var ownedCleanups []ownedCleanup
+
+// own records the object this run just created, pinned to its UID.
+func own(kind, name, namespace string) {
+	GinkgoHelper()
+	object, err := utils.Identify(kind, name, namespace)
+	Expect(err).NotTo(HaveOccurred(), "Failed to identify a resource this run created")
+	ownedCleanups = append(ownedCleanups, ownedCleanup{
+		what:   object.String(),
+		remove: func() error { return removeObject(object) },
+	})
+}
+
+// removeObject deletes object if it is still the one this run created, and
+// waits until it is gone so an immediate re-run does not meet it terminating.
+// An object already gone, or replaced by another of the same name, is left
+// alone: neither is this run's to delete.
+func removeObject(object utils.Object) error {
+	outcome, err := object.Delete()
+	if err != nil {
+		return err
 	}
-	own(command...)
+	if outcome != utils.Deleted {
+		return nil
+	}
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		exists, err := object.Exists()
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("%s still exists after its delete was accepted", object)
+}
+
+// ownHelmRelease records the Helm release for uninstalling. Helm releases have
+// no UID to bind to, so this is only called once the release was seen absent
+// before the deploy and present after it.
+func ownHelmRelease() {
+	ownedCleanups = append(ownedCleanups, ownedCleanup{
+		what: "helm release",
+		remove: func() error {
+			_, err := utils.Run(exec.Command("mise", "run", "helm-uninstall"))
+			return err
+		},
+	})
 }
 
 // removeOwned runs the recorded cleanups newest first, so dependents go before
@@ -96,26 +139,34 @@ func ownKubectl(kind, name, namespace string) {
 // it created is still on the cluster.
 func removeOwned() {
 	var failed []string
-	for _, command := range slices.Backward(ownedCleanups) {
-		line := strings.Join(command, " ")
-		By("removing test-owned resource: " + line)
-		if _, err := utils.Run(exec.Command(command[0], command[1:]...)); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", line, err))
+	for _, cleanup := range slices.Backward(ownedCleanups) {
+		By("removing test-owned resource: " + cleanup.what)
+		if err := cleanup.remove(); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", cleanup.what, err))
 		}
 	}
 	ownedCleanups = nil
 	Expect(failed).To(BeEmpty(), "Failed to remove test-owned resources")
 }
 
-// absent reports whether a listing command that prints one line per match
-// (and nothing when there is none) found nothing. A failing lookup is a setup
-// failure, never "absent": treating a timeout or an auth error as absence
-// would record a cleanup for something this run did not create.
-func absent(command ...string) bool {
+// lookup classifies a listing command (see utils.List) and aborts setup when
+// the lookup itself failed: with ownership indeterminate, the run must neither
+// assume the resource is its own nor carry on to deploy over it.
+func lookup(command ...string) utils.Lookup {
 	GinkgoHelper()
-	out, err := utils.Run(exec.Command(command[0], command[1:]...))
-	Expect(err).NotTo(HaveOccurred(), "Failed to check for a pre-existing resource")
-	return strings.TrimSpace(out) == ""
+	result, err := utils.List(command...)
+	Expect(err).NotTo(HaveOccurred(), "Failed to determine whether a resource already exists")
+	Expect(result).NotTo(Equal(utils.LookupFailed), "Indeterminate lookup result")
+	return result
+}
+
+// created reports whether a resource went from absent to present across the
+// deploy, i.e. this run created it.
+func created(before, after utils.Lookup) bool {
+	if before != utils.LookupAbsent {
+		return false
+	}
+	return after == utils.LookupPresent
 }
 
 // envOr is the environment variable name's value, or fallback when unset or
@@ -139,7 +190,7 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-		ownKubectl("ns", namespace, "")
+		own("ns", namespace, "")
 
 		By("labeling the namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
@@ -147,23 +198,31 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
-		// Recorded before the deploy so a half-finished install is still removed,
-		// and only when absent so a release or CRD already on a reused cluster is
-		// left in place. The CRD is recorded first, so it goes after the release.
-		if absent("kubectl", "get", "crd", feedGroupCRDName, "--ignore-not-found", "-o", "name") {
-			ownKubectl("crd", feedGroupCRDName, "")
-		}
+		// Looked up before the deploy, so that afterwards only what this run
+		// created is recorded; a failed lookup aborts here, before anything
+		// is deployed over a release or CRD of unknown ownership.
+		crdLookup := []string{"kubectl", "get", "crd", feedGroupCRDName, "--ignore-not-found", "-o", "name"}
 		release := envOr("HELM_RELEASE", "rss2discord-operator")
-		if absent("helm", "list", "--namespace", envOr("HELM_NAMESPACE", namespace),
-			"--all", "--short", "--filter", "^"+release+"$") {
-			own("mise", "run", "helm-uninstall")
-		}
+		releaseLookup := []string{"helm", "list", "--namespace", envOr("HELM_NAMESPACE", namespace),
+			"--all", "--short", "--filter", "^" + release + "$"}
+		crdBefore := lookup(crdLookup...)
+		releaseBefore := lookup(releaseLookup...)
 
 		By("deploying the controller-manager via Helm")
 		// IMG is set in the suite's BeforeSuite and read from the environment by the mise task.
 		cmd = exec.Command("mise", "run", "helm-deploy")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager via Helm")
+		_, deployErr := utils.Run(cmd)
+
+		// Recorded before the deploy's result is asserted, so a half-finished
+		// install is still removed. The CRD goes first so that it is removed
+		// after the release (the chart keeps it on uninstall).
+		if created(crdBefore, lookup(crdLookup...)) {
+			own("crd", feedGroupCRDName, "")
+		}
+		if created(releaseBefore, lookup(releaseLookup...)) {
+			ownHelmRelease()
+		}
+		Expect(deployErr).NotTo(HaveOccurred(), "Failed to deploy the controller-manager via Helm")
 	})
 
 	// After all tests have been executed, remove everything this run created
@@ -259,7 +318,7 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 			// Cluster-scoped, so deleting the namespaces would not remove it.
-			ownKubectl("clusterrolebinding", metricsRoleBindingName, "")
+			own("clusterrolebinding", metricsRoleBindingName, "")
 
 			By("validating that the metrics service is available")
 			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
@@ -325,7 +384,7 @@ var _ = Describe("Manager", Ordered, func() {
 				}`, token, metricsServiceName, namespace, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
-			ownKubectl("pod", "curl-metrics", namespace)
+			own("pod", "curl-metrics", namespace)
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
@@ -368,7 +427,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("kubectl", "create", "ns", feedGroupNamespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create feedgroup test namespace")
-			ownKubectl("ns", feedGroupNamespace, "")
+			own("ns", feedGroupNamespace, "")
 
 			By("creating the dummy Discord webhook secret")
 			cmd = exec.Command("kubectl", "create", "secret", "generic", "discord-webhook",
@@ -468,7 +527,7 @@ spec:
 				}`, token, metricsServiceName, namespace, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl pod for feedgroup metrics")
-			ownKubectl("pod", feedGroupCurlPodName, namespace)
+			own("pod", feedGroupCurlPodName, namespace)
 
 			By("waiting for the feedgroup metrics curl pod to complete")
 			verifyFeedGroupCurlUp := func(g Gomega) {
