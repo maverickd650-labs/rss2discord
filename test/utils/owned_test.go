@@ -70,26 +70,27 @@ func mustIdentify(t *testing.T, kind, name, namespace string) Object {
 	return o
 }
 
+// requireResult fails unless an Object operation succeeded with want.
+func requireResult[T comparable](t *testing.T, operation string, o Object, got T, err error, want T) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s(%s): %v", operation, o, err)
+	}
+	if got != want {
+		t.Fatalf("%s(%s) = %v, want %v", operation, o, got, want)
+	}
+}
+
 func requireDelete(t *testing.T, o Object, want DeleteOutcome) {
 	t.Helper()
 	got, err := o.Delete()
-	if err != nil {
-		t.Fatalf("Delete(%s): %v", o, err)
-	}
-	if got != want {
-		t.Fatalf("Delete(%s) = %d, want %d", o, got, want)
-	}
+	requireResult(t, "Delete", o, got, err, want)
 }
 
 func requireExists(t *testing.T, o Object, want bool) {
 	t.Helper()
 	got, err := o.Exists()
-	if err != nil {
-		t.Fatalf("Exists(%s): %v", o, err)
-	}
-	if got != want {
-		t.Fatalf("Exists(%s) = %v, want %v", o, got, want)
-	}
+	requireResult(t, "Exists", o, got, err, want)
 }
 
 func createBinding(t *testing.T, name string) Object {
