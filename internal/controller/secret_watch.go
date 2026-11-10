@@ -69,21 +69,34 @@ func (r *FeedGroupReconciler) webhook(ctx context.Context, feedGroup *v1beta1.Fe
 	return webhookURL, nil
 }
 
+// webhookSecretNameField is the field index on a FeedGroup's webhook Secret
+// name (Spec.DiscordWebhookSecretRef.Name). SetupWithManager registers it when
+// the Secret watch is enabled, and feedGroupsForSecret lists through it.
+const webhookSecretNameField = ".spec.discordWebhookSecretRef.name"
+
+// indexWebhookSecretName is the field index function for webhookSecretNameField.
+func indexWebhookSecretName(obj client.Object) []string {
+	feedGroup, ok := obj.(*v1beta1.FeedGroup)
+	if !ok {
+		return nil
+	}
+	return []string{feedGroup.Spec.DiscordWebhookSecretRef.Name}
+}
+
 // feedGroupsForSecret maps a webhook Secret event to the FeedGroups in its
-// namespace that reference it. A namespace holds few FeedGroups, so a cached
-// List filtered in memory is cheaper than maintaining a field index.
+// namespace that reference it, through the webhookSecretNameField index so an
+// event doesn't list every FeedGroup in the namespace.
 func (r *FeedGroupReconciler) feedGroupsForSecret(ctx context.Context, secret client.Object) []reconcile.Request {
 	var groups v1beta1.FeedGroupList
-	if err := r.List(ctx, &groups, client.InNamespace(secret.GetNamespace())); err != nil {
+	if err := r.List(ctx, &groups, client.InNamespace(secret.GetNamespace()),
+		client.MatchingFields{webhookSecretNameField: secret.GetName()}); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to list FeedGroups for a webhook Secret change",
 			"secret", types.NamespacedName{Namespace: secret.GetNamespace(), Name: secret.GetName()})
 		return nil
 	}
 	var requests []reconcile.Request
 	for i := range groups.Items {
-		if groups.Items[i].Spec.DiscordWebhookSecretRef.Name == secret.GetName() {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&groups.Items[i])})
-		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&groups.Items[i])})
 	}
 	return requests
 }

@@ -89,7 +89,10 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	// After all tests have been executed, clean up by uninstalling the Helm release
-	// and deleting the namespace.
+	// and deleting the test resources. This suite runs exclusively against a
+	// dedicated, isolated Kind cluster (rss2discord-operator-test-e2e; see
+	// AGENTS.md), never a shared or multi-tenant cluster, so AfterAll tears down
+	// the test resources directly without shared-cluster ownership plumbing.
 	AfterAll(func() {
 		By("cleaning up the curl pods for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
@@ -99,6 +102,12 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("removing the feedgroup test namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", feedGroupNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		// Cluster-scoped, so deleting the namespaces does not remove it; left
+		// behind it fails the next run's create on a reused cluster.
+		By("removing the metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
 		By("uninstalling the controller-manager Helm release")

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 	"unicode/utf8"
 
 	"github.com/maverickd650-labs/rss2discord/api/v1beta1"
@@ -171,6 +172,10 @@ func setFeedCondition(fs *v1beta1.FeedStatus, condType string, status metav1.Con
 // name in SetupWithManager, since both identify the same actor.
 const statusFieldOwner = "feedgroup-controller"
 
+// statusWriteTimeout bounds one status write, which runs detached from the
+// reconcile context's cancellation (see applyStatus).
+const statusWriteTimeout = 10 * time.Second
+
 // applyStatus persists feedGroup's status via server-side apply rather than
 // a whole-object Status().Update. FeedGroupStatus.Feeds is listType=map,
 // listMapKey=name, so entries merge (and prune, for feeds no longer sent
@@ -191,12 +196,22 @@ const statusFieldOwner = "feedgroup-controller"
 // nothing to scrub first and no optimistic-concurrency precondition to
 // trip: field-ownership merging, not "did anything else change first", is
 // what decides whether this write succeeds.
+//
+// The write runs on a context detached from ctx's cancellation (values such
+// as the logger and trace span still flow) and bounded by statusWriteTimeout.
+// A status write follows a pass that may already have posted entries to
+// Discord; if the manager is shutting down, a cancelled reconcile context
+// would fail the write, drop those entries' LastSent/watermark record and get
+// them re-posted after a restart. Every status write goes through here, so
+// this is the one place that detaches.
 // Status conversion errors and errors from the API write are returned unchanged.
 func (r *FeedGroupReconciler) applyStatus(ctx context.Context, feedGroup *v1beta1.FeedGroup) error {
 	status, err := statusApplyConfiguration(&feedGroup.Status)
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
+	defer cancel()
 	return r.Status().Apply(ctx,
 		acv1beta1.FeedGroup(feedGroup.Name, feedGroup.Namespace).WithStatus(status),
 		client.FieldOwner(statusFieldOwner), client.ForceOwnership)

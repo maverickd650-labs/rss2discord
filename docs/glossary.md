@@ -8,7 +8,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
   (record the fetch outcome, the config check that must precede `begin`, `begin`, the
   send loop), derives the `syncVerdict` from how far it got and closes exactly once as its
   last act. It owns the order in which a fetch is applied (title stamping, sort, delivery
-  ledger construction over the untrimmed fetch (including previous-identity migration),
+  ledger construction over the untrimmed fetch,
   watermark lookup, delivery plan,
   catch-up limit, backlog skip) and is the only place that settles the status. It hands
   the send loop the entries to consider (`entries`), the render-failure evidence window
@@ -16,7 +16,7 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 
 **FeedStatus settlement** (`feedSync.close`)
 : Deciding, from how a sync ended, what the status may now claim: `Initialized`, the
-  `StateVersion`, the stored ETag/Last-Modified validators, a cleared failure
+  stored ETag/Last-Modified validators, a cleared failure
   (`LastError`, `RetryCount`, the feed backoff) and `LastSent` pruning. A fetch is
   *accounted for* when every entry from it was sent, filtered out, already sent or
   skipped; only then are validators stored, because a conditional GET that comes back 304
@@ -39,30 +39,14 @@ Terms used in `internal/controller` (and `internal/msgtemplate`), with the names
 : A feed's delivery bookkeeping over one fetch, and the single identity index of it: the
   `LastSeenEntry` watermark and the `LastSent` dedup keys, the whole sorted fetch, one
   `identityRecord` per entry (identity, watermark form, entry key, stripped identity, the
-  stripped identity when unique, the keys that record it, and for an entry the parser moved off
-  an earlier `PreviousID` its previous identity and keys) and every uniqueness count those
-  rules need (`claims`, `identities`, `previousIdentities`, `previousStripped`), all computed
-  once at construction. `feedSync.begin` builds it once per fetch, after the sort and before
+  stripped identity when unique, and the keys that record it) and every uniqueness count those
+  rules need (`claims`), all computed once at construction. `feedSync.begin` builds it once per fetch, after the sort and before
   any catch-up trim, over the whole untrimmed fetch, so an entry's stripped identity is only
-  unique if it is across the feed, however the entries are later trimmed. Construction also
-  migrates previous identities before returning: when `rss.Entry.PreviousID` differs from the
-  current ID, the ledger moves an unambiguous watermark and `LastSent` keys onto the current
-  identity, retaining send times. It alone writes the watermark and `LastSent` (apart from
+  unique if it is across the feed, however the entries are later trimmed. It alone writes the watermark and `LastSent` (apart from
   status normalization and pruning) and owns the key scheme -- an entry's own key
   (`hashIdentity(identity)`) plus, when its stripped link identity is unique in the fetch, the
-  stripped key (`strippedKey`). Delivery uses `sent`, `markHandled` and `identity`; migration uses
-  `carriesOver`, `ownsPrevious`, `rekeySent`, `moveWatermark` and `setWatermark`, so every
+  stripped key (`strippedKey`). Delivery uses `sent`, `markHandled` and `identity`, so every
   "is this identity unique" rule is decided in `ledger.go`.
-
-**Identity migration** (`deliveryLedger.migratePreviousIdentities`, `ledger.go`)
-: Bringing a feed's stored identities (the watermark and the `LastSent` keys) in line with how
-  entries are identified now, automatically during `newDeliveryLedger` construction on every
-  fetch, for entries whose `rss.Entry.PreviousID` differs from their ID. The ledger moves only
-  unambiguous previous identities, retaining send times. It uses `carriesOver` (full identities:
-  may the stored entry key move?) and, inside `rekeySent`, `ownsPrevious` (stripped identities:
-  can an old stripped key only have been this one moved entry's?). The two rules differ on
-  purpose and both live in the ledger. A stripped key a sibling shares is never recorded, or
-  the sibling, alone under it later, would be taken as sent.
 
 **Watermark** (`FeedStatus.LastSeenEntry`)
 : The identity of the last entry handled; a later scan resumes just past it.

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maverickd650-labs/rss2discord/internal/rss"
@@ -52,11 +53,26 @@ type displayEntry struct {
 	Categories    string
 	FeedTitle     string
 
-	rawContent string
+	// content is the lazily stripped body. It is a pointer so that the copies
+	// of a displayEntry (it is passed by value to templates) share one cache;
+	// nil, as in a zero displayEntry, means an empty body.
+	content *lazyContent
+}
+
+// lazyContent strips a raw entry body at most once, on first use.
+type lazyContent struct {
+	raw      string
+	once     sync.Once
+	stripped string
+}
+
+func (c *lazyContent) get() string {
+	c.once.Do(func() { c.stripped = stripHTML(c.raw) })
+	return c.stripped
 }
 
 // displayOf sanitizes entry's presentation fields. The body is the exception:
-// it is kept raw and stripped by content, because the strip -- over a body that
+// it is kept raw and stripped by Content, because the strip -- over a body that
 // can run to tens of KB -- should only happen for templates that actually
 // reference {{.Content}}.
 func displayOf(entry rss.Entry) displayEntry {
@@ -70,7 +86,7 @@ func displayOf(entry rss.Entry) displayEntry {
 		Author:        stripHTML(entry.Author),
 		Categories:    strings.Join(stripCategories(entry.Categories), ", "),
 		FeedTitle:     stripHTML(entry.FeedTitle),
-		rawContent:    entry.Content,
+		content:       &lazyContent{raw: entry.Content},
 	}
 }
 
@@ -87,11 +103,14 @@ func stripCategories(categories []string) []string {
 	return out
 }
 
-// Content is the entry's full body with HTML stripped, computed on each call.
-// It is a method so large bodies are only stripped when a template references
-// {{.Content}}.
+// Content is the entry's full body with HTML stripped, computed on first call
+// and shared by every copy of the displayEntry. It is a method so large bodies
+// are only stripped when a template references {{.Content}}.
 func (d displayEntry) Content() string {
-	return stripHTML(d.rawContent)
+	if d.content == nil {
+		return ""
+	}
+	return d.content.get()
 }
 
 // formatPublished renders t as RFC 3339 UTC, or "" for the zero time. Feeds

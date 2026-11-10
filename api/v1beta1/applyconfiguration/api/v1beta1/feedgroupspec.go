@@ -59,11 +59,11 @@ type FeedGroupSpecApplyConfiguration struct {
 	// would requeue the FeedGroup in a tight reconcile loop, hammering every
 	// feed host on each pass.
 	RetryInterval *string `json:"retryInterval,omitempty"`
-	// feeds is the list of feeds in this group, keyed by name. Capped at
-	// maxConcurrentFetches (see feedgroup_controller.go) so a single
-	// reconcile can't fan out an unbounded number of simultaneous outbound
-	// fetches. URLs must also be unique within a group, so one feed is never
-	// fetched and delivered twice.
+	// feeds is the list of feeds in this group, keyed by name. At most 50
+	// feeds per group, so a single FeedGroup (and its status object) stays
+	// bounded; a reconcile fetches at most 10 of them at once. URLs must also
+	// be unique within a group, so one feed is never fetched and delivered
+	// twice.
 	Feeds []FeedSpecApplyConfiguration `json:"feeds,omitempty"`
 	// catchUpLimit caps how many entries are sent to Discord when a feed has
 	// no usable watermark: the first time it is synced (no recorded

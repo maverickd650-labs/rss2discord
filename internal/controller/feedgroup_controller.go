@@ -381,6 +381,13 @@ func (r *FeedGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("feedgroup-controller")
 	}
+	if r.WatchWebhookSecrets {
+		// Looked up by feedGroupsForSecret on every Secret event.
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &v1beta1.FeedGroup{},
+			webhookSecretNameField, indexWebhookSecretName); err != nil {
+			return err
+		}
+	}
 	b := ctrl.NewControllerManagedBy(mgr).
 		// Status is written by this controller, so reacting to those writes
 		// would re-enqueue every reconcile that changed anything (and, for a

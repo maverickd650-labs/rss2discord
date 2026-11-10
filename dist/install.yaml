@@ -119,11 +119,11 @@ spec:
                 x-kubernetes-map-type: atomic
               feeds:
                 description: |-
-                  feeds is the list of feeds in this group, keyed by name. Capped at
-                  maxConcurrentFetches (see feedgroup_controller.go) so a single
-                  reconcile can't fan out an unbounded number of simultaneous outbound
-                  fetches. URLs must also be unique within a group, so one feed is never
-                  fetched and delivered twice.
+                  feeds is the list of feeds in this group, keyed by name. At most 50
+                  feeds per group, so a single FeedGroup (and its status object) stays
+                  bounded; a reconcile fetches at most 10 of them at once. URLs must also
+                  be unique within a group, so one feed is never fetched and delivered
+                  twice.
                 items:
                   description: FeedSpec defines the configuration for a single feed.
                   properties:
@@ -899,9 +899,11 @@ spec:
                         type: string
                       description: |-
                         lastSent maps the identity of each entry recently sent to Discord to
-                        when it was sent, so an entry is never sent twice.
+                        when it was sent, so an entry is never sent twice. It is replaced as a
+                        whole on every status write, so keys the controller prunes disappear.
                       minProperties: 1
                       type: object
+                      x-kubernetes-map-type: atomic
                     name:
                       description: name is the feed's FeedSpec.Name. Acts as the list-map
                         key.
@@ -913,14 +915,6 @@ spec:
                         retryCount is the number of consecutive retries since this feed last
                         succeeded.
                       format: int32
-                      type: integer
-                    stateVersion:
-                      description: |-
-                        stateVersion is the format of this feed's lastSeenEntry and lastSent
-                        identities. The controller sets it to 1; a status without it (0) was
-                        written before releases that understood it, and is no longer migrated.
-                      format: int32
-                      minimum: 0
                       type: integer
                     url:
                       description: |-

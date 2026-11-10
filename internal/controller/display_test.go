@@ -183,3 +183,29 @@ func TestDisplayOfShortValues(t *testing.T) {
 		}
 	})
 }
+
+// TestDisplayEntryContentIsStrippedOnce pins that the body is stripped lazily
+// and at most once however many times, and through however many copies of the
+// displayEntry, Content is read. The cache is probed by changing the raw body
+// after the first read: a second strip would show the new value.
+func TestDisplayEntryContentIsStrippedOnce(t *testing.T) {
+	d := displayOf(rss.Entry{Content: "<p>First</p>"})
+	if d.content.stripped != "" {
+		t.Fatal("the body was stripped before anything referenced Content")
+	}
+	if got := d.Content(); got != "First" {
+		t.Fatalf("Content = %q, want %q", got, "First")
+	}
+	d.content.raw = "<p>Second</p>"
+	copied := d
+	if got := d.Content() + "," + copied.Content(); got != "First,First" {
+		t.Fatalf("Content on later reads = %q, want the first strip reused by every copy", got)
+	}
+}
+
+// A zero displayEntry has no body.
+func TestZeroDisplayEntryContentIsEmpty(t *testing.T) {
+	if got := (displayEntry{}).Content(); got != "" {
+		t.Fatalf("Content = %q, want empty", got)
+	}
+}

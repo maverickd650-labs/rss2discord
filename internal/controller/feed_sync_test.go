@@ -90,7 +90,6 @@ func currentStatus() *v1beta1.FeedStatus {
 	return &v1beta1.FeedStatus{
 		Name: testFeedName(exampleFeedURL), URL: exampleFeedURL,
 		Initialized:   true,
-		StateVersion:  currentStateVersion,
 		LastChecked:   metav1TimeRFC3339("2026-01-01T00:00:00Z"),
 		ETag:          validatorsOld,
 		LastModified:  syncTestOldMod,
@@ -131,7 +130,7 @@ func expectPanic(t *testing.T, what string, fn func()) {
 	fn()
 }
 
-// A pending sync still initializes the status and stamps its stateVersion; it
+// A pending sync still initializes the status; it
 // only withholds the validators.
 func TestFeedSync_PendingStillInitializesTheStatus(t *testing.T) {
 	fs := &v1beta1.FeedStatus{Name: testFeedName(exampleFeedURL), URL: exampleFeedURL, LastSent: map[string]metav1.Time{}} // never checked
@@ -139,8 +138,8 @@ func TestFeedSync_PendingStillInitializesTheStatus(t *testing.T) {
 	s.begin()
 	s.close(syncPending)
 
-	if !fs.Initialized || fs.StateVersion != currentStateVersion {
-		t.Fatalf("initialized=%t stateVersion=%d, want both set for a never-checked status", fs.Initialized, fs.StateVersion)
+	if !fs.Initialized {
+		t.Fatal("initialized=false, want it set for a never-checked status")
 	}
 	assertValidators(t, fs, "", "")
 }
@@ -184,8 +183,8 @@ func TestFeedSync_NotModified(t *testing.T) {
 			t.Fatalf("withoutEntries = (%v, %t), want (syncNotModified, true)", verdict, ok)
 		}
 		s.close(verdict)
-		if !fs.Initialized || fs.StateVersion != currentStateVersion {
-			t.Fatalf("initialized=%t stateVersion=%d", fs.Initialized, fs.StateVersion)
+		if !fs.Initialized {
+			t.Fatal("initialized=false")
 		}
 		assertValidators(t, fs, validatorsNext, "")
 		assertFailureCleared(t, fs, true)
@@ -202,8 +201,8 @@ func TestFeedSync_Empty(t *testing.T) {
 			t.Fatalf("withoutEntries = (%v, %t), want (syncEmpty, true)", verdict, ok)
 		}
 		s.close(verdict)
-		if !fs.Initialized || fs.StateVersion != currentStateVersion {
-			t.Fatalf("initialized=%t stateVersion=%d, want an empty feed settled", fs.Initialized, fs.StateVersion)
+		if !fs.Initialized {
+			t.Fatal("initialized=false, want an empty feed settled")
 		}
 		assertValidators(t, fs, validatorsNext, syncTestModified)
 		assertFailureCleared(t, fs, true)
@@ -233,8 +232,8 @@ func TestFeedSync_FailedAndMisconfiguredFetchesSettleNothing(t *testing.T) {
 			before := *fs.DeepCopy()
 			openFeedSync(fs, syncFetch(syncEntries(2)...), syncSpec(defaultCatchUpLimit)).close(verdict)
 
-			if fs.Initialized || fs.StateVersion != 0 {
-				t.Fatalf("initialized=%t stateVersion=%d", fs.Initialized, fs.StateVersion)
+			if fs.Initialized {
+				t.Fatal("initialized=true")
 			}
 			assertValidators(t, fs, validatorsOld, "")
 			assertFailureCleared(t, fs, false)
@@ -344,33 +343,6 @@ func TestFeedSync_LedgerIsBuiltOverTheUntrimmedFetch(t *testing.T) {
 	}
 	if !s.sent(siblingB) {
 		t.Fatal("the handled entry does not read as sent")
-	}
-}
-
-// An entry whose identity earlier releases computed differently carries its
-// watermark and dedup key over before the watermark lookup, so it neither
-// resumes at the capped catch-up nor is sent again.
-func TestFeedSync_PreviousIdentitiesAreMigratedBeforeThePlan(t *testing.T) {
-	moved := changedID(prevIDNew, rss.IDFromGUID, prevIDOld, rss.IDFromGUID)
-	fresh := guidEntry("sync-previous-fresh", 5)
-	fs := currentStatus()
-	fs.LastSeenEntry = prevIDOld
-	fs.LastSent[hashIdentity(prevIDOld)] = prevSentAt
-
-	s := openFeedSync(fs, syncFetch(fresh, moved), syncSpec(0))
-	s.begin()
-
-	if fs.LastSeenEntry != prevIDNew {
-		t.Fatalf("LastSeenEntry = %q, want the new identity %q", fs.LastSeenEntry, prevIDNew)
-	}
-	if at, ok := fs.LastSent[hashIdentity(prevIDNew)]; !ok || at != prevSentAt {
-		t.Fatalf("LastSent = %v, want the old send time under the new key", fs.LastSent)
-	}
-	if !s.sent(moved) {
-		t.Fatal("the migrated entry reads as unsent")
-	}
-	if got, want := syncIDs(s.entries()), []string{fresh.ID}; !slices.Equal(got, want) {
-		t.Fatalf("entries() = %q, want only the entry past the migrated watermark", got)
 	}
 }
 

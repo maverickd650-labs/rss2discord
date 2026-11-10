@@ -1178,6 +1178,45 @@ var _ = Describe("FeedGroup Controller", func() {
 		})
 	})
 
+	Describe("Atomic lastSent map", func() {
+		It("removes pruned lastSent keys from the stored object", func() {
+			const feedGroupName = "test-feedgroup-ssa-lastsent"
+			feedGroup := newTestFeedGroup(testGroup{name: feedGroupName, secret: "discord-webhook-ssa-lastsent"}, "https://example.com/ssa-lastsent.xml")
+			Expect(k8sClient.Create(ctx, feedGroup)).To(Succeed())
+			reconciler := &FeedGroupReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			apply := func(keys ...string) {
+				GinkgoHelper()
+				fg := &rss2discordv1beta1.FeedGroup{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, fg)).To(Succeed())
+				ensureFeedStatuses(fg)
+				fg.Status.ObservedGeneration = fg.Generation
+				fs := &fg.Status.Feeds[0]
+				fs.LastSent = nil
+				for _, key := range keys {
+					if fs.LastSent == nil {
+						fs.LastSent = map[string]metav1.Time{}
+					}
+					fs.LastSent[key] = metav1.Now()
+				}
+				Expect(reconciler.applyStatus(ctx, fg)).To(Succeed())
+			}
+			stored := func() map[string]metav1.Time {
+				GinkgoHelper()
+				fg := &rss2discordv1beta1.FeedGroup{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: feedGroupName, Namespace: namespace}, fg)).To(Succeed())
+				return fg.Status.Feeds[0].LastSent
+			}
+
+			apply("a", "b", "c")
+			Expect(stored()).To(HaveLen(3))
+			apply("b")
+			Expect(stored()).To(And(HaveLen(1), HaveKey("b")))
+			apply()
+			Expect(stored()).To(BeEmpty())
+		})
+	})
+
 	Describe("Requeue behavior", func() {
 		It("should use normal interval when no retries needed", func() {
 			By("Creating a mock RSS feed server with empty feed")

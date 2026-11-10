@@ -58,16 +58,13 @@ type FeedStatusApplyConfiguration struct {
 	// filter or template error stops processing, and reads as false on
 	// statuses written before this field existed.
 	Initialized *bool `json:"initialized,omitempty"`
-	// stateVersion is the format of this feed's lastSeenEntry and lastSent
-	// identities. The controller sets it to 1; a status without it (0) was
-	// written before releases that understood it, and is no longer migrated.
-	StateVersion *int32 `json:"stateVersion,omitempty"`
 	// lastSeenEntry is the last seen entry identifier (GUID or Link) for
 	// this feed. Used to fetch only new entries after restarts. Identifiers
 	// longer than the field limit are stored as "sha256:<hex digest>".
 	LastSeenEntry *string `json:"lastSeenEntry,omitempty"`
 	// lastSent maps the identity of each entry recently sent to Discord to
-	// when it was sent, so an entry is never sent twice.
+	// when it was sent, so an entry is never sent twice. It is replaced as a
+	// whole on every status write, so keys the controller prunes disappear.
 	LastSent map[string]metav1.Time `json:"lastSent,omitempty"`
 	// lastError is the last error message encountered for this feed, from
 	// whichever of fetch/render/send most recently failed. See Conditions
@@ -138,14 +135,6 @@ func (b *FeedStatusApplyConfiguration) WithLastChecked(value metav1.Time) *FeedS
 // If called multiple times, the Initialized field is set to the value of the last call.
 func (b *FeedStatusApplyConfiguration) WithInitialized(value bool) *FeedStatusApplyConfiguration {
 	b.Initialized = &value
-	return b
-}
-
-// WithStateVersion sets the StateVersion field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the StateVersion field is set to the value of the last call.
-func (b *FeedStatusApplyConfiguration) WithStateVersion(value int32) *FeedStatusApplyConfiguration {
-	b.StateVersion = &value
 	return b
 }
 

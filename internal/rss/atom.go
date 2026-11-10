@@ -22,7 +22,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"time"
 )
 
 // atomNamespace is Atom's element namespace, declared as the default
@@ -232,7 +231,7 @@ func atomText(cands []nsText) string {
 }
 
 // atomItem is an entry of either Atom vocabulary: the identity, link and date
-// elements as one reading of the document found them, plus everything else.
+// elements as the document's vocabulary found them, plus everything else.
 type atomItem struct {
 	atomEntryCore
 	ID, Updated, Published string
@@ -248,51 +247,6 @@ func (item atomItem) effectiveBase(feedBase string) string {
 		return resolveAtomURL(feedBase, entryBase)
 	}
 	return feedBase
-}
-
-// atomIdentityFields is what an Atom entry's identity is hashed and compared
-// from, derived from one vocabulary's reading of the entry (see
-// atomItem.identityFields).
-type atomIdentityFields struct {
-	link      string
-	id        string
-	idSource  IDSource
-	published time.Time
-	image     string
-}
-
-// atomIdentityReading is one vocabulary's reading of the elements an Atom
-// entry's identity is derived from: its id, dates and links.
-type atomIdentityReading struct {
-	ID, Updated, Published string
-	Links                  atomLinks
-}
-
-// reading is the entry's own reading of its identity elements.
-func (item atomItem) reading() atomIdentityReading {
-	return atomIdentityReading{ID: item.ID, Updated: item.Updated, Published: item.Published, Links: item.Links}
-}
-
-// identityFields derives an entry's identity fields from one reading of its
-// id, dates and links, resolved against base (the entry's effective
-// xml:base). The title and Media RSS elements are shared by every reading: an
-// earlier release read those by the same names, and only the id, dates and
-// links differ with the vocabulary. Published falls back to Updated when it
-// is missing or invalid; the image falls back from an enclosure link to Media
-// RSS (direct thumbnail, then the group), resolved against base.
-func (item atomItem) identityFields(base string, r atomIdentityReading) atomIdentityFields {
-	var f atomIdentityFields
-	f.link = resolveAtomURL(base, primaryLink(r.Links))
-	f.id, f.idSource = pickIdentity(r.ID, f.link, atomText(item.Title))
-
-	f.published, _ = parseTime(r.Published)
-	if f.published.IsZero() {
-		f.published, _ = parseTime(r.Updated)
-	}
-
-	image := cmp.Or(enclosureImage(r.Links), mediaImage(item.MediaThumbnail, nil, item.MediaGroup))
-	f.image = strings.TrimSpace(resolveAtomURL(base, image))
-	return f
 }
 
 // item is the vocabulary-neutral form of an Atom 1.0 entry.
@@ -338,7 +292,19 @@ func atomItemsToEntries(items []atomItem, feedBase string) []Entry {
 	for i, item := range items {
 		base := item.effectiveBase(feedBase)
 
-		current := item.identityFields(base, item.reading())
+		link := resolveAtomURL(base, primaryLink(item.Links))
+		id, idSource := pickIdentity(item.ID, link, atomText(item.Title))
+
+		// Published falls back to Updated when it is missing or invalid.
+		published, _ := parseTime(item.Published)
+		if published.IsZero() {
+			published, _ = parseTime(item.Updated)
+		}
+
+		// The image falls back from an enclosure link to Media RSS (direct
+		// thumbnail, then the group), resolved against base.
+		image := cmp.Or(enclosureImage(item.Links), mediaImage(item.MediaThumbnail, nil, item.MediaGroup))
+		image = strings.TrimSpace(resolveAtomURL(base, image))
 
 		// Content is exposed even when it doubles as Description (no
 		// summary), so templates can use {{.Content}} regardless of which
@@ -347,16 +313,16 @@ func atomItemsToEntries(items []atomItem, feedBase string) []Entry {
 		description := cmp.Or(atomText(item.Summary), content, item.MediaGroup.description())
 
 		entry := Entry{
-			ID:          current.id,
-			IDSource:    current.idSource,
+			ID:          id,
+			IDSource:    idSource,
 			Title:       atomText(item.Title),
-			Link:        strings.TrimSpace(current.link),
+			Link:        strings.TrimSpace(link),
 			Description: description,
 			Content:     content,
-			Image:       current.image,
+			Image:       image,
 			Author:      strings.TrimSpace(item.Author.Name),
 			Categories:  item.Categories,
-			Published:   current.published,
+			Published:   published,
 			Seq:         i,
 		}
 		entries = append(entries, withContentID(entry))
@@ -376,13 +342,5 @@ func parseAtom(data []byte, rootSpace string) ([]Entry, string, error) {
 		return nil, "", err
 	}
 
-	entries := atomItemsToEntries(items, feedBase)
-
-	// Only an Atom 1.0 document is read by namespace, so only there can an
-	// earlier release's local-name reading have picked another identity.
-	if rootSpace == atomNamespace {
-		entries = withPreviousIDs(entries, items, feedBase, data)
-	}
-
-	return entries, atomText(title), nil
+	return atomItemsToEntries(items, feedBase), atomText(title), nil
 }

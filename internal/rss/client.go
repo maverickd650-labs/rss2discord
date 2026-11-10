@@ -180,7 +180,7 @@ func (c *Client) FetchEntries(ctx context.Context, feedURL string, validators Ca
 		return FetchResult{}, &ResponseTooLargeError{Limit: maxFeedResponseBytes}
 	}
 
-	entries, feedTitle, err := parseFeed(data)
+	entries, feedTitle, err := parseFeed(utf8FromHeader(data, resp.Header.Get("Content-Type")))
 	if err != nil {
 		return FetchResult{}, err
 	}

@@ -47,17 +47,10 @@ type Entry struct {
 	ID string
 	// IDSource is the element ID was taken from: GUID, link, title, or
 	// (for an entry with none of those) ContentID.
-	IDSource IDSource
-	// PreviousID and PreviousIDSource are the ID and source earlier releases
-	// would have picked for an Atom entry whose choice has since changed (an
-	// extension's <ext:id> or <ext:link> no longer stands in for Atom's own);
-	// PreviousID is empty when nothing changed. Consumers use them to carry
-	// stored identities over to ID.
-	PreviousID       string
-	PreviousIDSource IDSource
-	Title            string
-	Link             string
-	Description      string
+	IDSource    IDSource
+	Title       string
+	Link        string
+	Description string
 	// Content is the entry's full body when the feed carries one separately
 	// from its summary: RSS <content:encoded>, or Atom <content> (which, for
 	// Atom entries with no <summary>, is also used as Description). It is raw

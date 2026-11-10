@@ -203,34 +203,17 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "ca714037.rss2discord.maverickd650.dev",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		// LeaderElectionReleaseOnCancel makes the leader step down voluntarily
+		// when the Manager ends, so a new leader doesn't wait LeaseDuration. That
+		// is safe only if the binary exits right after the Manager stops, and
+		// this one does: mgr.Start is the last call in main, with no deferred
+		// work or cleanup after it. The lease is released after the Manager has
+		// stopped its runnables, so no reconcile outlives it.
+		LeaderElectionReleaseOnCancel: true,
 	})
 	exitOnError(err, "Failed to start manager")
 
-	// Tracing is opt-in: with no --otlp-endpoint, transportWrap stays nil and
-	// rss.NewClientWithTransportWrap / discord.NewHTTPClientWithTransportWrap
-	// behave exactly like the unwrapped constructors they replace.
-	var transportWrap func(http.RoundTripper) http.RoundTripper
-	if otlpEndpoint != "" {
-		tp, shutdown, err := telemetry.Setup(context.Background(), otlpEndpoint)
-		exitOnError(err, "Failed to set up tracing", "otlp-endpoint", otlpEndpoint)
-		transportWrap = telemetry.HTTPTransportWrap(tp)
-
-		exitOnError(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-			<-ctx.Done()
-			return shutdown(context.Background())
-		})), "Failed to register tracer shutdown")
-	}
+	transportWrap := setupTracing(mgr, otlpEndpoint)
 
 	// The RSS client and Discord HTTP client are constructed once here and
 	// shared across every reconcile, so keep-alive connections to feed/webhook
@@ -256,4 +239,23 @@ func main() {
 
 	setupLog.Info("Starting manager")
 	exitOnError(mgr.Start(ctrl.SetupSignalHandler()), "Failed to run manager")
+}
+
+// setupTracing returns the transport wrapper that traces outbound RSS and
+// Discord requests, and registers the tracer's shutdown with mgr. Tracing is
+// opt-in: with no --otlp-endpoint it returns nil, and
+// rss.NewClientWithTransportWrap / discord.NewHTTPClientWithTransportWrap then
+// behave exactly like the unwrapped constructors they replace.
+func setupTracing(mgr manager.Manager, otlpEndpoint string) func(http.RoundTripper) http.RoundTripper {
+	if otlpEndpoint == "" {
+		return nil
+	}
+	tp, shutdown, err := telemetry.Setup(context.Background(), otlpEndpoint)
+	exitOnError(err, "Failed to set up tracing", "otlp-endpoint", otlpEndpoint)
+
+	exitOnError(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return shutdown(context.Background())
+	})), "Failed to register tracer shutdown")
+	return telemetry.HTTPTransportWrap(tp)
 }

@@ -125,12 +125,16 @@ gremlins unleash --exclude-files '.*zz_generated.*' ./internal
 description = "Run e2e tests against a Kind cluster (Kind must be installed)"
 depends = ["manifests", "generate", "fmt", "vet"]
 run = '''
+# E2E tests always run against a dedicated, isolated Kind cluster
+# (rss2discord-operator-test-e2e), never a shared or multi-tenant cluster (see
+# AGENTS.md). A pre-created local Kind cluster is kept on exit for faster
+# iteration; CI creates a fresh cluster and deletes it via the trap below.
 cluster="${KIND_CLUSTER}"
 if ! kind get clusters | grep -qx "$cluster"; then
   echo "Creating Kind cluster '$cluster'..."
   kind create cluster --name "$cluster" --image "$KIND_NODE_IMAGE"
+  trap 'kind delete cluster --name "$cluster"' EXIT
 fi
-trap 'kind delete cluster --name "$cluster"' EXIT
 KIND=kind KIND_CLUSTER="$cluster" go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 '''
 
@@ -274,11 +278,11 @@ if [ -n "$out" ]; then echo "$out" | kubectl apply -f -; else echo "No CRDs to i
 '''
 
 [tasks.uninstall]
-description = "Uninstall CRDs from the K8s cluster from ~/.kube/config"
+description = "Uninstall CRDs from the K8s cluster from ~/.kube/config (set IGNORE_NOT_FOUND=true to suppress not-found errors)"
 depends = ["manifests"]
 run = '''
 out="$(kustomize build config/crd 2>/dev/null || true)"
-if [ -n "$out" ]; then echo "$out" | kubectl delete --ignore-not-found=${ignore-not-found:-false} -f -; else echo "No CRDs to delete; skipping."; fi
+if [ -n "$out" ]; then echo "$out" | kubectl delete --ignore-not-found=${IGNORE_NOT_FOUND:-false} -f -; else echo "No CRDs to delete; skipping."; fi
 '''
 
 [tasks.deploy]
@@ -291,7 +295,7 @@ kustomize build config/default | kubectl apply -f -
 
 [tasks.undeploy]
 description = "Undeploy controller from the K8s cluster from ~/.kube/config"
-run = "kustomize build config/default | kubectl delete --ignore-not-found=${ignore-not-found:-false} -f -"
+run = "kustomize build config/default | kubectl delete --ignore-not-found=${IGNORE_NOT_FOUND:-false} -f -"
 
 ##@ Helm Deployment
 

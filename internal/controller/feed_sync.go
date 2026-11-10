@@ -30,10 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// currentStateVersion is the FeedStatus.StateVersion this controller writes: the
-// format of the stored LastSeenEntry and LastSent identities.
-const currentStateVersion = 1
-
 // A feedSync applies one fetch of one feed to that feed's FeedStatus. It is the
 // single owner of two things:
 //
@@ -41,10 +37,9 @@ const currentStateVersion = 1
 //     the delivery ledger is
 //     built once, over the whole sorted fetch and before the catch-up trim, so
 //     an entry's stripped identity is only unique if it is across the feed;
-//     ledger construction performs previous-identity migration; the watermark lookup and
-//     planDelivery follow, then the catch-up limit and the backlog skip.
+//     the watermark lookup and planDelivery follow, then the catch-up limit and the backlog skip.
 //   - SETTLEMENT: whether the fetch is accounted for, which is the only thing
-//     that decides FeedStatus.Initialized, the stateVersion, whether the
+//     that decides FeedStatus.Initialized, whether the
 //     response's validators are stored, whether a failure is cleared, and
 //     LastSent pruning (see close).
 //
@@ -232,7 +227,7 @@ func (s *feedSync) withoutEntries() (syncVerdict, bool) {
 
 // begin applies the fetch's entries to fs up to the point of sending: it
 // stamps the feed's title on each entry, sorts them, builds the ledger over the
-// whole fetch (which migrates previous identities), plans the delivery
+// whole fetch, plans the delivery
 // (catch-up limit included) and, for a first sync with catchUpLimit 0, skips the
 // backlog. apply calls it once, and only after the feed's configuration is
 // known to be usable: a configuration error must leave fs as it was (see
@@ -264,8 +259,7 @@ func (s *feedSync) begin() {
 
 	// The one identity index of this fetch: built over the whole sorted fetch,
 	// before any catch-up trim below, so an entry's stripped identity is only
-	// unique if it is across the feed. Construction also migrates previous
-	// identities in the status before the watermark is looked up.
+	// unique if it is across the feed.
 	s.ledger = newDeliveryLedger(s.fs, entries)
 	s.plan = planDelivery(deliveryInputs{
 		entries:        entries,
@@ -316,7 +310,7 @@ func (s *feedSync) markHandled(entry rss.Entry) {
 //
 //   - Nothing handled yet: fs is restored to before. Nothing was posted, so
 //     the next reconcile replays the same sync from where it started, and no
-//     half-applied migration, plan or condition is persisted.
+//     half-applied plan or condition is persisted.
 //   - Something handled: every handled entry is already recorded in LastSent
 //     and the watermark (markHandled writes both, entry by entry), so the
 //     sync is settled as pending: those entries are not posted again, and no
@@ -365,8 +359,6 @@ func (s *feedSync) skipBacklog(entries []rss.Entry) {
 //     document is accounted for, so a feed that recovered but happens to have
 //     nothing new to send doesn't keep reading as failing.
 //   - LastSent: pruned after a sync that sent or looked at entries.
-//
-// The stateVersion is stamped last, on every verdict that settles anything.
 func (s *feedSync) close(verdict syncVerdict) {
 	s.closing = true
 	switch verdict {
@@ -395,8 +387,6 @@ func (s *feedSync) close(verdict syncVerdict) {
 	default:
 		panic(fmt.Sprintf("feedSync: closed with invalid verdict %v", verdict))
 	}
-
-	s.fs.StateVersion = currentStateVersion
 }
 
 // persistValidators stores the response's cache validators.
