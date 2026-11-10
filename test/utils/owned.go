@@ -180,20 +180,28 @@ func (o Object) Delete() (DeleteOutcome, error) {
 		return 0, err
 	}
 	path := fmt.Sprintf(rawPaths[o.Kind], o.Name, o.Namespace)
-	_, err = Run(exec.Command("kubectl", "delete", "--raw", path, "-f", body.Name()))
-	return deleteOutcome(err)
+	out, err := Run(exec.Command("kubectl", "delete", "--raw", path, "-f", body.Name()))
+	return deleteOutcome(out, err)
 }
 
-// deleteOutcome classifies the error of a UID-bound raw delete by the API
-// status reason kubectl prints.
-func deleteOutcome(err error) (DeleteOutcome, error) {
+// The API status reasons kubectl prints for a refused raw delete.
+const (
+	statusNotFound = "Error from server (NotFound)"
+	statusConflict = "Error from server (Conflict)"
+)
+
+// deleteOutcome classifies a UID-bound raw delete by the API status reason in
+// kubectl's own output. The error is not consulted for that: it also carries
+// the command line (and so the options file's path), where a matching word
+// would turn an unrelated failure into "already gone".
+func deleteOutcome(output string, err error) (DeleteOutcome, error) {
 	if err == nil {
 		return Deleted, nil
 	}
-	if strings.Contains(err.Error(), "NotFound") {
+	if strings.Contains(output, statusNotFound) {
 		return AlreadyGone, nil
 	}
-	if strings.Contains(err.Error(), "Conflict") {
+	if strings.Contains(output, statusConflict) {
 		return Replaced, nil
 	}
 	return 0, err

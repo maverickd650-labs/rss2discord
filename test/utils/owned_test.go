@@ -258,6 +258,17 @@ func TestObjectDeleteReportsUnknownOutcomes(t *testing.T) {
 		t.Fatal("Exists succeeded although the API server was unreachable")
 	}
 
+	// The failed command's text carries the options file's path. A path that
+	// happens to spell a status reason must not be read as that outcome.
+	misleading := filepath.Join(t.TempDir(), "Error from server (NotFound) (Conflict)")
+	if err := os.Mkdir(misleading, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", misleading)
+	if outcome, err := o.Delete(); err == nil {
+		t.Fatalf("Delete = %d with no error: the temp path was read as an API status", outcome)
+	}
+
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "no-such-dir"))
 	if _, err := o.Delete(); err == nil {
 		t.Fatal("Delete succeeded although its options file could not be written")

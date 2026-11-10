@@ -128,7 +128,10 @@ run = '''
 cluster="${KIND_CLUSTER}"
 kubeconfig="$(mktemp)"
 created_cluster=false
-owned_cluster="${E2E_OWNS_CLUSTER:-false}"
+# Ownership is decided by this run alone, never inherited: only a cluster
+# created below is owned. On an existing cluster, CRD teardown needs the
+# explicit E2E_DELETE_CRD=true opt-in.
+owned_cluster=false
 cleanup() {
   rm -f "$kubeconfig"
   if [ "$created_cluster" = true ]; then
