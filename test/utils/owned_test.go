@@ -58,11 +58,12 @@ func mustRun(t *testing.T, args ...string) {
 	}
 }
 
-func mustIdentify(t *testing.T, kind, name, namespace string) Object {
+// mustIdentify pins ref (kind, name and namespace) to its UID on the cluster.
+func mustIdentify(t *testing.T, ref Object) Object {
 	t.Helper()
-	o, err := Identify(kind, name, namespace)
+	o, err := Identify(ref.Kind, ref.Name, ref.Namespace)
 	if err != nil {
-		t.Fatalf("Identify(%s %s): %v", kind, name, err)
+		t.Fatalf("Identify(%s %s): %v", ref.Kind, ref.Name, err)
 	}
 	if !strings.Contains(o.String(), o.UID) {
 		t.Fatalf("String() = %q, want it to carry the UID %q", o.String(), o.UID)
@@ -85,7 +86,7 @@ func requireOutcome[T comparable](t *testing.T, o Object, operation func() (T, e
 func createBinding(t *testing.T, name string) Object {
 	t.Helper()
 	mustRun(t, "create", "clusterrolebinding", name, "--clusterrole=view", "--user=someone")
-	return mustIdentify(t, "clusterrolebinding", name, "")
+	return mustIdentify(t, Object{Kind: "clusterrolebinding", Name: name})
 }
 
 // listCommand is the kind of listing List classifies: one line per match.
@@ -177,10 +178,10 @@ func TestObjectDeleteCoversEveryOwnedKind(t *testing.T) {
 	createBinding(t, "owned-binding")
 
 	for _, o := range []Object{
-		mustIdentify(t, "pod", "owned-pod", "default"),
-		mustIdentify(t, "clusterrolebinding", "owned-binding", ""),
-		mustIdentify(t, "crd", "widgets.owned.example.com", ""),
-		mustIdentify(t, "ns", "owned-ns", ""),
+		mustIdentify(t, Object{Kind: "pod", Name: "owned-pod", Namespace: "default"}),
+		mustIdentify(t, Object{Kind: "clusterrolebinding", Name: "owned-binding"}),
+		mustIdentify(t, Object{Kind: "crd", Name: "widgets.owned.example.com"}),
+		mustIdentify(t, Object{Kind: "ns", Name: "owned-ns"}),
 	} {
 		requireOutcome(t, o, o.Delete, Deleted)
 	}
