@@ -204,7 +204,7 @@ var _ = Describe("Manager", Ordered, func() {
 		crdLookup := []string{"kubectl", "get", "crd", feedGroupCRDName, "--ignore-not-found", "-o", "name"}
 		release := envOr("HELM_RELEASE", "rss2discord-operator")
 		releaseLookup := []string{"helm", "list", "--namespace", envOr("HELM_NAMESPACE", namespace),
-			"--all", "--short", "--filter", "^" + release + "$"}
+			"--short", "--filter", "^" + release + "$"}
 		crdBefore := lookup(crdLookup...)
 		releaseBefore := lookup(releaseLookup...)
 
