@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.19.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.18.0...v0.19.0) (2026-11-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* upgrading directly from a release that predates namespace-aware Atom parsing no longer carries stored entry identities over; affected Atom entries whose identity differed may be re-sent once.
+
+### Bug Fixes
+
+* architecture review follow-ups (shutdown-safe status, shim retirement, charset fallback, build fixes) ([#428](https://github.com/maverickd650-labs/rss2discord/issues/428)) ([92805ee](https://github.com/maverickd650-labs/rss2discord/commit/92805eedda8b0f05a0dab3864cc9ce796bb96be8))
+
+
+### Code Refactoring
+
+* **controller:** decompose previous identity migration tests ([#424](https://github.com/maverickd650-labs/rss2discord/issues/424)) ([db23730](https://github.com/maverickd650-labs/rss2discord/commit/db23730cdb9d9cb1be7fc2f2dfa76b04b4588f27))
+* **controller:** reduce complexity of stripHTML and hasEndTagAt ([#422](https://github.com/maverickd650-labs/rss2discord/issues/422)) ([ae006a3](https://github.com/maverickd650-labs/rss2discord/commit/ae006a3fe900982137d40ae3ecb055c2f6bac0ca))
+* **controller:** split render.go builders to reduce complexity ([#419](https://github.com/maverickd650-labs/rss2discord/issues/419)) ([971516e](https://github.com/maverickd650-labs/rss2discord/commit/971516eef4debeb299de10c7f3659f6a33d3dea1))
+* **controller:** split TestSummarizeGroup into focused helpers ([#426](https://github.com/maverickd650-labs/rss2discord/issues/426)) ([e51f963](https://github.com/maverickd650-labs/rss2discord/commit/e51f9636a0e5cd005ead8f21eac25b79ed77aa19))
+* **discord:** reduce complexity of webhook URL tests ([#420](https://github.com/maverickd650-labs/rss2discord/issues/420)) ([928fd3e](https://github.com/maverickd650-labs/rss2discord/commit/928fd3e90bca2e6cce73b9724d59d757793b2fb7))
+* **discord:** split and simplify payload_test.go for code health ([#407](https://github.com/maverickd650-labs/rss2discord/issues/407)) ([9e7ee3e](https://github.com/maverickd650-labs/rss2discord/commit/9e7ee3ef2729d641048adf6ab9e3c664679082da))
+* **discord:** split client_test.go into cohesive test files ([#418](https://github.com/maverickd650-labs/rss2discord/issues/418)) ([f641632](https://github.com/maverickd650-labs/rss2discord/commit/f641632736a00b99fe3fda3746200d6a4ce09391))
+* **msgtemplate:** split checkNode into per-node helpers ([#414](https://github.com/maverickd650-labs/rss2discord/issues/414)) ([6af80a7](https://github.com/maverickd650-labs/rss2discord/commit/6af80a751b30933e5406941110d06d308efd996b))
+* **rss:** simplify atom link retention, identity input and item decoding ([#423](https://github.com/maverickd650-labs/rss2discord/issues/423)) ([9cdc742](https://github.com/maverickd650-labs/rss2discord/commit/9cdc742ecebaab8df0399f38b4e6541d113d6c16))
+* **test:** split and simplify the reason-constant guard tests ([#415](https://github.com/maverickd650-labs/rss2discord/issues/415)) ([ea5181f](https://github.com/maverickd650-labs/rss2discord/commit/ea5181fcfb11fefdd458a38c3ed64da15228dbad))
+
+
+### Tests
+
+* **controller:** reduce complexity and duplication in ports_test ([#421](https://github.com/maverickd650-labs/rss2discord/issues/421)) ([036f80c](https://github.com/maverickd650-labs/rss2discord/commit/036f80cb61cfa729ea2dfc380b441e33e474fdb7))
+* **controller:** reduce complexity in backoff tests ([#425](https://github.com/maverickd650-labs/rss2discord/issues/425)) ([75deae2](https://github.com/maverickd650-labs/rss2discord/commit/75deae28f3e0ac03fde122ab6982c646f59d356d))
+* **controller:** split processfeed_test.go into cohesive files ([#406](https://github.com/maverickd650-labs/rss2discord/issues/406)) ([e26de89](https://github.com/maverickd650-labs/rss2discord/commit/e26de89d9ffa8057a4001c3bf29b8bcf24ff252a))
+* **controller:** split render tests by responsibility and table-drive them ([#416](https://github.com/maverickd650-labs/rss2discord/issues/416)) ([4093122](https://github.com/maverickd650-labs/rss2discord/commit/4093122702b38a0d53e68e6a149d47db143798b9))
+* **controller:** split status store tests by responsibility and flatten them ([#417](https://github.com/maverickd650-labs/rss2discord/issues/417)) ([c2ff9c7](https://github.com/maverickd650-labs/rss2discord/commit/c2ff9c7e49c774e9421dc82e196fda56d094b083))
+* group FeedGroup name and secret in setUpFeedGroup ([#412](https://github.com/maverickd650-labs/rss2discord/issues/412)) ([47743a5](https://github.com/maverickd650-labs/rss2discord/commit/47743a5b6bed51537cba1a2d62bc09844650b742))
+* **metrics:** split metrics_test.go into cohesive files and simplify complex tests ([#410](https://github.com/maverickd650-labs/rss2discord/issues/410)) ([b19130e](https://github.com/maverickd650-labs/rss2discord/commit/b19130e808b77ab3275559ef2034d4de8d738ef9))
+* **msgtemplate:** reduce cyclomatic complexity of msgtemplate tests ([#413](https://github.com/maverickd650-labs/rss2discord/issues/413)) ([c3cacd6](https://github.com/maverickd650-labs/rss2discord/commit/c3cacd60f54f4d09116cbb74dddff5ad06cdc221))
+* **rss:** split parse_test.go into cohesive test files ([#408](https://github.com/maverickd650-labs/rss2discord/issues/408)) ([ae0dae3](https://github.com/maverickd650-labs/rss2discord/commit/ae0dae3dd6b54f8c7adced1030828efc00128e03))
+
+
+### Continuous Integration
+
+* **github-action:** Update action github/codeql-action (v4.39.2 → v4.39.3) ([#403](https://github.com/maverickd650-labs/rss2discord/issues/403)) ([0ab45ad](https://github.com/maverickd650-labs/rss2discord/commit/0ab45ad730749def25ee702790098c7b8fae570c))
+* **github-action:** Update action jdx/mise-action (v5.2.6 → v5.2.7) ([#427](https://github.com/maverickd650-labs/rss2discord/issues/427)) ([84a8adc](https://github.com/maverickd650-labs/rss2discord/commit/84a8adca69e14408928b1395711414a59b3adf0a))
+
+
+### Miscellaneous Chores
+
+* **ci:** build out release-please config ([#404](https://github.com/maverickd650-labs/rss2discord/issues/404)) ([8c696a1](https://github.com/maverickd650-labs/rss2discord/commit/8c696a1eea3de91365d17f7a39aa54503d90c069))
+
 ## [0.18.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.17.0...v0.18.0) (2026-11-06)
 
 
