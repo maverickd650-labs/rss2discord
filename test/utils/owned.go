@@ -72,22 +72,21 @@ var rawPaths = map[string]string{
 	"crd":                "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/%[1]s",
 }
 
-// Create runs "kubectl <args...> -o jsonpath={.metadata.uid}" to create an
-// object of kind/name/namespace and pins the returned Object to the UID from
-// the creation response itself, without a separate post-creation lookup.
-func Create(kind, name, namespace string, args ...string) (Object, error) {
-	o := Object{Kind: kind, Name: name, Namespace: namespace}
-	if _, ok := rawPaths[kind]; !ok {
-		return Object{}, fmt.Errorf("no API path known for kind %q", kind)
+// Create runs cmd with "-o jsonpath={.metadata.uid}" appended to create o and
+// pins the returned Object to the UID from the creation response itself,
+// without a separate post-creation lookup.
+func (o Object) Create(cmd *exec.Cmd) (Object, error) {
+	if _, ok := rawPaths[o.Kind]; !ok {
+		return Object{}, fmt.Errorf("no API path known for kind %q", o.Kind)
 	}
-	fullArgs := append(append([]string(nil), args...), "-o", "jsonpath={.metadata.uid}")
-	out, err := Run(exec.Command("kubectl", fullArgs...))
+	cmd.Args = append(cmd.Args, "-o", "jsonpath={.metadata.uid}")
+	out, err := Run(cmd)
 	if err != nil {
 		return Object{}, err
 	}
 	uid := strings.TrimSpace(out)
 	if uid == "" {
-		return Object{}, fmt.Errorf("create %s %q returned no UID", kind, name)
+		return Object{}, fmt.Errorf("create %s %q returned no UID", o.Kind, o.Name)
 	}
 	o.UID = uid
 	return o, nil

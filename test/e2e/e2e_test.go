@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -95,20 +96,20 @@ func ownObject(object utils.Object) {
 	})
 }
 
-// createAndOwn creates a Kubernetes object via kubectl, captures its UID
-// directly from the creation response, and records it for UID-bound cleanup.
-func createAndOwn(kind, name, namespace string, args ...string) {
+// createAndOwn runs cmd to create target, captures its UID directly from the
+// creation response, and records it for UID-bound cleanup.
+func createAndOwn(target utils.Object, cmd *exec.Cmd) {
 	GinkgoHelper()
-	object, err := utils.Create(kind, name, namespace, args...)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create %s %s", kind, name))
+	object, err := target.Create(cmd)
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create %s %s", target.Kind, target.Name))
 	ownObject(object)
 }
 
 // own records the object this run just created by looking up its current UID
 // (used when creation happened indirectly through Helm).
-func own(kind, name, namespace string) {
+func own(target utils.Object) {
 	GinkgoHelper()
-	object, err := utils.Identify(kind, name, namespace)
+	object, err := utils.Identify(target.Kind, target.Name, target.Namespace)
 	Expect(err).NotTo(HaveOccurred(), "Failed to identify a resource this run created")
 	ownObject(object)
 }
@@ -205,13 +206,22 @@ var _ = Describe("Manager", Ordered, func() {
 	// via the Helm chart (the supported install path; the chart installs CRDs and
 	// RBAC as part of the same release, so there's no separate install step).
 	BeforeAll(func() {
+		By("verifying kubectl targets the named Kind cluster")
+		currentContext, err := utils.Run(exec.Command("kubectl", "config", "current-context"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to determine current kubectl context")
+		Expect(strings.TrimSpace(currentContext)).To(Equal("kind-"+envOr("KIND_CLUSTER", "kind")),
+			"Refusing to run e2e suite against a context other than the named Kind cluster")
+
 		By("creating manager namespace")
-		createAndOwn("ns", namespace, "", "create", "ns", namespace)
+		createAndOwn(
+			utils.Object{Kind: "ns", Name: namespace},
+			exec.Command("kubectl", "create", "ns", namespace),
+		)
 
 		By("labeling the namespace to enforce the restricted security policy")
 		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
 		// Looked up before the deploy, so that afterwards only what this run
@@ -238,7 +248,7 @@ var _ = Describe("Manager", Ordered, func() {
 		// exclusive cluster ownership (E2E_OWNS_CLUSTER=true) or explicit
 		// opt-in (E2E_DELETE_CRD=true).
 		if created(crdBefore, lookup(crdLookup...)) && utils.DestructiveCRDTeardownAuthorized(os.Getenv) {
-			own("crd", feedGroupCRDName, "")
+			own(utils.Object{Kind: "crd", Name: feedGroupCRDName})
 		}
 		if created(releaseBefore, lookup(releaseLookup...)) {
 			ownHelmRelease()
@@ -333,10 +343,13 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			// Cluster-scoped, so deleting the namespaces would not remove it.
-			createAndOwn("clusterrolebinding", metricsRoleBindingName, "",
-				"create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=rss2discord-operator-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
+			createAndOwn(
+				utils.Object{Kind: "clusterrolebinding", Name: metricsRoleBindingName},
+				exec.Command("kubectl", "create", "clusterrolebinding",
+					metricsRoleBindingName,
+					"--clusterrole=rss2discord-operator-metrics-reader",
+					fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
+				),
 			)
 
 			By("validating that the metrics service is available")
@@ -372,12 +385,13 @@ var _ = Describe("Manager", Ordered, func() {
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
-			createAndOwn("pod", "curl-metrics", namespace,
-				"run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
+			createAndOwn(
+				utils.Object{Kind: "pod", Name: "curl-metrics", Namespace: namespace},
+				exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
+					"--namespace", namespace,
+					"--image=curlimages/curl:latest",
+					"--overrides",
+					fmt.Sprintf(`{
 					"spec": {
 						"containers": [{
 							"name": "curl",
@@ -401,7 +415,8 @@ var _ = Describe("Manager", Ordered, func() {
 						}],
 						"serviceAccountName": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, token, metricsServiceName, namespace, serviceAccountName)),
+			)
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
@@ -441,7 +456,10 @@ var _ = Describe("Manager", Ordered, func() {
 		// Events, and the metrics endpoint reflecting a real reconcile.
 		It("should reflect a persistently unreachable feed in status, events, and metrics", func() {
 			By("creating the feedgroup test namespace")
-			createAndOwn("ns", feedGroupNamespace, "", "create", "ns", feedGroupNamespace)
+			createAndOwn(
+				utils.Object{Kind: "ns", Name: feedGroupNamespace},
+				exec.Command("kubectl", "create", "ns", feedGroupNamespace),
+			)
 
 			By("creating the dummy Discord webhook secret")
 			cmd := exec.Command("kubectl", "create", "secret", "generic", "discord-webhook",
@@ -510,12 +528,13 @@ spec:
 			Expect(token).NotTo(BeEmpty())
 
 			By("creating a curl pod to re-fetch the metrics endpoint")
-			createAndOwn("pod", feedGroupCurlPodName, namespace,
-				"run", feedGroupCurlPodName, "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
+			createAndOwn(
+				utils.Object{Kind: "pod", Name: feedGroupCurlPodName, Namespace: namespace},
+				exec.Command("kubectl", "run", feedGroupCurlPodName, "--restart=Never",
+					"--namespace", namespace,
+					"--image=curlimages/curl:latest",
+					"--overrides",
+					fmt.Sprintf(`{
 					"spec": {
 						"containers": [{
 							"name": "curl",
@@ -539,7 +558,8 @@ spec:
 						}],
 						"serviceAccountName": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, token, metricsServiceName, namespace, serviceAccountName)),
+			)
 
 			By("waiting for the feedgroup metrics curl pod to complete")
 			verifyFeedGroupCurlUp := func(g Gomega) {

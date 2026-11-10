@@ -8,9 +8,10 @@ import (
 
 // latin1 is "Café" with the é as the single ISO-8859-1 byte 0xE9.
 const (
-	latin1Title = "Caf\xe9"
-	utf8Title   = "Café"
-	latin1Type  = "text/xml; charset=iso-8859-1"
+	latin1Title    = "Caf\xe9"
+	utf8Title      = "Café"
+	latin1Type     = "text/xml; charset=iso-8859-1"
+	atomLatin1Type = "application/atom+xml; charset=iso-8859-1"
 )
 
 func TestUTF8FromHeader(t *testing.T) {
@@ -30,8 +31,14 @@ func TestUTF8FromHeader(t *testing.T) {
 		{"rss header only, bare declaration", rssDoc(`<?xml version="1.0"?>`), "text/xml; charset=ISO-8859-1", true},
 		{"rss quoted label", rssDoc(""), `application/rss+xml; charset="latin1"`, true},
 		{"rss windows-1252 label", rssDoc(""), "text/xml; charset=windows-1252", true},
-		{"atom header only", atomDoc(""), "application/atom+xml; charset=iso-8859-1", true},
-		{"atom bare declaration", atomDoc(`<?xml version="1.0"?>`), "application/atom+xml; charset=iso-8859-1", true},
+		{"atom header only", atomDoc(""), atomLatin1Type, true},
+		{
+			"atom header only, latin-1 in root xml:base",
+			`<feed xmlns="http://www.w3.org/2005/Atom" xml:base="https://example.com/` + latin1Title + `/"><entry><id>1</id><title>` + latin1Title + `</title><link href="p"/></entry></feed>`,
+			atomLatin1Type,
+			true,
+		},
+		{"atom bare declaration", atomDoc(`<?xml version="1.0"?>`), atomLatin1Type, true},
 		{"comment before the declaration is fine", rssDoc("<!-- c -->"), latin1Type, true},
 		{"declaration wins over header", rssDoc(`<?xml version="1.0" encoding="iso-8859-1"?>`), "text/xml; charset=utf-16", true},
 		{"declaration with its own utf-8 wins over header", rssDoc(`<?xml version="1.0" encoding="utf-8"?>`), latin1Type, false},

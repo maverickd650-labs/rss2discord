@@ -19,6 +19,7 @@ package rss
 import (
 	"bytes"
 	"encoding/xml"
+	"io"
 	"mime"
 	"unicode/utf8"
 
@@ -71,12 +72,14 @@ func headerCharset(contentType string) string {
 }
 
 // declaresEncoding reports whether data's XML declaration carries an encoding
-// pseudo-attribute, reading no further than the first start tag. Anything it
-// cannot tokenize, including a declaration encoding/xml refuses to honour
-// without a CharsetReader, counts as declaring one, leaving data to fail
-// exactly as it would without a header.
+// pseudo-attribute, reading no further than the first start tag. A pass-through
+// CharsetReader lets encoding/xml return the declaration token itself when a
+// non-UTF-8 encoding is named, so any token error (such as a non-UTF-8 byte in
+// a root attribute when no declaration is present) means no encoding was
+// declared before the failure.
 func declaresEncoding(data []byte) bool {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
+	decoder.CharsetReader = noopCharsetReader
 	for {
 		tok, err := decoder.Token()
 		if declares, decided := encodingVerdict(tok, err); decided {
@@ -85,11 +88,15 @@ func declaresEncoding(data []byte) bool {
 	}
 }
 
+func noopCharsetReader(_ string, r io.Reader) (io.Reader, error) {
+	return r, nil
+}
+
 // encodingVerdict is declaresEncoding's answer for one token: decided is false
 // while the prolog (comments, other processing instructions) continues.
 func encodingVerdict(tok xml.Token, err error) (declares, decided bool) {
 	if err != nil {
-		return true, true
+		return false, true
 	}
 	switch t := tok.(type) {
 	case xml.StartElement:

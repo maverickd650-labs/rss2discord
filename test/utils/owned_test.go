@@ -85,13 +85,15 @@ func requireOutcome[T comparable](t *testing.T, o Object, operation func() (T, e
 
 const (
 	kindClusterRoleBinding = "clusterrolebinding"
+	kindNamespace          = "ns"
 	defaultNamespace       = "default"
+	createdNamespace       = "created-with-uid"
 )
 
 func createBinding(t *testing.T, name string) Object {
 	t.Helper()
-	o, err := Create(kindClusterRoleBinding, name, "",
-		"create", kindClusterRoleBinding, name, "--clusterrole=view", "--user=someone")
+	cmd := exec.Command("kubectl", "create", kindClusterRoleBinding, name, "--clusterrole=view", "--user=someone")
+	o, err := (Object{Kind: kindClusterRoleBinding, Name: name}).Create(cmd)
 	if err != nil {
 		t.Fatalf("Create(clusterrolebinding %s): %v", name, err)
 	}
@@ -159,22 +161,25 @@ func TestIdentify(t *testing.T) {
 func TestCreate(t *testing.T) {
 	startCluster(t)
 
-	o, err := Create("ns", "created-with-uid", "", "create", "ns", "created-with-uid")
+	target := Object{Kind: kindNamespace, Name: createdNamespace}
+	o, err := target.Create(exec.Command("kubectl", "create", kindNamespace, createdNamespace))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	identified := mustIdentify(t, Object{Kind: "ns", Name: "created-with-uid"})
+	identified := mustIdentify(t, target)
 	if o.UID != identified.UID {
 		t.Fatalf("Create UID = %q, Identify UID = %q", o.UID, identified.UID)
 	}
 
-	if _, err := Create("secret", "x", defaultNamespace, "create", "secret", "generic", "x"); err == nil {
+	secretTarget := Object{Kind: "secret", Name: "x", Namespace: defaultNamespace}
+	if _, err := secretTarget.Create(exec.Command("kubectl", "create", "secret", "generic", "x")); err == nil {
 		t.Fatal("Create of a kind with no delete path succeeded")
 	}
-	if _, err := Create("ns", "created-with-uid", "", "create", "ns", "created-with-uid"); err == nil {
+	if _, err := target.Create(exec.Command("kubectl", "create", kindNamespace, createdNamespace)); err == nil {
 		t.Fatal("Create of an already-existing namespace succeeded")
 	}
-	if _, err := Create("ns", "created-with-uid", "", "get", "ns", "missing-ns", "--ignore-not-found"); err == nil {
+	missingCmd := exec.Command("kubectl", "get", kindNamespace, "missing-ns", "--ignore-not-found")
+	if _, err := target.Create(missingCmd); err == nil {
 		t.Fatal("Create succeeded although the command returned no UID")
 	}
 }
