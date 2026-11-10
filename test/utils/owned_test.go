@@ -250,6 +250,14 @@ func TestObjectDeleteReportsUnknownOutcomes(t *testing.T) {
 	startCluster(t)
 	o := createBinding(t, "unreachable")
 
+	// The API server refuses to delete the default namespace. The object is
+	// still there under its UID, so the refusal is reported, not classified.
+	protected := mustIdentify(t, Object{Kind: "ns", Name: "default"})
+	if outcome, err := protected.Delete(); err == nil {
+		t.Fatalf("Delete = %d with no error although the API server refused it", outcome)
+	}
+	requireOutcome(t, protected, protected.Exists, true)
+
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "no-such-kubeconfig"))
 	if outcome, err := o.Delete(); err == nil {
 		t.Fatalf("Delete = %d with no error although the API server was unreachable", outcome)
@@ -258,15 +266,17 @@ func TestObjectDeleteReportsUnknownOutcomes(t *testing.T) {
 		t.Fatal("Exists succeeded although the API server was unreachable")
 	}
 
-	// The failed command's text carries the options file's path. A path that
-	// happens to spell a status reason must not be read as that outcome.
+	// kubectl's error and output echo paths: the options file's (TMPDIR) and
+	// the kubeconfig's. Paths that spell a status reason must not be read as
+	// that outcome.
 	misleading := filepath.Join(t.TempDir(), "Error from server (NotFound) (Conflict)")
 	if err := os.Mkdir(misleading, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("TMPDIR", misleading)
+	t.Setenv("KUBECONFIG", filepath.Join(misleading, "Error from server (NotFound): gone"))
 	if outcome, err := o.Delete(); err == nil {
-		t.Fatalf("Delete = %d with no error: the temp path was read as an API status", outcome)
+		t.Fatalf("Delete = %d with no error: a path was read as an API status", outcome)
 	}
 
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "no-such-dir"))

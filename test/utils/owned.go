@@ -180,29 +180,29 @@ func (o Object) Delete() (DeleteOutcome, error) {
 		return 0, err
 	}
 	path := fmt.Sprintf(rawPaths[o.Kind], o.Name, o.Namespace)
-	out, err := Run(exec.Command("kubectl", "delete", "--raw", path, "-f", body.Name()))
-	return deleteOutcome(out, err)
-}
-
-// The API status reasons kubectl prints for a refused raw delete.
-const (
-	statusNotFound = "Error from server (NotFound)"
-	statusConflict = "Error from server (Conflict)"
-)
-
-// deleteOutcome classifies a UID-bound raw delete by the API status reason in
-// kubectl's own output. The error is not consulted for that: it also carries
-// the command line (and so the options file's path), where a matching word
-// would turn an unrelated failure into "already gone".
-func deleteOutcome(output string, err error) (DeleteOutcome, error) {
-	if err == nil {
+	if _, err = Run(exec.Command("kubectl", "delete", "--raw", path, "-f", body.Name())); err == nil {
 		return Deleted, nil
 	}
-	if strings.Contains(output, statusNotFound) {
+	return o.refusedDeleteOutcome(err)
+}
+
+// refusedDeleteOutcome says why a UID-bound delete was refused, from the
+// cluster's state rather than from kubectl's text: its output and error echo
+// paths and arguments, so matching a status word in them can turn an
+// unrelated failure into "already gone". The UID precondition has already
+// kept the delete itself atomic; this only names the outcome. If the lookup
+// fails, or the object is still there under its recorded UID, the delete
+// failed for another reason and deleteErr is returned.
+func (o Object) refusedDeleteOutcome(deleteErr error) (DeleteOutcome, error) {
+	uid, err := o.currentUID()
+	if err != nil {
+		return 0, fmt.Errorf("%w (and the follow-up lookup failed: %w)", deleteErr, err)
+	}
+	if uid == "" {
 		return AlreadyGone, nil
 	}
-	if strings.Contains(output, statusConflict) {
+	if uid != o.UID {
 		return Replaced, nil
 	}
-	return 0, err
+	return 0, deleteErr
 }
