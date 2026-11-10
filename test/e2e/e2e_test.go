@@ -74,25 +74,43 @@ type ownedCleanup struct {
 	remove func() error
 }
 
-// ownedCleanups remove what this run created, in creation order. An entry is
-// only recorded for something the run demonstrably created: a kubectl create
-// that succeeded, or a Helm release or CRD that a successful lookup found
-// absent before the deploy and present after it. Kubernetes objects are
-// recorded with the UID they were created with and deleted on that UID, so a
-// repeated run or a concurrent replacement can never hand this run's cleanup
-// to an unrelated object of the same name. On a reused cluster the suite
-// therefore removes exactly what it added.
+// ownedCleanups remove what this run created, in creation order. Directly
+// created Kubernetes objects (namespaces, ClusterRoleBindings, pods) are
+// created via createAndOwn, which captures the UID straight from the creation
+// response and deletes on that UID, so a repeated run or a concurrent
+// replacement can never hand this run's cleanup to an unrelated object of the
+// same name. For the Helm release, setup refuses to upgrade a pre-existing
+// release and records uninstall only when the release transitions from absent
+// to present. For the FeedGroup CRD (whose deletion cascades to every
+// FeedGroup on the cluster), cleanup is recorded only when it transitioned
+// from absent to present AND the run either exclusively owns the cluster
+// (E2E_OWNS_CLUSTER=true) or has explicit authorization (E2E_DELETE_CRD=true).
 var ownedCleanups []ownedCleanup
 
-// own records the object this run just created, pinned to its UID.
-func own(kind, name, namespace string) {
-	GinkgoHelper()
-	object, err := utils.Identify(kind, name, namespace)
-	Expect(err).NotTo(HaveOccurred(), "Failed to identify a resource this run created")
+// ownObject records an already-identified Object for UID-bound removal.
+func ownObject(object utils.Object) {
 	ownedCleanups = append(ownedCleanups, ownedCleanup{
 		what:   object.String(),
 		remove: func() error { return removeObject(object) },
 	})
+}
+
+// createAndOwn creates a Kubernetes object via kubectl, captures its UID
+// directly from the creation response, and records it for UID-bound cleanup.
+func createAndOwn(kind, name, namespace string, args ...string) {
+	GinkgoHelper()
+	object, err := utils.Create(kind, name, namespace, args...)
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create %s %s", kind, name))
+	ownObject(object)
+}
+
+// own records the object this run just created by looking up its current UID
+// (used when creation happened indirectly through Helm).
+func own(kind, name, namespace string) {
+	GinkgoHelper()
+	object, err := utils.Identify(kind, name, namespace)
+	Expect(err).NotTo(HaveOccurred(), "Failed to identify a resource this run created")
+	ownObject(object)
 }
 
 // removeObject deletes object if it is still the one this run created, and
@@ -188,15 +206,12 @@ var _ = Describe("Manager", Ordered, func() {
 	// RBAC as part of the same release, so there's no separate install step).
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-		own("ns", namespace, "")
+		createAndOwn("ns", namespace, "", "create", "ns", namespace)
 
 		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
 		// Looked up before the deploy, so that afterwards only what this run
@@ -208,6 +223,7 @@ var _ = Describe("Manager", Ordered, func() {
 			"--short", "--filter", "^" + regexp.QuoteMeta(release) + "$"}
 		crdBefore := lookup(crdLookup...)
 		releaseBefore := lookup(releaseLookup...)
+		Expect(releaseBefore).To(Equal(utils.LookupAbsent), "Refusing to upgrade an existing Helm release")
 
 		By("deploying the controller-manager via Helm")
 		// IMG is set in the suite's BeforeSuite and read from the environment by the mise task.
@@ -216,8 +232,12 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// Recorded before the deploy's result is asserted, so a half-finished
 		// install is still removed. The CRD goes first so that it is removed
-		// after the release (the chart keeps it on uninstall).
-		if created(crdBefore, lookup(crdLookup...)) {
+		// after the release (the chart keeps it on uninstall). Because
+		// deleting the CRD cascades to all FeedGroup custom resources,
+		// destructive CRD teardown on a retained or shared cluster requires
+		// exclusive cluster ownership (E2E_OWNS_CLUSTER=true) or explicit
+		// opt-in (E2E_DELETE_CRD=true).
+		if created(crdBefore, lookup(crdLookup...)) && utils.DestructiveCRDTeardownAuthorized(os.Getenv) {
 			own("crd", feedGroupCRDName, "")
 		}
 		if created(releaseBefore, lookup(releaseLookup...)) {
@@ -312,18 +332,16 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
+			// Cluster-scoped, so deleting the namespaces would not remove it.
+			createAndOwn("clusterrolebinding", metricsRoleBindingName, "",
+				"create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=rss2discord-operator-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
-			// Cluster-scoped, so deleting the namespaces would not remove it.
-			own("clusterrolebinding", metricsRoleBindingName, "")
 
 			By("validating that the metrics service is available")
-			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
-			_, err = utils.Run(cmd)
+			cmd := exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
+			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
@@ -354,7 +372,8 @@ var _ = Describe("Manager", Ordered, func() {
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
+			createAndOwn("pod", "curl-metrics", namespace,
+				"run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
 				"--overrides",
@@ -383,9 +402,6 @@ var _ = Describe("Manager", Ordered, func() {
 						"serviceAccountName": "%s"
 					}
 				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
-			own("pod", "curl-metrics", namespace)
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
@@ -425,16 +441,13 @@ var _ = Describe("Manager", Ordered, func() {
 		// Events, and the metrics endpoint reflecting a real reconcile.
 		It("should reflect a persistently unreachable feed in status, events, and metrics", func() {
 			By("creating the feedgroup test namespace")
-			cmd := exec.Command("kubectl", "create", "ns", feedGroupNamespace)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create feedgroup test namespace")
-			own("ns", feedGroupNamespace, "")
+			createAndOwn("ns", feedGroupNamespace, "", "create", "ns", feedGroupNamespace)
 
 			By("creating the dummy Discord webhook secret")
-			cmd = exec.Command("kubectl", "create", "secret", "generic", "discord-webhook",
+			cmd := exec.Command("kubectl", "create", "secret", "generic", "discord-webhook",
 				"-n", feedGroupNamespace,
 				"--from-literal=url=https://discord.com/api/webhooks/000/dummy")
-			_, err = utils.Run(cmd)
+			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create discord webhook secret")
 
 			By("applying a FeedGroup pointing at an unresolvable host")
@@ -497,7 +510,8 @@ spec:
 			Expect(token).NotTo(BeEmpty())
 
 			By("creating a curl pod to re-fetch the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", feedGroupCurlPodName, "--restart=Never",
+			createAndOwn("pod", feedGroupCurlPodName, namespace,
+				"run", feedGroupCurlPodName, "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
 				"--overrides",
@@ -526,9 +540,6 @@ spec:
 						"serviceAccountName": "%s"
 					}
 				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl pod for feedgroup metrics")
-			own("pod", feedGroupCurlPodName, namespace)
 
 			By("waiting for the feedgroup metrics curl pod to complete")
 			verifyFeedGroupCurlUp := func(g Gomega) {

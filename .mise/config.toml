@@ -126,12 +126,14 @@ description = "Run e2e tests against a Kind cluster (Kind must be installed)"
 depends = ["manifests", "generate", "fmt", "vet"]
 run = '''
 cluster="${KIND_CLUSTER}"
+owned_cluster="${E2E_OWNS_CLUSTER:-false}"
 if ! kind get clusters | grep -qx "$cluster"; then
   echo "Creating Kind cluster '$cluster'..."
   kind create cluster --name "$cluster" --image "$KIND_NODE_IMAGE"
   trap 'kind delete cluster --name "$cluster"' EXIT
+  owned_cluster=true
 fi
-KIND=kind KIND_CLUSTER="$cluster" go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+KIND=kind KIND_CLUSTER="$cluster" E2E_OWNS_CLUSTER="$owned_cluster" go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 '''
 
 [tasks.promtool-rules]

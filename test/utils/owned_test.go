@@ -90,8 +90,15 @@ const (
 
 func createBinding(t *testing.T, name string) Object {
 	t.Helper()
-	mustRun(t, "create", kindClusterRoleBinding, name, "--clusterrole=view", "--user=someone")
-	return mustIdentify(t, Object{Kind: kindClusterRoleBinding, Name: name})
+	o, err := Create(kindClusterRoleBinding, name, "",
+		"create", kindClusterRoleBinding, name, "--clusterrole=view", "--user=someone")
+	if err != nil {
+		t.Fatalf("Create(clusterrolebinding %s): %v", name, err)
+	}
+	if !strings.Contains(o.String(), o.UID) {
+		t.Fatalf("String() = %q, want it to carry the UID %q", o.String(), o.UID)
+	}
+	return o
 }
 
 // listCommand is the kind of listing List classifies: one line per match.
@@ -146,6 +153,48 @@ func TestIdentify(t *testing.T) {
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "no-such-kubeconfig"))
 	if _, err := Identify("ns", defaultNamespace, ""); err == nil {
 		t.Fatal("Identify succeeded although the lookup failed")
+	}
+}
+
+func TestCreate(t *testing.T) {
+	startCluster(t)
+
+	o, err := Create("ns", "created-with-uid", "", "create", "ns", "created-with-uid")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	identified := mustIdentify(t, Object{Kind: "ns", Name: "created-with-uid"})
+	if o.UID != identified.UID {
+		t.Fatalf("Create UID = %q, Identify UID = %q", o.UID, identified.UID)
+	}
+
+	if _, err := Create("secret", "x", defaultNamespace, "create", "secret", "generic", "x"); err == nil {
+		t.Fatal("Create of a kind with no delete path succeeded")
+	}
+	if _, err := Create("ns", "created-with-uid", "", "create", "ns", "created-with-uid"); err == nil {
+		t.Fatal("Create of an already-existing namespace succeeded")
+	}
+	if _, err := Create("ns", "created-with-uid", "", "get", "ns", "missing-ns", "--ignore-not-found"); err == nil {
+		t.Fatal("Create succeeded although the command returned no UID")
+	}
+}
+
+func TestDestructiveCRDTeardownAuthorized(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"neither set", map[string]string{}, false},
+		{"false values", map[string]string{"E2E_OWNS_CLUSTER": "false", "E2E_DELETE_CRD": "false"}, false},
+		{"owns cluster", map[string]string{"E2E_OWNS_CLUSTER": "true"}, true},
+		{"explicit delete crd", map[string]string{"E2E_DELETE_CRD": "true"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DestructiveCRDTeardownAuthorized(func(k string) string { return tc.env[k] }); got != tc.want {
+				t.Fatalf("DestructiveCRDTeardownAuthorized(%v) = %v, want %v", tc.env, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -72,6 +72,27 @@ var rawPaths = map[string]string{
 	"crd":                "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/%[1]s",
 }
 
+// Create runs "kubectl <args...> -o jsonpath={.metadata.uid}" to create an
+// object of kind/name/namespace and pins the returned Object to the UID from
+// the creation response itself, without a separate post-creation lookup.
+func Create(kind, name, namespace string, args ...string) (Object, error) {
+	o := Object{Kind: kind, Name: name, Namespace: namespace}
+	if _, ok := rawPaths[kind]; !ok {
+		return Object{}, fmt.Errorf("no API path known for kind %q", kind)
+	}
+	fullArgs := append(append([]string(nil), args...), "-o", "jsonpath={.metadata.uid}")
+	out, err := Run(exec.Command("kubectl", fullArgs...))
+	if err != nil {
+		return Object{}, err
+	}
+	uid := strings.TrimSpace(out)
+	if uid == "" {
+		return Object{}, fmt.Errorf("create %s %q returned no UID", kind, name)
+	}
+	o.UID = uid
+	return o, nil
+}
+
 // Identify pins the named object to its current UID. It fails if the object
 // does not exist or the lookup fails, so an Object always names something that
 // was seen on the cluster.
@@ -117,6 +138,17 @@ func (o Object) Exists() (bool, error) {
 		return false, err
 	}
 	return uid == o.UID, nil
+}
+
+// DestructiveCRDTeardownAuthorized reports whether destructive CRD teardown is
+// permitted after the suite: either this run exclusively owns the cluster
+// (E2E_OWNS_CLUSTER=true, set by `mise run test-e2e` when it created a fresh
+// Kind cluster) or the caller explicitly authorized CRD deletion on a retained
+// or shared cluster (E2E_DELETE_CRD=true). Absent/present snapshots around
+// `helm upgrade --install` cannot prove this run created the CRD on a shared
+// cluster, and deleting a CRD cascades to all FeedGroup custom resources.
+func DestructiveCRDTeardownAuthorized(getenv func(string) string) bool {
+	return getenv("E2E_OWNS_CLUSTER") == "true" || getenv("E2E_DELETE_CRD") == "true"
 }
 
 // DeleteOutcome is what a UID-bound delete found.
