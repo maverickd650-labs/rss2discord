@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.1](https://github.com/maverickd650-labs/rss2discord/compare/v0.19.0...v0.19.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **container:** update image gcr.io/distroless/static (25ac8f0 → aafe993) ([#432](https://github.com/maverickd650-labs/rss2discord/issues/432)) ([4685504](https://github.com/maverickd650-labs/rss2discord/commit/468550431dc28426c4c8e1b22d6164cbf3f241df))
+* **go:** Update Go toolchain ([#429](https://github.com/maverickd650-labs/rss2discord/issues/429)) ([fa250fa](https://github.com/maverickd650-labs/rss2discord/commit/fa250fadc53c4ea3ce9a5ea15dd2940b4d0e58fd))
+* **go:** Update image golang (01aa404 → ec47ea3) ([#431](https://github.com/maverickd650-labs/rss2discord/issues/431)) ([1e8fa89](https://github.com/maverickd650-labs/rss2discord/commit/1e8fa89a54bf69113482b6f207dc9b5051c109dc))
+
+
+### Miscellaneous Chores
+
+* **github-release:** Update release helm (4.3.1 → 4.3.2) ([#433](https://github.com/maverickd650-labs/rss2discord/issues/433)) ([c57c163](https://github.com/maverickd650-labs/rss2discord/commit/c57c16310c8e3a42ca0fa613ae2282a6b6c51eca))
+
 ## [0.19.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.18.0...v0.19.0) (2026-11-10)
 
 
