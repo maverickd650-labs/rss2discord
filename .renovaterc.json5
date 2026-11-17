@@ -1,181 +1,242 @@
 {
-  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   env: {
-    MISE_TRUSTED_CONFIG_PATHS: "./"
+    MISE_TRUSTED_CONFIG_PATHS: './',
   },
   extends: [
-    "config:recommended",
-    "docker:enableMajor",
-    "helpers:pinGitHubActionDigestsToSemver",
-    ":dependencyDashboard",
-    ":disableRateLimiting",
+    'config:recommended',
+    'docker:enableMajor',
+    'helpers:pinGitHubActionDigestsToSemver',
+    ':dependencyDashboard',
+    ':disableRateLimiting',
   ],
-  dependencyDashboardTitle: "Renovate Dashboard 🤖",
-  postUpdateOptions: ["gomodTidy", "gomodUpdateImportPaths"],
+  dependencyDashboard: {
+    title: 'Renovate Dashboard 🤖',
+  },
+  postUpdateOptions: [
+    'gomodTidy',
+    'gomodUpdateImportPaths',
+  ],
   lockFileMaintenance: {
     enabled: true,
-    schedule: ["before 3am on the first day of the month"],
+    schedule: [
+      'before 3am on the first day of the month',
+    ],
   },
   customManagers: [
     {
-      customType: "regex",
-      description: "Process annotated dependencies",
-      managerFilePatterns: ["/\\.env(?:\\.j2)?$/", "/\\.sh(?:\\.j2)?$/", "/\\.yaml(?:\\.j2)?$/", "/^\\.custom-gcl\\.yml$/"],
-      matchStrings: [
-        // # renovate: datasource=github-releases depName=foo/bar
-        // foobar_version: v1.0.0
-        "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n.+(:\\s|=)(&\\S+\\s)?[\"']?(?<currentValue>[^\"'\\s]+)[\"']?",
+      customType: 'regex',
+      description: 'Process annotated dependencies',
+      managerFilePatterns: [
+        '/\\.env(?:\\.j2)?$/',
+        '/\\.sh(?:\\.j2)?$/',
+        '/\\.yaml(?:\\.j2)?$/',
+        '/^\\.custom-gcl\\.yml$/',
       ],
-      datasourceTemplate: "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
+      matchStrings: [
+        'datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n.+(:\\s|=)(&\\S+\\s)?["\']?(?<currentValue>[^"\'\\s]+)["\']?',
+      ],
+      datasourceTemplate: '{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}',
     },
   ],
   packageRules: [
-    // --- automerge ---
     {
-      description: "Auto-merge GitHub Actions",
-      matchManagers: ["github-actions"],
-      automerge: true,
-      automergeType: "pr",
-      matchUpdateTypes: ["minor", "patch", "digest"],
-      minimumReleaseAge: "3 days",
-      ignoreTests: true,
-    },
-    {
-      description: "Auto-merge trusted GitHub Actions",
-      matchManagers: ["github-actions"],
-      matchPackageNames: [
-        "/^actions\//",
-        "/^anchore\//",
-        "/^docker\//",
-        "/^renovatebot\//",
-        "/^sigstore\//",
+      description: 'Auto-merge GitHub Actions',
+      matchManagers: [
+        'github-actions',
       ],
       automerge: true,
-      automergeType: "pr",
-      matchUpdateTypes: ["minor", "patch", "digest"],
-      minimumReleaseAge: "1 minute",
+      automergeType: 'pr',
+      matchUpdateTypes: [
+        'minor',
+        'patch',
+        'digest',
+      ],
+      minimumReleaseAge: '3 days',
       ignoreTests: true,
     },
     {
-      description: "Auto-merge trusted Go modules",
-      matchManagers: ["gomod"],
-      matchPackageNames: ["/^k8s\\.io\\//", "/^sigs\\.k8s\\.io\\//", "/^github\\.com\\/onsi\\//"],
+      description: 'Auto-merge trusted GitHub Actions',
+      matchManagers: [
+        'github-actions',
+      ],
+      matchPackageNames: [
+        '/^actions//',
+        '/^anchore//',
+        '/^docker//',
+        '/^renovatebot//',
+        '/^sigstore//',
+      ],
       automerge: true,
-      automergeType: "pr",
-      matchUpdateTypes: ["minor", "patch", "digest"],
-      minimumReleaseAge: "3 days",
+      automergeType: 'pr',
+      matchUpdateTypes: [
+        'minor',
+        'patch',
+        'digest',
+      ],
+      minimumReleaseAge: '1 minute',
       ignoreTests: true,
     },
-    // --- labels ---
     {
-      matchUpdateTypes: ["major"],
-      labels: ["type/major"],
+      description: 'Auto-merge trusted Go modules',
+      matchManagers: [
+        'gomod',
+      ],
+      matchPackageNames: [
+        '/^k8s\\.io\\//',
+        '/^sigs\\.k8s\\.io\\//',
+        '/^github\\.com\\/onsi\\//',
+      ],
+      automerge: true,
+      automergeType: 'pr',
+      matchUpdateTypes: [
+        'minor',
+        'patch',
+        'digest',
+      ],
+      minimumReleaseAge: '3 days',
+      ignoreTests: true,
     },
     {
-      matchUpdateTypes: ["minor"],
-      labels: ["type/minor"],
+      matchUpdateTypes: [
+        'major',
+      ],
+      labels: [
+        'type/major',
+      ],
     },
     {
-      matchUpdateTypes: ["patch"],
-      labels: ["type/patch"],
+      matchUpdateTypes: [
+        'minor',
+      ],
+      labels: [
+        'type/minor',
+      ],
     },
     {
-      matchUpdateTypes: ["digest"],
-      labels: ["type/digest"],
-    },
-    // --- semantic commits ---
-    {
-      matchUpdateTypes: ["major"],
-      semanticCommitType: "feat",
-      commitMessagePrefix: "{{semanticCommitType}}({{semanticCommitScope}})!:",
-      commitMessageExtra: "({{currentVersion}} → {{newVersion}})",
+      matchUpdateTypes: [
+        'patch',
+      ],
+      labels: [
+        'type/patch',
+      ],
     },
     {
-      matchUpdateTypes: ["minor"],
-      semanticCommitType: "feat",
-      commitMessageExtra: "({{currentVersion}} → {{newVersion}})",
+      matchUpdateTypes: [
+        'digest',
+      ],
+      labels: [
+        'type/digest',
+      ],
     },
     {
-      matchUpdateTypes: ["patch"],
-      semanticCommitType: "fix",
-      commitMessageExtra: "({{currentVersion}} → {{newVersion}})",
+      matchUpdateTypes: [
+        'major',
+      ],
+      semanticCommitType: 'feat',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}})!:',
+      commitMessageExtra: '({{currentVersion}} → {{newVersion}})',
     },
     {
-      matchUpdateTypes: ["digest"],
-      semanticCommitType: "fix",
-      commitMessageExtra: "({{currentDigestShort}} → {{newDigestShort}})",
+      matchUpdateTypes: [
+        'minor',
+      ],
+      semanticCommitType: 'feat',
+      commitMessageExtra: '({{currentVersion}} → {{newVersion}})',
     },
     {
-      matchDatasources: ["docker"],
-      semanticCommitScope: "container",
-      commitMessageTopic: "image {{depName}}",
-    },
-    // github-actions and gomod are CI/build tooling, not the released binary/image,
-    // so a major bump of them must not count as a breaking change: override the
-    // major-update `!:` prefix (set above) with a plain `:`, so release-please
-    // never cuts a version bump from a `ci`/`chore` tooling update alone.
-    {
-      matchManagers: ["github-actions"],
-      semanticCommitType: "ci",
-      semanticCommitScope: "github-action",
-      commitMessageTopic: "action {{depName}}",
-      commitMessagePrefix: "{{semanticCommitType}}({{semanticCommitScope}}):",
+      matchUpdateTypes: [
+        'patch',
+      ],
+      semanticCommitType: 'fix',
+      commitMessageExtra: '({{currentVersion}} → {{newVersion}})',
     },
     {
-      matchManagers: ["gomod"],
-      semanticCommitType: "chore",
-      semanticCommitScope: "deps",
-      commitMessageTopic: "module {{depName}}",
-      commitMessagePrefix: "{{semanticCommitType}}({{semanticCommitScope}}):",
+      matchUpdateTypes: [
+        'digest',
+      ],
+      semanticCommitType: 'fix',
+      commitMessageExtra: '({{currentDigestShort}} → {{newDigestShort}})',
     },
     {
-      matchDatasources: ["github-releases"],
-      semanticCommitType: "chore",
-      semanticCommitScope: "github-release",
-      commitMessageTopic: "release {{depName}}",
-      commitMessagePrefix: "{{semanticCommitType}}({{semanticCommitScope}}):",
-    },
-    // --- misc ---
-    {
-      // go.mod's go directive, the mise-pinned toolchain CI builds/tests with,
-      // and the golang builder image (Dockerfile, devcontainer) must move
-      // together: grouping only go.mod let the image reach 1.27 while CI and
-      // govulncheck (go-version-file: go.mod) were still on 1.26.
-      description: "Group every Go toolchain pin into a single update",
-      matchDepNames: ["go", "golang"],
-      matchManagers: ["gomod", "mise", "dockerfile", "devcontainer"],
-      groupName: "Go toolchain",
-      groupSlug: "go-toolchain",
-      // The grouped PR mixes gomod (chore) and docker (fix) updates; pin it to
-      // fix explicitly, since a toolchain/stdlib bump changes the shipped
-      // binary and must cut a release-please release.
-      semanticCommitType: "fix",
-      semanticCommitScope: "go",
-      commitMessagePrefix: "{{semanticCommitType}}({{semanticCommitScope}}):",
+      matchDatasources: [
+        'docker',
+      ],
+      semanticCommitScope: 'container',
+      commitMessageTopic: 'image {{depName}}',
     },
     {
-      // The mise-pinned golangci-lint and the version in .custom-gcl.yml (used
-      // to build the custom lint binary with the logcheck plugin) must match.
-      description: "Group golangci-lint across .mise/config.toml and .custom-gcl.yml",
-      matchDepNames: ["golangci-lint", "golangci/golangci-lint"],
-      matchManagers: ["mise", "custom.regex"],
-      groupName: "golangci-lint",
-      groupSlug: "golangci-lint",
-      semanticCommitType: "ci",
-      semanticCommitScope: "lint",
-      commitMessagePrefix: "{{semanticCommitType}}({{semanticCommitScope}}):",
+      matchManagers: [
+        'github-actions',
+      ],
+      semanticCommitType: 'ci',
+      semanticCommitScope: 'github-action',
+      commitMessageTopic: 'action {{depName}}',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}}):',
     },
     {
-      // k8s.io/apimachinery's managedfields API (ExtractInto, NewSchemeTypeConverter)
-      // takes structured-merge-diff types, so smd's major version must move in
-      // lockstep with whatever apimachinery imports (currently v6). The import
-      // also appears in generated code (api/v1beta1/applyconfiguration/internal),
-      // which comes from `mise run generate`, so a Renovate import rewrite there
-      // cannot build. Re-enable once apimachinery adopts the next smd major.
-      description: "Hold structured-merge-diff major updates until k8s.io/apimachinery adopts them",
-      matchManagers: ["gomod"],
-      matchPackageNames: ["/^sigs\\.k8s\\.io\\/structured-merge-diff\\//"],
-      matchUpdateTypes: ["major"],
+      matchManagers: [
+        'gomod',
+      ],
+      semanticCommitType: 'chore',
+      semanticCommitScope: 'deps',
+      commitMessageTopic: 'module {{depName}}',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}}):',
+    },
+    {
+      matchDatasources: [
+        'github-releases',
+      ],
+      semanticCommitType: 'chore',
+      semanticCommitScope: 'github-release',
+      commitMessageTopic: 'release {{depName}}',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}}):',
+    },
+    {
+      description: 'Group every Go toolchain pin into a single update',
+      matchDepNames: [
+        'go',
+        'golang',
+      ],
+      matchManagers: [
+        'gomod',
+        'mise',
+        'dockerfile',
+        'devcontainer',
+      ],
+      groupName: 'Go toolchain',
+      groupSlug: 'go-toolchain',
+      semanticCommitType: 'fix',
+      semanticCommitScope: 'go',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}}):',
+    },
+    {
+      description: 'Group golangci-lint across .mise/config.toml and .custom-gcl.yml',
+      matchDepNames: [
+        'golangci-lint',
+        'golangci/golangci-lint',
+      ],
+      matchManagers: [
+        'mise',
+        'custom.regex',
+      ],
+      groupName: 'golangci-lint',
+      groupSlug: 'golangci-lint',
+      semanticCommitType: 'ci',
+      semanticCommitScope: 'lint',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}}):',
+    },
+    {
+      description: 'Hold structured-merge-diff major updates until k8s.io/apimachinery adopts them',
+      matchManagers: [
+        'gomod',
+      ],
+      matchPackageNames: [
+        '/^sigs\\.k8s\\.io\\/structured-merge-diff\\//',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
       enabled: false,
     },
   ],
