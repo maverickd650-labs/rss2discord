@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.19.1](https://github.com/maverickd650-labs/rss2discord/compare/v0.19.0...v0.19.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **container:** update image gcr.io/distroless/static (25ac8f0 → aafe993) ([#432](https://github.com/maverickd650-labs/rss2discord/issues/432)) ([4685504](https://github.com/maverickd650-labs/rss2discord/commit/468550431dc28426c4c8e1b22d6164cbf3f241df))
+* **deps:** update dependency setup-envtest (0.25.2 → 0.25.3) ([#436](https://github.com/maverickd650-labs/rss2discord/issues/436)) ([3fe3930](https://github.com/maverickd650-labs/rss2discord/commit/3fe393014394fb8592ffc6f9fea9103f4382d3c7))
+* **go:** Update Go toolchain ([#429](https://github.com/maverickd650-labs/rss2discord/issues/429)) ([fa250fa](https://github.com/maverickd650-labs/rss2discord/commit/fa250fadc53c4ea3ce9a5ea15dd2940b4d0e58fd))
+* **go:** Update image golang (01aa404 → ec47ea3) ([#431](https://github.com/maverickd650-labs/rss2discord/issues/431)) ([1e8fa89](https://github.com/maverickd650-labs/rss2discord/commit/1e8fa89a54bf69113482b6f207dc9b5051c109dc))
+* **go:** Update image golang (ec47ea3 → fe517ac) ([#435](https://github.com/maverickd650-labs/rss2discord/issues/435)) ([eff48a9](https://github.com/maverickd650-labs/rss2discord/commit/eff48a971dd25586587faf6a7895b90463721c4b))
+* **go:** Update image golang (fe517ac → 205c763) ([#437](https://github.com/maverickd650-labs/rss2discord/issues/437)) ([4db1692](https://github.com/maverickd650-labs/rss2discord/commit/4db1692f363f569699fbca440d5f6dc124c76989))
+
+
+### Continuous Integration
+
+* **github-action:** Update action actions/setup-go (v7.0.0 → v7.1.0) ([#438](https://github.com/maverickd650-labs/rss2discord/issues/438)) ([4bb4049](https://github.com/maverickd650-labs/rss2discord/commit/4bb4049e9ef3360aadc0d39bc89cfaaf07412d3c))
+* **github-action:** Update action jdx/mise-action (v5.2.7 → v5.2.8) ([#434](https://github.com/maverickd650-labs/rss2discord/issues/434)) ([4703c09](https://github.com/maverickd650-labs/rss2discord/commit/4703c0996c76a7b3a72390f7bac208325f4f73d7))
+
+
+### Miscellaneous Chores
+
+* **github-release:** Update release helm (4.3.1 → 4.3.2) ([#433](https://github.com/maverickd650-labs/rss2discord/issues/433)) ([c57c163](https://github.com/maverickd650-labs/rss2discord/commit/c57c16310c8e3a42ca0fa613ae2282a6b6c51eca))
+
 ## [0.19.0](https://github.com/maverickd650-labs/rss2discord/compare/v0.18.0...v0.19.0) (2026-11-10)
 
 
