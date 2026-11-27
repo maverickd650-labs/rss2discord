@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.19.2](https://github.com/maverickd650-labs/rss2discord/compare/v0.19.1...v0.19.2) (2026-11-26)
+
+
+### Bug Fixes
+
+* **container:** update image gcr.io/distroless/static (aafe993 → 8ce6dd8) ([#451](https://github.com/maverickd650-labs/rss2discord/issues/451)) ([905a0b5](https://github.com/maverickd650-labs/rss2discord/commit/905a0b515332b30051cdf4d27db30d99827cb697))
+* **deps:** update dependency kubectl (1.37.2 → 1.37.3) ([#455](https://github.com/maverickd650-labs/rss2discord/issues/455)) ([80d9dce](https://github.com/maverickd650-labs/rss2discord/commit/80d9dce016fd3d2a4a3e50e21a3f83cccefb9e69))
+* **go:** Update image golang (205c763 → 5f1b98f) ([#453](https://github.com/maverickd650-labs/rss2discord/issues/453)) ([4352e96](https://github.com/maverickd650-labs/rss2discord/commit/4352e96566260828407d5b2d8b1165fe2c4c0419))
+
+
+### Continuous Integration
+
+* **github-action:** Update action actions/create-github-app-token (v3.3.0 → v3.4.0) ([#445](https://github.com/maverickd650-labs/rss2discord/issues/445)) ([8a116b8](https://github.com/maverickd650-labs/rss2discord/commit/8a116b80761e4425305c4a85bf5b0207ace14d81))
+* **github-action:** Update action actions/dependency-review-action (v5.0.0 → v5.0.1) ([#441](https://github.com/maverickd650-labs/rss2discord/issues/441)) ([73024d9](https://github.com/maverickd650-labs/rss2discord/commit/73024d9bb5778eecfc8aad3ee023198386f84690))
+* **github-action:** Update action anchore/sbom-action (v0.24.3 → v0.24.4) ([#452](https://github.com/maverickd650-labs/rss2discord/issues/452)) ([cdc025a](https://github.com/maverickd650-labs/rss2discord/commit/cdc025abb3cbf3cf9f2a964bcbe2870d8eea4e42))
+* **github-action:** Update action github/codeql-action (v4.39.3 → v4.39.4) ([#449](https://github.com/maverickd650-labs/rss2discord/issues/449)) ([fef9794](https://github.com/maverickd650-labs/rss2discord/commit/fef979448e2590f433c6ffa67040240dfac261b4))
+* **github-action:** Update action github/codeql-action (v4.39.4 → v4.39.5) ([#458](https://github.com/maverickd650-labs/rss2discord/issues/458)) ([e0857be](https://github.com/maverickd650-labs/rss2discord/commit/e0857be2568df023cba400eff86b626646120c8b))
+* **github-action:** Update action jdx/mise-action (v5.2.10 → v5.3.0) ([#450](https://github.com/maverickd650-labs/rss2discord/issues/450)) ([6feedb1](https://github.com/maverickd650-labs/rss2discord/commit/6feedb13c0b824fa8c0fd47036d6b16ab3006820))
+* **github-action:** Update action jdx/mise-action (v5.2.8 → v5.2.9) ([#444](https://github.com/maverickd650-labs/rss2discord/issues/444)) ([7c8cc62](https://github.com/maverickd650-labs/rss2discord/commit/7c8cc6298a11bae34a606e9ff7e492055c24032f))
+* **github-action:** Update action jdx/mise-action (v5.2.9 → v5.2.10) ([#447](https://github.com/maverickd650-labs/rss2discord/issues/447)) ([0f55808](https://github.com/maverickd650-labs/rss2discord/commit/0f5580884fd4f76651a989707faaca1c073aa1d7))
+* **github-action:** Update action ossf/scorecard-action (v2.5.0 → v2.6.0) ([#448](https://github.com/maverickd650-labs/rss2discord/issues/448)) ([ccef556](https://github.com/maverickd650-labs/rss2discord/commit/ccef5562788b174f3e499aaf08cbd0b6b7a89a5c))
+
+
+### Miscellaneous Chores
+
+* **config:** migrate config .renovaterc.json5 ([#439](https://github.com/maverickd650-labs/rss2discord/issues/439)) ([8569d44](https://github.com/maverickd650-labs/rss2discord/commit/8569d44d82926790c7d34c0f660c64995c8b6e2d))
+* **deps:** Update kubernetes monorepo (v0.37.2 → v0.37.3) ([#457](https://github.com/maverickd650-labs/rss2discord/issues/457)) ([9ba83a5](https://github.com/maverickd650-labs/rss2discord/commit/9ba83a5da5551904212220ba16b118edb652e3e5))
+* **deps:** Update module golang.org/x/tools (v0.52.0 → v0.53.0) ([#443](https://github.com/maverickd650-labs/rss2discord/issues/443)) ([898c936](https://github.com/maverickd650-labs/rss2discord/commit/898c9364985d9fe55504c4eb21d7ffa9984772be))
+* **deps:** Update module sigs.k8s.io/controller-runtime (v0.25.2 → v0.25.3) ([#446](https://github.com/maverickd650-labs/rss2discord/issues/446)) ([a163865](https://github.com/maverickd650-labs/rss2discord/commit/a163865c1bc2fa60040cab5e7c7a903c170d0ac5))
+* **github-release:** Update release cosign (3.1.4 → 3.1.5) ([#454](https://github.com/maverickd650-labs/rss2discord/issues/454)) ([5ed802c](https://github.com/maverickd650-labs/rss2discord/commit/5ed802cc15c31403bb2958a96993c2e6f677a64b))
+* **github-release:** Update release cosign (3.1.5 → 3.1.6) ([#456](https://github.com/maverickd650-labs/rss2discord/issues/456)) ([14f67c5](https://github.com/maverickd650-labs/rss2discord/commit/14f67c5eb13e7e809424014344e70bcdbe6109a6))
+
 ## [0.19.1](https://github.com/maverickd650-labs/rss2discord/compare/v0.19.0...v0.19.1) (2026-11-17)
 
 
